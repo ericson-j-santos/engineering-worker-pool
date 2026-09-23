@@ -550,7 +550,7 @@ class WorkerPoolStore:
                          CASE WHEN r.last_builder_claimed_at IS NULL THEN 0 ELSE 1 END,
                          r.last_builder_claimed_at,
                          r.repository,
-                         t.priority,t.created_at,t.task_id
+                         t.priority,t.created_at,t.rowid,t.task_id
                        LIMIT 1""",
                     (worker_id, worker_id),
                 ).fetchone()
@@ -578,7 +578,7 @@ class WorkerPoolStore:
                          CASE WHEN r.last_validator_claimed_at IS NULL THEN 0 ELSE 1 END,
                          r.last_validator_claimed_at,
                          r.repository,
-                         t.priority,t.updated_at,t.task_id
+                         t.priority,t.updated_at,t.rowid,t.task_id
                        LIMIT 1""",
                     (worker_id, worker_id, worker_id),
                 ).fetchone()
