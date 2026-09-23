@@ -203,7 +203,7 @@ def test_watchdog_reroutes_stalled_task_even_with_recent_heartbeat_and_lease(
     )
     material_progress_at = running["last_material_progress_at"]
 
-    clock.advance(20)
+    clock.advance(5)
     store.heartbeat_worker("builder-a", correlation_id="hb-a")
     store.heartbeat_worker("builder-b", correlation_id="hb-b")
     renewed = store.renew_lease(
@@ -215,7 +215,7 @@ def test_watchdog_reroutes_stalled_task_even_with_recent_heartbeat_and_lease(
     )
     assert renewed["last_material_progress_at"] == material_progress_at
 
-    clock.advance(11)
+    clock.advance(26)
     store.heartbeat_worker("builder-b", correlation_id="hb-b-2")
     recovered = store.recover_stalled_tasks()
 
@@ -250,7 +250,7 @@ def test_watchdog_blocks_stalled_task_without_alternative_worker(
         correlation_id="start-a",
     )
 
-    clock.advance(20)
+    clock.advance(5)
     store.heartbeat_worker("builder-a", correlation_id="hb-a")
     store.renew_lease(
         task_id=task["task_id"],
@@ -259,7 +259,7 @@ def test_watchdog_blocks_stalled_task_without_alternative_worker(
         correlation_id="renew-a",
         lease_seconds=60,
     )
-    clock.advance(11)
+    clock.advance(26)
 
     recovered = store.recover_stalled_tasks()
     assert recovered == {"rerouted": 0, "blocked": 1, "failed": 0}
@@ -640,7 +640,7 @@ def test_snapshot_exposes_repository_lanes_and_worker_affinity(
 
     lane = next(item for item in snapshot["repositories"] if item["repository"] == repository)
     worker = next(item for item in snapshot["workers"] if item["worker_id"] == "builder-observable")
-    assert snapshot["schema_version"] == "1.1.0"
+    assert snapshot["schema_version"] == "1.2.0"
     assert lane["enabled"] is True
     assert lane["max_in_flight"] == 3
     assert lane["queued"] == 1
