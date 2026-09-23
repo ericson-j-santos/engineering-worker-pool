@@ -549,6 +549,7 @@ class WorkerPoolStore:
                          r.builder_claim_count,
                          CASE WHEN r.last_builder_claimed_at IS NULL THEN 0 ELSE 1 END,
                          r.last_builder_claimed_at,
+                         r.repository,
                          t.priority,t.created_at,t.task_id
                        LIMIT 1""",
                     (worker_id, worker_id),
@@ -576,6 +577,7 @@ class WorkerPoolStore:
                          r.validator_claim_count,
                          CASE WHEN r.last_validator_claimed_at IS NULL THEN 0 ELSE 1 END,
                          r.last_validator_claimed_at,
+                         r.repository,
                          t.priority,t.updated_at,t.task_id
                        LIMIT 1""",
                     (worker_id, worker_id, worker_id),
