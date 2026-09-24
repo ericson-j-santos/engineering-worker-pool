@@ -176,3 +176,11 @@ def test_contract_core_semantics_e2e(tmp_path: Path, monkeypatch) -> None:
     assert final_replay.status_code == 200
     assert final_replay.json()["created"] is False
     assert final_replay.json()["task"]["task_id"] == task_id
+
+
+def test_snapshot_required_response_fields_match_runtime(tmp_path: Path, monkeypatch) -> None:
+    _module, client, headers = load_runtime(tmp_path, monkeypatch)
+    response = client.get("/v1/snapshot", headers=headers)
+    assert response.status_code == 200
+    operation = next(item for item in manifest()["operations"] if item["id"] == "snapshot")
+    assert set(operation["response_required"]).issubset(response.json().keys())
