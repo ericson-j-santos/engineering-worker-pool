@@ -316,7 +316,9 @@
         "workers",
         "tasks",
         "repositories",
-        "quarantine"
+        "queue",
+        "quarantine_count",
+        "progress_stall_seconds"
       ]
     },
     {
