@@ -101,7 +101,7 @@ class WorkerPoolStore:
         heartbeat_ttl_seconds: int = 90,
         default_lease_seconds: int = 120,
         default_max_attempts: int = 3,
-        progress_stall_seconds: int = 900,
+        progress_stall_seconds: int = 300,
         expected_rules_sha: str | None = None,
     ) -> None:
         if min(

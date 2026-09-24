@@ -106,6 +106,53 @@ def test_init_closes_connection(tmp_path: Path, monkeypatch) -> None:
     assert connection.closed is True
 
 
+def test_default_progress_watchdog_matches_canonical_300_seconds(
+    tmp_path: Path, clock: MutableClock
+) -> None:
+    default_store = WorkerPoolStore(tmp_path / "watchdog-default.db", clock=clock)
+    assert default_store.progress_stall_seconds == 300
+
+    register_ready(default_store, "builder-default", "builder")
+    task, _ = default_store.enqueue_task(
+        repository="ericson-j-santos/watchdog-default",
+        issue_number=3,
+        request_id="watchdog-default-300s",
+        correlation_id="watchdog-default-enqueue",
+        priority=10,
+        base_sha="1" * 40,
+        max_attempts=2,
+    )
+    claimed, lease = default_store.claim_task(
+        worker_id="builder-default",
+        role="builder",
+        correlation_id="watchdog-default-claim",
+    )
+    assert claimed and lease
+    default_store.start_task(
+        task_id=task["task_id"],
+        worker_id="builder-default",
+        lease_token=lease.lease_token,
+        correlation_id="watchdog-default-start",
+    )
+
+    clock.advance(299)
+    assert default_store.recover_stalled_tasks() == {
+        "rerouted": 0,
+        "blocked": 0,
+        "failed": 0,
+    }
+
+    clock.advance(1)
+    assert default_store.recover_stalled_tasks() == {
+        "rerouted": 0,
+        "blocked": 1,
+        "failed": 0,
+    }
+    observed = default_store.get_task(task["task_id"])
+    assert observed["state"] == "blocked"
+    assert observed["blocked_reason"] == "material_progress_timeout_no_alternative"
+
+
 def test_enqueue_is_idempotent(store: WorkerPoolStore) -> None:
     first, created_first = enqueue(store)
     second, created_second = enqueue(store)
