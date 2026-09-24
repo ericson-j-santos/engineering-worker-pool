@@ -37,7 +37,10 @@
     ],
     "blocked_task_releases_capacity": true,
     "heartbeat_or_lease_renewal_is_material_progress": false,
-    "independent_readback_path": "/v1/tasks/{task_id}"
+    "independent_readback_path": "/v1/tasks/{task_id}",
+    "work_orchestrator_flow": "queue->worker->validator->evidence->governed_merge",
+    "work_evidence_requires_exact_produced_sha": true,
+    "work_merge_requires_expected_head_sha": true
   },
   "models": {
     "WorkerRegistration": {
@@ -113,6 +116,33 @@
     },
     "Requeue": {
       "required": [
+        "correlation_id"
+      ]
+    },
+    "WorkCreate": {
+      "required": [
+        "repository",
+        "issue_number",
+        "request_id",
+        "correlation_id",
+        "base_sha"
+      ]
+    },
+    "EvidenceRecord": {
+      "required": [
+        "validation_run_id",
+        "validation_sha",
+        "evidence_reference",
+        "independent_readback",
+        "positive_control",
+        "negative_control",
+        "correlation_id"
+      ]
+    },
+    "MergeResult": {
+      "required": [
+        "expected_head_sha",
+        "merged",
         "correlation_id"
       ]
     }
@@ -327,6 +357,53 @@
       "path": "/v1/quarantine",
       "request_model": null,
       "response_required": []
+    },
+    {
+      "id": "create_work",
+      "method": "POST",
+      "path": "/v1/work",
+      "request_model": "WorkCreate",
+      "response_required": [
+        "created",
+        "work"
+      ]
+    },
+    {
+      "id": "get_work",
+      "method": "GET",
+      "path": "/v1/work/{work_id}",
+      "request_model": null,
+      "response_required": [
+        "work_id",
+        "task_id",
+        "phase",
+        "task",
+        "evidence",
+        "merge"
+      ]
+    },
+    {
+      "id": "record_work_evidence",
+      "method": "POST",
+      "path": "/v1/work/{work_id}/evidence",
+      "request_model": "EvidenceRecord",
+      "response_required": [
+        "work_id",
+        "phase",
+        "evidence",
+        "merge"
+      ]
+    },
+    {
+      "id": "record_merge_result",
+      "method": "POST",
+      "path": "/v1/work/{work_id}/merge-result",
+      "request_model": "MergeResult",
+      "response_required": [
+        "work_id",
+        "phase",
+        "merge"
+      ]
     }
   ],
   "errors": {
