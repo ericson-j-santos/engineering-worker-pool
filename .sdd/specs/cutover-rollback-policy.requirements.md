@@ -26,6 +26,8 @@ decisão fail-closed, reproduzível e independente de regras de negócio do ReqS
     invalidação desta estratégia depois da remoção do legado.
 12. Testes devem cobrir pronto, bloqueio físico, segredo em Git e identidade
     ausente/inválida.
+13. A validação CI deve pertencer ao HEAD exato da PR; evidência de outro SHA não
+    libera cutover nem remoção do legado.
 
 ## Critérios de aceite
 
