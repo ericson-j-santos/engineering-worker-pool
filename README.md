@@ -23,3 +23,8 @@ A origem inicial é `ericson-j-santos/reqsys-v2-enterprise-real`. A migração �
 ## Segurança
 
 Nunca versionar segredos, tokens, credenciais, identificadores privados de infraestrutura ou dados pessoais desnecessários.
+
+## Watchdog de progresso
+
+O limite padrão de estagnação é **300 segundos (5 minutos)**, alinhado a `chatgpt-operational-rules/rules/progress-watchdog.md`. Heartbeat, renovação de lease e polling sem mudança não reiniciam esse relógio. Ao atingir o limite, a tarefa deve ser reroteada quando houver alternativa elegível ou bloqueada/falhada de forma explícita e auditável.
+
