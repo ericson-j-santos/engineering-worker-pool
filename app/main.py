@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.contract import CONTRACT_VERSION, descriptor as contract_descriptor
 from app.store import ConflictError, NotFoundError, WorkerPoolStore
+from app.work import WorkOrchestrator
 
 
 SERVICE_NAME = "codex-worker-pool"
@@ -32,13 +33,14 @@ store = WorkerPoolStore(
     progress_stall_seconds=PROGRESS_STALL_SECONDS,
     expected_rules_sha=EXPECTED_RULES_SHA,
 )
+work_orchestrator = WorkOrchestrator(DB_PATH, store)
 
 logger = logging.getLogger(SERVICE_NAME)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper(), format="%(message)s")
 
 app = FastAPI(
     title="Engineering Worker Pool",
-    version="1.2.0",
+    version="1.3.0",
     description="Fila governada para workers Codex distribuídos com lease, idempotência e validação independente.",
 )
 
@@ -160,6 +162,28 @@ class Requeue(BaseModel):
     correlation_id: str = Field(min_length=1, max_length=128)
 
 
+class WorkCreate(TaskCreate):
+    merge_policy: Literal["governed"] = "governed"
+
+
+class EvidenceRecord(BaseModel):
+    validation_run_id: str = Field(min_length=1, max_length=256)
+    validation_sha: str = Field(min_length=40, max_length=40)
+    evidence_reference: str = Field(min_length=1, max_length=1000)
+    independent_readback: bool
+    positive_control: bool
+    negative_control: bool
+    correlation_id: str = Field(min_length=1, max_length=128)
+
+
+class MergeResult(BaseModel):
+    expected_head_sha: str = Field(min_length=40, max_length=40)
+    merged: bool
+    merge_commit_sha: str | None = Field(default=None, min_length=40, max_length=40)
+    reason: str | None = Field(default=None, max_length=1000)
+    correlation_id: str = Field(min_length=1, max_length=128)
+
+
 @app.exception_handler(NotFoundError)
 async def not_found_handler(_request, exc: NotFoundError):
     return _error_response(status.HTTP_404_NOT_FOUND, str(exc))
@@ -276,6 +300,53 @@ def enqueue_task(payload: TaskCreate, response: Response) -> dict[str, Any]:
 @app.get("/v1/tasks/{task_id}", dependencies=[Depends(require_auth)])
 def get_task(task_id: str) -> dict[str, Any]:
     return public_task(store.get_task(task_id))
+
+
+@app.post("/v1/work", dependencies=[Depends(require_auth)], status_code=201)
+def create_work(payload: WorkCreate, response: Response) -> dict[str, Any]:
+    work, created = work_orchestrator.create_work(**payload.model_dump())
+    if not created:
+        response.status_code = status.HTTP_200_OK
+    _audit(
+        "work.created" if created else "work.replayed",
+        payload.correlation_id,
+        work_id=work["work_id"],
+        task_id=work["task_id"],
+        phase=work["phase"],
+    )
+    return {"created": created, "work": work}
+
+
+@app.get("/v1/work/{work_id}", dependencies=[Depends(require_auth)])
+def get_work(work_id: str) -> dict[str, Any]:
+    return work_orchestrator.get_work(work_id)
+
+
+@app.post("/v1/work/{work_id}/evidence", dependencies=[Depends(require_auth)])
+def record_work_evidence(work_id: str, payload: EvidenceRecord) -> dict[str, Any]:
+    work = work_orchestrator.record_evidence(work_id=work_id, **payload.model_dump())
+    _audit(
+        "work.evidence_verified",
+        payload.correlation_id,
+        work_id=work_id,
+        task_id=work["task_id"],
+        validation_sha=payload.validation_sha.lower(),
+    )
+    return work
+
+
+@app.post("/v1/work/{work_id}/merge-result", dependencies=[Depends(require_auth)])
+def record_merge_result(work_id: str, payload: MergeResult) -> dict[str, Any]:
+    work = work_orchestrator.record_merge_result(work_id=work_id, **payload.model_dump())
+    _audit(
+        "work.merge_result_recorded",
+        payload.correlation_id,
+        work_id=work_id,
+        task_id=work["task_id"],
+        merge_state=work["merge"]["state"],
+        expected_head_sha=payload.expected_head_sha.lower(),
+    )
+    return work
 
 
 @app.post("/v1/claims", dependencies=[Depends(require_auth)])
