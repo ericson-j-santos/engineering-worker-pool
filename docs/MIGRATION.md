@@ -45,15 +45,16 @@ Antes de qualquer remoção no ReqSys:
 6. contrato público versionado preservado e testado por compatibilidade;
 7. rollback documentado.
 
+## Incremento atual — contrato público v1
+
+O contrato público `v1` é definido em `contracts/v1/` e protegido por testes de compatibilidade contra o runtime. Ele explicita operações, campos obrigatórios, erros e invariantes de idempotência, lease, handoff Builder -> Validator, redaction e leitura independente.
+
 ## Próximo incremento
 
-Extrair do baseline preservado um contrato público `v1` independente do ReqSys, com:
-
-- schema/semântica explícitos para enqueue, claim, lease, handoff Builder -> Validator, snapshot e erros;
-- teste de compatibilidade produtor/consumidor;
-- adaptador do ReqSys apontando para o repositório/serviço dedicado com fallback temporário;
-- E2E do consumidor no mesmo SHA/versão do Worker Pool;
-- nenhuma remoção do legado enquanto equivalência e rollback não estiverem comprovados.
+- criar adaptador do ReqSys apontando para o Worker Pool dedicado com fallback temporário;
+- fixar/validar `contract_version=v1` antes de enviar trabalho;
+- executar E2E ReqSys -> Worker Pool no mesmo SHA/versão com leitura independente e replay;
+- manter a implementação legada até equivalência funcional e rollback comprovados.
 
 ## Fora de escopo
 

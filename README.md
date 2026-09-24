@@ -28,3 +28,7 @@ Nunca versionar segredos, tokens, credenciais, identificadores privados de infra
 
 O limite padrão de estagnação é **300 segundos (5 minutos)**, alinhado a `chatgpt-operational-rules/rules/progress-watchdog.md`. Heartbeat, renovação de lease e polling sem mudança não reiniciam esse relógio. Ao atingir o limite, a tarefa deve ser reroteada quando houver alternativa elegível ou bloqueada/falhada de forma explícita e auditável.
 
+## Contrato público v1
+
+O contrato estável para consumidores fica em `contracts/v1/` e pode ser descoberto em runtime por `GET /v1/contract`. Dentro de `v1`, somente mudanças aditivas compatíveis são permitidas; mudanças incompatíveis exigem nova versão maior.
+

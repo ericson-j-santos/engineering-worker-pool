@@ -11,6 +11,7 @@ from typing import Any, Literal
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
+from app.contract import CONTRACT_VERSION, descriptor as contract_descriptor
 from app.store import ConflictError, NotFoundError, WorkerPoolStore
 
 
@@ -36,7 +37,7 @@ logger = logging.getLogger(SERVICE_NAME)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper(), format="%(message)s")
 
 app = FastAPI(
-    title="ReqSys Codex Worker Pool",
+    title="Engineering Worker Pool",
     version="1.2.0",
     description="Fila governada para workers Codex distribuídos com lease, idempotência e validação independente.",
 )
@@ -194,7 +195,13 @@ def health(response: Response) -> dict[str, Any]:
         "expected_rules_sha_configured": rules_sha_configured,
         "db_path_configured": bool(str(DB_PATH)),
         "progress_stall_seconds": PROGRESS_STALL_SECONDS,
+        "contract_version": CONTRACT_VERSION,
     }
+
+
+@app.get("/v1/contract", dependencies=[Depends(require_auth)])
+def public_contract() -> dict[str, str]:
+    return contract_descriptor()
 
 
 @app.get("/v1/workers", dependencies=[Depends(require_auth)])

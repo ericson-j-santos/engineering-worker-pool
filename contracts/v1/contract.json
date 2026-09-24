@@ -1,0 +1,339 @@
+{
+  "schema_version": 1,
+  "contract_name": "engineering-worker-pool",
+  "contract_version": "v1",
+  "service_name": "codex-worker-pool",
+  "compatibility_policy": {
+    "within_v1": "backward-compatible additive changes only",
+    "breaking_change_requires": "new major contract path/version",
+    "breaking_examples": [
+      "remove or rename an operation",
+      "change an existing HTTP method or path",
+      "make an optional request field required",
+      "remove a required response field",
+      "change idempotency, lease, handoff, redaction, or error-status semantics"
+    ],
+    "additive_examples": [
+      "add a new optional request field",
+      "add a new response field",
+      "add a new operation without changing existing semantics"
+    ]
+  },
+  "security": {
+    "authentication": "bearer",
+    "token_source": "runtime file provisioned outside Git",
+    "secret_values_in_contract": false,
+    "health_requires_auth": false,
+    "v1_operations_require_auth": true
+  },
+  "core_semantics": {
+    "idempotency_key": "sha256(repository|issue_number|request_id)",
+    "enqueue_created_status": 201,
+    "enqueue_replay_status": 200,
+    "builder_validator_must_differ": true,
+    "validation_handoff_requires_produced_sha": true,
+    "public_task_must_not_expose": [
+      "lease_token"
+    ],
+    "blocked_task_releases_capacity": true,
+    "heartbeat_or_lease_renewal_is_material_progress": false,
+    "independent_readback_path": "/v1/tasks/{task_id}"
+  },
+  "models": {
+    "WorkerRegistration": {
+      "required": [
+        "worker_id",
+        "host",
+        "role",
+        "gateway_ok",
+        "state_validated",
+        "correlation_id"
+      ]
+    },
+    "Heartbeat": {
+      "required": [
+        "correlation_id"
+      ]
+    },
+    "RepositoryLaneConfig": {
+      "required": [
+        "repository",
+        "correlation_id"
+      ]
+    },
+    "WorkerAffinityUpdate": {
+      "required": [
+        "correlation_id"
+      ]
+    },
+    "TaskCreate": {
+      "required": [
+        "repository",
+        "issue_number",
+        "request_id",
+        "correlation_id",
+        "base_sha"
+      ]
+    },
+    "ClaimRequest": {
+      "required": [
+        "worker_id",
+        "correlation_id"
+      ]
+    },
+    "LeaseMutation": {
+      "required": [
+        "worker_id",
+        "lease_token",
+        "correlation_id"
+      ]
+    },
+    "RenewLease": {
+      "required": [
+        "worker_id",
+        "lease_token",
+        "correlation_id"
+      ]
+    },
+    "ValidationHandoff": {
+      "required": [
+        "worker_id",
+        "lease_token",
+        "correlation_id",
+        "produced_sha"
+      ]
+    },
+    "Failure": {
+      "required": [
+        "worker_id",
+        "lease_token",
+        "correlation_id",
+        "reason"
+      ]
+    },
+    "Requeue": {
+      "required": [
+        "correlation_id"
+      ]
+    }
+  },
+  "operations": [
+    {
+      "id": "contract_descriptor",
+      "method": "GET",
+      "path": "/v1/contract",
+      "request_model": null,
+      "response_required": [
+        "contract_name",
+        "contract_version",
+        "service_name"
+      ]
+    },
+    {
+      "id": "list_workers",
+      "method": "GET",
+      "path": "/v1/workers",
+      "request_model": null,
+      "response_required": []
+    },
+    {
+      "id": "register_worker",
+      "method": "POST",
+      "path": "/v1/workers",
+      "request_model": "WorkerRegistration",
+      "response_required": [
+        "worker_id",
+        "role"
+      ]
+    },
+    {
+      "id": "heartbeat_worker",
+      "method": "POST",
+      "path": "/v1/workers/{worker_id}/heartbeat",
+      "request_model": "Heartbeat",
+      "response_required": [
+        "worker_id"
+      ]
+    },
+    {
+      "id": "list_repositories",
+      "method": "GET",
+      "path": "/v1/repositories",
+      "request_model": null,
+      "response_required": []
+    },
+    {
+      "id": "configure_repository",
+      "method": "POST",
+      "path": "/v1/repositories",
+      "request_model": "RepositoryLaneConfig",
+      "response_required": [
+        "repository",
+        "enabled",
+        "max_in_flight"
+      ]
+    },
+    {
+      "id": "replace_worker_affinities",
+      "method": "PUT",
+      "path": "/v1/workers/{worker_id}/affinities",
+      "request_model": "WorkerAffinityUpdate",
+      "response_required": [
+        "worker_id",
+        "repositories"
+      ]
+    },
+    {
+      "id": "enqueue_task",
+      "method": "POST",
+      "path": "/v1/tasks",
+      "request_model": "TaskCreate",
+      "response_required": [
+        "created",
+        "task"
+      ]
+    },
+    {
+      "id": "get_task",
+      "method": "GET",
+      "path": "/v1/tasks/{task_id}",
+      "request_model": null,
+      "response_required": [
+        "task_id",
+        "state"
+      ]
+    },
+    {
+      "id": "claim_task",
+      "method": "POST",
+      "path": "/v1/claims",
+      "request_model": "ClaimRequest",
+      "response_required": [
+        "claimed",
+        "task",
+        "lease"
+      ]
+    },
+    {
+      "id": "renew_lease",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/lease/renew",
+      "request_model": "RenewLease",
+      "response_required": [
+        "task_id",
+        "state"
+      ]
+    },
+    {
+      "id": "start_task",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/start",
+      "request_model": "LeaseMutation",
+      "response_required": [
+        "task_id",
+        "state"
+      ]
+    },
+    {
+      "id": "validation_handoff",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/validation",
+      "request_model": "ValidationHandoff",
+      "response_required": [
+        "task_id",
+        "state",
+        "produced_sha"
+      ]
+    },
+    {
+      "id": "complete_task",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/complete",
+      "request_model": "LeaseMutation",
+      "response_required": [
+        "task_id",
+        "state"
+      ]
+    },
+    {
+      "id": "fail_task",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/fail",
+      "request_model": "Failure",
+      "response_required": [
+        "task_id",
+        "state"
+      ]
+    },
+    {
+      "id": "block_task",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/block",
+      "request_model": "Failure",
+      "response_required": [
+        "task_id",
+        "state"
+      ]
+    },
+    {
+      "id": "requeue_task",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/requeue",
+      "request_model": "Requeue",
+      "response_required": [
+        "task_id",
+        "state"
+      ]
+    },
+    {
+      "id": "recover_expired_leases",
+      "method": "POST",
+      "path": "/v1/leases/recover",
+      "request_model": null,
+      "response_required": [
+        "recovered",
+        "correlation_id"
+      ]
+    },
+    {
+      "id": "recover_stalled_tasks",
+      "method": "POST",
+      "path": "/v1/watchdog/recover",
+      "request_model": null,
+      "response_required": [
+        "rerouted",
+        "blocked",
+        "failed",
+        "correlation_id"
+      ]
+    },
+    {
+      "id": "snapshot",
+      "method": "GET",
+      "path": "/v1/snapshot",
+      "request_model": null,
+      "response_required": [
+        "workers",
+        "tasks",
+        "repositories",
+        "queue",
+        "quarantine_count",
+        "progress_stall_seconds"
+      ]
+    },
+    {
+      "id": "quarantine",
+      "method": "GET",
+      "path": "/v1/quarantine",
+      "request_model": null,
+      "response_required": []
+    }
+  ],
+  "errors": {
+    "401": "unauthorized",
+    "404": "resource not found",
+    "409": "state or lease conflict",
+    "422": "request or domain validation error",
+    "503": "worker_pool_auth_not_configured or service not ready"
+  }
+}
