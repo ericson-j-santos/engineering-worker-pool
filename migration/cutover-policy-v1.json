@@ -1,0 +1,47 @@
+{
+  "schema_version": "1.0.0",
+  "policy_name": "engineering-worker-pool-cutover-v1",
+  "migration_issue": "ericson-j-santos/reqsys-v2-enterprise-real#2020",
+  "decision_mode": "fail_closed",
+  "expected_contract_version": "v1",
+  "identity_fields": [
+    "reqsys_sha",
+    "worker_pool_sha",
+    "contract_version",
+    "correlation_id"
+  ],
+  "required_evidence": {
+    "dedicated_repo_ci_green": true,
+    "public_contract_v1_compatible": true,
+    "reqsys_consumer_e2e_passed": true,
+    "physical_runtime_validated": true,
+    "replay_idempotent": true,
+    "independent_readback": true,
+    "secrets_migrated_to_git": false,
+    "legacy_reqsys_present": true
+  },
+  "legacy_removal": {
+    "allowed_status": "CUTOVER_READY",
+    "separate_increment_required": true,
+    "same_evidence_set_required": true
+  },
+  "rollback": {
+    "available_while_legacy_present": true,
+    "allowed_fallback_scope": "temporary_404_only",
+    "restore_mechanism": "revert_the_versioned_cutover_change_that_enabled_strict_v1_requirements",
+    "triggers": [
+      "contract_incompatibility",
+      "consumer_e2e_regression",
+      "physical_runtime_regression",
+      "independent_readback_failure",
+      "replay_idempotency_failure"
+    ],
+    "forbidden_actions": [
+      "delete_worker_pool_state",
+      "move_secrets_to_git",
+      "disable_evidence_gates",
+      "touch_production",
+      "remove_legacy_in_same_cutover_increment"
+    ]
+  }
+}
