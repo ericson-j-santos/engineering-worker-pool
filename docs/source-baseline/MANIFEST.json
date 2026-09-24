@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "source_repository": "ericson-j-santos/reqsys-v2-enterprise-real",
+  "initial_extraction_sha": "2053d761c66c50b4495567af90b91ef268c868af",
+  "revalidated_source_main_sha": "aaee3673173dceb84d22712aa76f4cb9daec7e5e",
+  "core_tree_equivalent_between_refs": true,
+  "preserved_files": [
+    {
+      "source_path": ".sdd/specs/codex-worker-pool.requirements.md",
+      "source_blob_sha": "d4211236ce3cee263ff57260147bee9c53ab3d26",
+      "target_path": "docs/source-baseline/codex-worker-pool.requirements.md"
+    },
+    {
+      "source_path": ".sdd/specs/codex-worker-pool.spec.json",
+      "source_blob_sha": "32ae362b45d762879dce3d2a355d8f1c637be6fa",
+      "target_path": "docs/source-baseline/codex-worker-pool.spec.json"
+    },
+    {
+      "source_path": "docs/runbooks/codex-worker-pool.md",
+      "source_blob_sha": "a63cbc72d336a84307e7589afa9138ddf885ff09",
+      "target_path": "docs/source-baseline/codex-worker-pool-runbook.md"
+    }
+  ],
+  "secrets_migrated": false,
+  "reqsys_files_removed": false
+}
