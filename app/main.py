@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
@@ -12,6 +13,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
 from app.contract import CONTRACT_VERSION, descriptor as contract_descriptor
+from app.reconcile import ReconciliationController
 from app.store import ConflictError, NotFoundError, WorkerPoolStore
 from app.work import WorkOrchestrator
 
@@ -23,6 +25,7 @@ HEARTBEAT_TTL_SECONDS = int(os.getenv("CODEX_WORKER_POOL_HEARTBEAT_TTL_SECONDS",
 LEASE_SECONDS = int(os.getenv("CODEX_WORKER_POOL_LEASE_SECONDS", "120"))
 MAX_ATTEMPTS = int(os.getenv("CODEX_WORKER_POOL_MAX_ATTEMPTS", "3"))
 PROGRESS_STALL_SECONDS = int(os.getenv("CODEX_WORKER_POOL_PROGRESS_STALL_SECONDS", "300"))
+RECONCILE_INTERVAL_SECONDS = float(os.getenv("CODEX_WORKER_POOL_RECONCILE_INTERVAL_SECONDS", "5"))
 EXPECTED_RULES_SHA = os.getenv("CODEX_WORKER_POOL_EXPECTED_RULES_SHA", "").strip().lower() or None
 
 store = WorkerPoolStore(
@@ -34,14 +37,29 @@ store = WorkerPoolStore(
     expected_rules_sha=EXPECTED_RULES_SHA,
 )
 work_orchestrator = WorkOrchestrator(DB_PATH, store)
+reconciliation_controller = ReconciliationController(
+    store,
+    interval_seconds=RECONCILE_INTERVAL_SECONDS,
+)
 
 logger = logging.getLogger(SERVICE_NAME)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper(), format="%(message)s")
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await reconciliation_controller.start()
+    try:
+        yield
+    finally:
+        await reconciliation_controller.stop()
+
+
 app = FastAPI(
     title="Engineering Worker Pool",
-    version="1.3.0",
+    version="1.4.0",
     description="Fila governada para workers Codex distribuídos com lease, idempotência e validação independente.",
+    lifespan=lifespan,
 )
 
 
@@ -219,6 +237,7 @@ def health(response: Response) -> dict[str, Any]:
         "expected_rules_sha_configured": rules_sha_configured,
         "db_path_configured": bool(str(DB_PATH)),
         "progress_stall_seconds": PROGRESS_STALL_SECONDS,
+        "reconciliation": reconciliation_controller.status(),
         "contract_version": CONTRACT_VERSION,
     }
 
