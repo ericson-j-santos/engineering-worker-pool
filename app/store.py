@@ -512,6 +512,16 @@ class WorkerPoolStore:
         with self._tx() as db:
             return self._recover_stalled(db)
 
+    def reconcile(self) -> dict[str, int]:
+        """Run one atomic lease/watchdog reconciliation cycle."""
+        with self._tx() as db:
+            expired_leases_recovered = self._recover(db)
+            stalled = self._recover_stalled(db)
+        return {
+            "expired_leases_recovered": expired_leases_recovered,
+            **stalled,
+        }
+
     def claim_task(
         self, *, worker_id: str, role: str, correlation_id: str,
         lease_seconds: int | None = None,
