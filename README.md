@@ -65,3 +65,33 @@ adaptador → API → SQLite → replay → leitura independente, além de contr
 negativos. Isso **não** certifica a conexão real com Notion/GitHub ou workers
 físicos. Os registros anteriores sem `#issue_number` permanecem inelegíveis
 até o vínculo ser comprovado e atualizado na fonte canônica.
+
+## Produtor de admissão TODO Global → GitHub → Worker Pool (DEV)
+
+O módulo app/portfolio_bridge.py é executado sob demanda, somente em DEV.
+Consulta a página do TODO Global no Notion (GET /v1/pages/{id}, API 2025-09-03),
+valida a data source canônica e obtém Issue e HEAD da branch padrão nas APIs
+oficiais do GitHub. O payload passa pela função prepare_portfolio_task.
+Antes de enviar, lê novamente o TODO e o HEAD para detectar divergências.
+
+Credenciais residem em arquivos protegidos fora do Git: as variáveis
+PORTFOLIO_NOTION_TOKEN_FILE, PORTFOLIO_GITHUB_TOKEN_FILE e
+PORTFOLIO_WORKER_TOKEN_FILE apontam para os arquivos; nunca inserir tokens
+na linha de comando, nos logs ou no repositório.
+
+O padrão é diagnóstico/dry-run. A opção --execute exige PORTFOLIO_ENV=dev,
+PORTFOLIO_WORKER_URL usando somente loopback, e lane preexistente enabled=true
+com max_in_flight=1. Retornos 201/200 do Worker Pool só são aceitos após
+GET /v1/tasks/{task_id} confirmar identidades. O enqueue não comprova execução
+dos workers ou conclusão de uma tarefa.
+
+Exemplo de diagnóstico local, somente depois do session bootstrap e Gateway:
+
+    python -m app.portfolio_bridge --page-id UUID_DA_PAGINA --data-source-id UUID_DO_TODO_GLOBAL
+
+Apenas no DEV autorizado, com lane pronta, acrescentar --execute.
+Não executar em produção, não provisionar secrets automaticamente, e não
+publicar APIs ou novos serviços. Testes em tests/test_portfolio_bridge.py
+usam upstreams sintéticos e API Worker Pool real com SQLite isolado.
+A integração contínua por evento e o E2E com Notion/GitHub reais e PC24x7
+continuam pendentes.
