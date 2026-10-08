@@ -42,3 +42,26 @@ A autorrecuperação semântica permanece responsabilidade do Worker Pool. Docke
 
 O contrato estável para consumidores fica em `contracts/v1/` e pode ser descoberto em runtime por `GET /v1/contract`. Dentro de `v1`, somente mudanças aditivas compatíveis são permitidas; mudanças incompatíveis exigem nova versão maior.
 
+
+## Admissão de incrementos de vários repositórios (preparação)
+
+O adaptador puro `app/portfolio_todo.py` converte uma tarefa **PENDENTE** do TODO Global
+em payload de `POST /v1/tasks` **somente após conferência independente** de
+Issue GitHub aberta (não PR), vínculo exato `github:owner/repo#numero`, branch
+padrão, SHA completo e observação recente (até cinco minutos). O chamador
+confiável deve consultar as APIs oficiais do GitHub e do TODO Global; dados
+fornecidos por usuário ou por evento não são evidência de GitHub verificada.
+
+Nenhum adaptador se conecta ao GitHub/Notion sozinho, executa comandos, enfileira
+automaticamente, altera repositórios ou faz merge. `prepare_portfolio_task`
+apenas retorna payload validado e com `request_id` estável derivado da chave do
+TODO. A API existente garante idempotência de `repository + issue_number +
+request_id` e mantém `max_in_flight` por repositório, recuperação de lease,
+Builder/Validator e watchdog. Integrar um consumidor autenticado e testar o
+caminho externo real serão incrementos separados, sem deslocar o ReqSys P0.
+
+O E2E automatizado em `tests/test_portfolio_todo.py` valida o fluxo sintético
+adaptador → API → SQLite → replay → leitura independente, além de controles
+negativos. Isso **não** certifica a conexão real com Notion/GitHub ou workers
+físicos. Os registros anteriores sem `#issue_number` permanecem inelegíveis
+até o vínculo ser comprovado e atualizado na fonte canônica.
