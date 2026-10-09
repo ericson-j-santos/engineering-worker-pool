@@ -42,6 +42,32 @@ def context() -> tuple[Path, str, str]:
     return root, sha, correlation
 
 
+def validate_completed_pool(
+    work: dict, task: dict, snapshot: dict, task_id: str, work_id: str, produced: str,
+) -> None:
+    """The snapshot lists unfinished tasks; completed count is in queue."""
+    counts = snapshot.get("queue")
+    evidence = work.get("evidence") or {}
+    work_task = work.get("task") or {}
+    require(
+        isinstance(counts, dict)
+        and all(type(value) is int and value >= 0 for value in counts.values())
+        and counts.get("completed") == 1 and sum(counts.values()) == 1
+        and snapshot.get("tasks") == []
+        and snapshot.get("quarantine_count") == 0
+        and work.get("work_id") == work_id and work.get("task_id") == task_id
+        and work_task.get("task_id") == task_id and task.get("task_id") == task_id
+        and work_task.get("state") == task.get("state") == "completed"
+        and work_task.get("produced_sha") == task.get("produced_sha") == produced
+        and "lease_token" not in task and "lease_token" not in work_task
+        and evidence.get("validation_sha") == produced
+        and evidence.get("state") == "verified"
+        and all(evidence.get(key) is True for key in
+                ("independent_readback", "positive_control", "negative_control")),
+        "final_pool_readback",
+    )
+
+
 def run_inner() -> None:
     root, sha, correlation = context()
     session = json.loads(Path(os.environ["LOCAL_WORKER_SESSION_RECEIPT"]).read_text())
@@ -185,10 +211,10 @@ def run_inner() -> None:
                     request("POST", f"/v1/work/{work['work_id']}/evidence", record)
                     readback = request("GET", f"/v1/work/{work['work_id']}")
                     snapshot = request("GET", "/v1/snapshot")
-                    require(readback["task"]["state"] == "completed"
-                            and readback["task"]["produced_sha"] == produced
-                            and readback["evidence"]["validation_sha"] == produced
-                            and len(snapshot["tasks"]) == 1, "final_pool_readback")
+                    completed_task = request("GET", f"/v1/tasks/{task_id}")
+                    validate_completed_pool(
+                        readback, completed_task, snapshot, task_id, work["work_id"], produced,
+                    )
                     require(git(root, "rev-parse", "HEAD") == sha and git(root, "diff", "--name-only") == "", "source_repo_changed")
                     evidence.update(result="LOCAL_CODE_E2E_PASSED", task_id=task_id,
                                     work_id=work["work_id"], model_digest=provider.model_digest,
