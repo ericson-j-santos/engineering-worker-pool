@@ -318,13 +318,20 @@ class LocalOllama:
             show = self.request(client, "POST", "/api/show", json={"model": MODEL})
             require(not show.get("remote_host") and not show.get("remote_model")
                     and (show.get("details") or {}).get("format") == "gguf", "weights_unproved")
-            prompt = (task["instruction"] + "\nCurrent code:\n" + before
-                      + "\nReturn JSON with only the key expression. Its value must be a Python "
-                      "expression for the return value. Do not use min or max. Use only the function parameters, "
-                      "numeric literals, comparisons, +, -, *, and conditional expressions "
-                      "(x if condition else y). No calls, imports, attributes or statements.")
+            prompt = ("Repair this function; the current implementation fails its tests.\n"
+                      + task["instruction"] + "\nCurrent DEFECTIVE code:\n" + before
+                      + "\nTrusted input/output acceptance examples:\n"
+                      + json.dumps(task["cases"][:8], separators=(",", ":"))
+                      + "\nReturn JSON with only the key expression. Its value must be a CORRECTED Python "
+                      "expression, not a copy of the defective return value. Do not use min or max. "
+                      "Use only the function parameters, numeric literals, comparisons, +, -, *, "
+                      "and conditional expressions (x if condition else y). "
+                      "No calls, imports, attributes or statements.")
             response = self.request(client, "POST", "/api/chat", json={
-                "model": MODEL, "messages": [{"role": "user", "content": prompt}],
+                "model": MODEL, "messages": [
+                    {"role": "system", "content": "Fix the code to satisfy the input/output tests. "
+                     "Output only the requested JSON; do not explain or reproduce the known defect."},
+                    {"role": "user", "content": prompt}],
                 "stream": False, "keep_alive": "5m",
                 "format": {"type": "object", "properties": {"expression": {"type": "string"}},
                            "required": ["expression"], "additionalProperties": False},

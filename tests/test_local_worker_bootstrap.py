@@ -60,3 +60,32 @@ def test_failed_bootstrap_preserves_gate_and_sanitizes_output(monkeypatch, tmp_p
     with pytest.raises(worker.WorkerBlocked, match="bootstrap_process_failed"):
         harness.launch_session(tmp_path, tmp_path, tmp_path / "p", "a" * 40, "test")
     assert capsys.readouterr().out == "SESSION_LAUNCH_BLOCKED code=28\n"
+
+
+def test_repair_prompt_includes_failure_context_without_solution_fallback(monkeypatch):
+    import importlib.util
+    path = Path(__file__).with_name("test_local_code_worker.py")
+    spec = importlib.util.spec_from_file_location("code_worker_fixtures", path)
+    fixtures = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixtures)
+    make_task, BASELINE, GOOD = fixtures.make_task, fixtures.BASELINE, fixtures.GOOD
+    observed = []
+    monkeypatch.setattr(worker.LocalOllama, "no_cloud", staticmethod(lambda: None))
+    def request(client, method, path, **kwargs):
+        if path == "/api/tags":
+            return {"models": [{"name": worker.MODEL, "digest": "d" * 64}]}
+        if path == "/api/show":
+            return {"details": {"format": "gguf"}}
+        if path == "/api/ps":
+            return {"models": [{"name": worker.MODEL, "digest": "d" * 64, "size": 100}]}
+        assert path == "/api/chat"
+        observed.append(kwargs["json"]["messages"])
+        return {"model": worker.MODEL, "done": True, "eval_count": 10,
+                "message": {"content": GOOD}}
+    monkeypatch.setattr(worker.LocalOllama, "request", staticmethod(request))
+    assert worker.LocalOllama()(make_task(), BASELINE) == GOOD
+    messages = observed[0]
+    assert messages[0]["role"] == "system"
+    assert "current implementation fails" in messages[1]["content"]
+    assert json.dumps(make_task()["cases"][:8], separators=(",", ":")) in messages[1]["content"]
+    assert json.loads(GOOD)["expression"] not in messages[1]["content"]
