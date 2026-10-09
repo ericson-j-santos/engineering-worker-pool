@@ -10,6 +10,7 @@ from app.structured_code_worker import task_spec, need
 
 
 MODEL = "qwen2.5-coder:7b"
+FUNCTION_PATTERN = r"^def [^\[\]]+$"
 
 
 class StructuredOllama(LocalOllama):
@@ -44,11 +45,15 @@ class StructuredOllama(LocalOllama):
                   "Use only local assignments, if/elif/else, return and at most one for loop. "
                   "Allowed builtins: isinstance, str, dict, list, len, bool, int, float. "
                   "Allowed methods: get, strip, join, append, with positional arguments only. "
-                  "Use get instead of indexing. Do not coerce data with str. "
+                  "Use get instead of indexing. Create empty lists with list(), never brackets. "
+                  "Concatenate text with an EMPTY separator, never add spaces between fragments. "
+                  "Do not coerce data with str. "
                   "A malformed rich-text fragment must immediately return an empty string, "
                   "not be skipped and not produce a partial result. "
                   "Check the top-level properties object before calling its get method. "
                   "Check select.name is a string. An empty plain_text is valid and overrides text.content. "
+                  "If a fragment has non-null non-string plain_text, return empty for the WHOLE field. "
+                  "If fallback text/content is absent or not a string, return empty for the WHOLE field. "
                   "Do not output tests or Markdown. Return only JSON with key function.\n"
                 + "AUTHORITATIVE BEHAVIORAL CONTRACT:\n" + task["instruction"]
             )
@@ -59,7 +64,8 @@ class StructuredOllama(LocalOllama):
                               "The function value MUST begin with def and contain the complete CORRECTED function."},
                              {"role": "user", "content": prompt}],
                 "stream": False, "keep_alive": "5m",
-                "format": {"type": "object", "properties": {"function": {"type": "string"}},
+                "format": {"type": "object", "properties": {"function": {"type": "string",
+                                                                    "pattern": FUNCTION_PATTERN}},
                            "required": ["function"], "additionalProperties": False},
                 "options": {"temperature": 0, "seed": 7, "num_predict": 1400, "num_ctx": 8192},
             })

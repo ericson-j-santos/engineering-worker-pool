@@ -46,3 +46,23 @@ def test_generation_request_does_not_retranscribe_defective_source():
     assert "must include def" in request and "no imports" in request
     assert json.dumps(task()["cases"], ensure_ascii=False, separators=(",", ":")) in request
     assert "return str(" not in request
+
+
+def test_output_pattern_blocks_observed_subscripts_not_valid_get_code():
+    import ast
+    import re
+    from test_structured_code_worker import FIXED
+    source = (Path(__file__).resolve().parents[1] / "app/structured_ollama.py").read_text()
+    tree = ast.parse(source)
+    pattern_node = next(n.value for n in tree.body if isinstance(n, ast.Assign)
+                        and any(isinstance(t, ast.Name) and t.id == "FUNCTION_PATTERN"
+                                for t in n.targets))
+    pattern = ast.literal_eval(pattern_node)
+    correct = FIXED.replace("parts = []", "parts = list()")
+    assert re.fullmatch(pattern, correct)
+    assert not re.fullmatch(pattern, "def _property(properties, name):\n    return properties[name]\n")
+    assert not re.fullmatch(pattern, "_property(properties, name):\n    return ''\n")
+    # Existing execution guards still reject prohibited code even if a format constraint misses it.
+    with pytest.raises(worker.StructuredBlocked):
+        worker.render(BEFORE, task(), json.dumps({"function": "def _property(properties, name):\n    import os\n    return ''\n"}))
+    assert worker.validate(correct, task())["passed"] == len(task()["cases"])

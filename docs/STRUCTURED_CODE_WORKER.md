@@ -77,3 +77,10 @@ construído a partir do contrato comportamental e de todos os exemplos,
 sem retransmitir o corpo defeituoso como texto a ser copiado. O executor
 continua vinculando a alteração ao hash exato do arquivo original. Nenhum
 corpo de solução é fornecido ao provedor; os mesmos 42 casos são exigidos.
+
+O HEAD e919c2a também produziu Subscript. A gramática do executor não foi
+ampliada para aceitá-lo. A saída de geração passa a exigir o prefixo def e
+a excluir colchetes via pattern no JSON Schema; o prompt solicita get e
+list(). A validação AST permanece independente e obrigatória, mesmo quando
+o provedor aceita o schema. Os requisitos de campo inválido e concatenação
+sem separador foram explicitados; não existe substituição da proposta.
