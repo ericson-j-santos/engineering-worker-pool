@@ -32,12 +32,19 @@ arquivo regular sem link simbólico/hardlink, hashes exatos e estado separado
 do repositório. Um lock exclusivo impede duas execuções cooperativas usando o
 mesmo diretório de estado. A repetição do mesmo recibo verifica HEAD, arquivo
 e testes de novo, sem nova chamada ao modelo. Interrupções deixam trabalho
-incompleto bloqueado; não há retry automático nem remoção automática de lock
-abandonado. O chamador deve manter o mesmo diretório de estado e tratar recuperação.
+incompleto bloqueado; não há retry cego nem remoção automática de lock abandonado.
+O chamador deve manter o mesmo diretório de estado e tratar recuperação.
+
+Cada execução admite no máximo duas propostas do modelo. A segunda somente ocorre
+quando a primeira produz código permitido pela gramática, diferente do original,
+mas reprovado nos testes reais. Ela recebe o código reprovado e os casos que falharam
+primeiro, sem alterar a instrução nem o conjunto de testes. Erros de segurança,
+sintaxe, identidade ou ausência de mudança bloqueiam imediatamente. O recibo
+registra a contagem real de chamadas e os hashes/resultados de cada tentativa.
 
 O provedor `LocalOllama` desta qualificação exige o container descartável fixo,
 lê `OLLAMA_NO_CLOUD=1`, inventário de um único modelo, digest e pesos GGUF.
-Após uma única inferência, confere o processo local pelo `/api/ps`.
+Após cada inferência limitada, confere o processo local pelo `/api/ps`.
 Não usa chave de serviço de IA e não oferece fallback cloud.
 A autorização de runtime e a admissão da tarefa pertencem ao chamador confiável.
 

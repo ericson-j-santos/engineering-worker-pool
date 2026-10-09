@@ -1,6 +1,6 @@
 """Bounded local-code worker: one pure numeric function in an isolated Git branch.
 
-No shell, remote Git, imports/calls in generated code, automatic retry or merge.
+No shell, remote Git, imports/calls in generated code, unbounded retry or merge.
 The caller must supply a trusted task and run through its governed executor.
 """
 from __future__ import annotations
@@ -187,7 +187,7 @@ def validate_independently(root: Path, task: dict, state: Path) -> int:
 
 
 def repair(root: Path, state: Path, task: dict, propose: Callable[[dict, str], str]) -> dict:
-    """One admitted task, one model call; checkpoint replay performs no inference.
+    """One admitted task, at most two validated proposals; replay performs no inference.
 
     The repository must be an isolated worker branch with no remote. This first
     version produces a local commit/patch, never publishes to a user's repository.
@@ -230,9 +230,33 @@ def repair(root: Path, state: Path, task: dict, propose: Callable[[dict, str], s
         require(digest(path.read_bytes()) == task["before_sha256"], "source_changed")
         baseline_passed = check_source(before, task)
         require(baseline_passed < len(task["cases"]), "no_failing_baseline")
-        after = source_for(task, propose(task, before))
-        require(after != before, "no_code_change")
-        require(check_source(after, task) == len(task["cases"]), "candidate_tests_failed")
+        proposal_source = before
+        proposal_task = dict(task)
+        attempts = []
+        after = before
+        for attempt in (1, 2):
+            require(git(root, "rev-parse", "HEAD") == task["base_sha"]
+                    and git(root, "status", "--porcelain", "--untracked-files=all") == "",
+                    "concurrent_repo_change")
+            after = source_for(task, propose(proposal_task, proposal_source))
+            require(after != before, "no_code_change")
+            candidate_passed = check_source(after, task)
+            attempts.append({"attempt": attempt, "candidate_sha256": digest(after.encode()),
+                             "passed": candidate_passed, "total": len(task["cases"])})
+            if candidate_passed == len(task["cases"]):
+                break
+            if attempt == 2:
+                raise WorkerBlocked("candidate_tests_failed")
+            # A second proposal is allowed only after an actual failed validation.
+            # Give the model the rejected source and prioritize its failing cases,
+            # preserving the trusted instruction and the complete original test set.
+            failing, passing = [], []
+            for case in task["cases"]:
+                probe = {**task, "cases": [case, case]}
+                (passing if check_source(after, probe) == 2 else failing).append(case)
+            require(bool(failing), "failure_feedback_missing")
+            proposal_source = after
+            proposal_task = {**task, "cases": failing + passing}
         require(git(root, "rev-parse", "HEAD") == task["base_sha"]
                 and git(root, "status", "--porcelain", "--untracked-files=all") == "",
                 "concurrent_repo_change")
@@ -260,7 +284,8 @@ def repair(root: Path, state: Path, task: dict, propose: Callable[[dict, str], s
                   "task_hash": task_hash, "base_sha": task["base_sha"], "produced_sha": produced,
                   "before_sha256": task["before_sha256"], "after_sha256": digest(path.read_bytes()),
                   "baseline_passed": baseline_passed, "passed": passed, "path": task["path"],
-                  "patch_sha256": digest(patch.encode()), "replayed": False, "model_calls": 1}
+                  "patch_sha256": digest(patch.encode()), "replayed": False,
+                  "model_calls": len(attempts), "attempts": attempts}
         (state / "change.patch").write_text(patch, encoding="utf-8")
         atomic_json(receipt, result)
         return result

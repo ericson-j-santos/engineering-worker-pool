@@ -96,3 +96,36 @@ def test_model_pulled_matches_strict_provider_inventory():
     workflow = (root / ".github/workflows/ci.yml").read_text()
     assert f"ollama pull {worker.MODEL}" in workflow
     assert worker.MODEL == "qwen2.5-coder:1.5b"
+
+
+def test_second_proposal_requires_real_failure_feedback(tmp_path):
+    import importlib.util
+    path = Path(__file__).with_name("test_local_code_worker.py")
+    spec = importlib.util.spec_from_file_location("feedback_fixtures", path)
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    repo, state = tmp_path / "repo", tmp_path / "state"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src/clamp.py").write_text(fixture.BASELINE)
+    worker.git(repo, "init", "-b", "worker/feedback")
+    worker.git(repo, "add", "src/clamp.py")
+    worker.git(repo, "-c", "user.name=Test", "-c", "user.email=test@localhost",
+               "commit", "-m", "baseline")
+    task = fixture.make_task(worker.git(repo, "rev-parse", "HEAD"))
+    calls = []
+    def propose(received, source):
+        calls.append((received, source))
+        assert received["instruction"] == task["instruction"]
+        assert sorted(json.dumps(v, sort_keys=True) for v in received["cases"]) == sorted(
+            json.dumps(v, sort_keys=True) for v in task["cases"])
+        if len(calls) == 1:
+            return '{"expression":"0"}'
+        assert "return 0" in source
+        assert received["cases"][0]["expected"] != 0
+        return fixture.GOOD
+    result = worker.repair(repo, state, task, propose)
+    assert result["model_calls"] == len(calls) == 2
+    assert result["attempts"][0]["passed"] < result["attempts"][0]["total"]
+    assert result["attempts"][1]["passed"] == len(task["cases"])
+    assert worker.repair(repo, state, task, propose)["model_calls"] == 0
+    assert len(calls) == 2
