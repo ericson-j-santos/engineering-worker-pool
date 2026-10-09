@@ -38,7 +38,8 @@ introduzir defeito; 42 casos confiáveis definem o contrato de normalização.
 
 O CI existente reutiliza o mesmo Ollama descartável, sem nova fila ou workflow.
 O novo E2E abre sua própria sessão/worktree com Session Launcher e Command
-Gateway e exige SHA exato. O modelo local qwen2.5-coder:1.5b propõe a correção.
+Gateway e exige SHA exato. O modelo local qwen2.5-coder:7b propõe a correção. O modelo 1.5b da prova
+numérica é descarregado/removido antes, evitando inferências simultâneas.
 Depois de validar os 42 casos, o executor cria patch/commit na cópia. Outro
 checkout/processo confere os casos e executa os testes existentes do bridge.
 O checkout original permanece intacto. Artefatos são conferidos novamente
@@ -59,3 +60,13 @@ replay. Uma PR verde sem artefato íntegro não conclui o aceite.
 
 A proteção administrativa da main permanece um gate separado. Não alterar
 rulesets, habilitar auto-merge ou marcar TODO concluído por este incremento.
+
+## Ajuste após execução real
+
+O primeiro E2E estruturado no HEAD 0d9afcc foi bloqueado por candidate_syntax:
+o modelo 1.5b copiou a função defeituosa sem a palavra def. A resposta foi
+preservada no artefato e não normalizada silenciosamente para passar. O
+provedor estruturado passou a 7b (Apache-2.0, catálogo oficial Ollama) e o
+prompt explicita a assinatura exigida. Os 42 casos e os guards permanecem
+inalterados. Cada execução continua tendo somente uma proposta.
+Fonte: https://ollama.com/library/qwen2.5-coder:7b

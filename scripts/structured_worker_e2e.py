@@ -14,9 +14,9 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.local_code_worker import MODEL, WorkerBlocked, atomic_json, process
+from app.local_code_worker import WorkerBlocked, atomic_json, process
 from app.structured_code_worker import repair, validate, git, sha256, need, StructuredBlocked
-from app.structured_ollama import StructuredOllama
+from app.structured_ollama import MODEL, StructuredOllama
 from local_worker_e2e import context, launch_session, RULES_SHA
 from structured_acceptance import cases, INSTRUCTION
 
@@ -153,9 +153,9 @@ def outer() -> None:
         process([
             sys.executable, str(rules / "scripts/command_gateway.py"), "--policy", str(policy_path),
             "--correlation-id", correlation, "run", "--cwd", str(worktree),
-            "--session-id", session["session_id"], "--risk", "2", "--timeout", "210",
+            "--session-id", session["session_id"], "--risk", "2", "--timeout", "240",
             "--expected-head", sha, "--", "python", "scripts/structured_worker_e2e.py", "--inner",
-        ], root, timeout=225)
+        ], root, timeout=255)
     finally:
         target = root / ARTIFACT
         target.mkdir(parents=True, exist_ok=True)

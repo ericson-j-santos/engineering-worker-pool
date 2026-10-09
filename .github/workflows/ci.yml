@@ -102,6 +102,16 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Select local model for structured repair
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec worker-pool-local-code ollama stop qwen2.5-coder:1.5b
+          docker exec worker-pool-local-code ollama rm qwen2.5-coder:1.5b
+          docker exec worker-pool-local-code ollama pull qwen2.5-coder:7b
+
       - name: Repair real structured function in governed copy
         id: structured_e2e
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
