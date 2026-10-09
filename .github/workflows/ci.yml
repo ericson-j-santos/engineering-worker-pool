@@ -73,7 +73,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run -d --name worker-pool-local-code -p 127.0.0.1:11434:11434 \
+          python scripts/pull_local_model_image.py
+          docker run -d --pull=never --name worker-pool-local-code -p 127.0.0.1:11434:11434 \
             -e OLLAMA_NO_CLOUD=1 \
             ollama/ollama:0.34.3@sha256:7ab595e4ead391f6818c7215297781282babe0701f6d9a9f8862ac591360a58b
           ready=false
