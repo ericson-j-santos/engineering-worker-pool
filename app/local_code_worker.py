@@ -1,6 +1,6 @@
 """Bounded local-code worker: one pure numeric function in an isolated Git branch.
 
-No shell, remote Git, imports/calls in generated code, unbounded retry or merge.
+No shell, remote Git, imports or arbitrary calls, unbounded retry or merge.
 The caller must supply a trusted task and run through its governed executor.
 """
 from __future__ import annotations
@@ -25,7 +25,7 @@ MODEL = "qwen2.5-coder:1.5b"
 OLLAMA_URL = "http://127.0.0.1:11434"
 CONTAINER = "worker-pool-local-code"
 NODES = (
-    ast.Expression, ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare, ast.IfExp,
+    ast.Expression, ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare, ast.IfExp, ast.Call,
     ast.Name, ast.Load, ast.Constant, ast.Add, ast.Sub, ast.Mult,
     ast.UAdd, ast.USub, ast.Not, ast.And, ast.Or,
     ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
@@ -60,10 +60,12 @@ def task_spec(task: Any) -> dict:
                            ("function", r"[a-z][a-z0-9_]{0,40}")):
         require(type(task[field]) is str and re.fullmatch(pattern, task[field]) is not None,
                 "task_" + field)
+    require(task["function"] not in {"min", "max"}, "reserved_function")
     params = task["parameters"]
     require(type(params) is list and 1 <= len(params) <= 4
             and all(type(v) is str and IDENT.fullmatch(v) for v in params)
-            and len(set(params)) == len(params), "task_parameters")
+            and len(set(params)) == len(params)
+            and not set(params) & {"min", "max"}, "task_parameters")
     require(type(task["instruction"]) is str and 1 <= len(task["instruction"]) <= 2000,
             "task_instruction")
     cases = task["cases"]
@@ -85,13 +87,19 @@ def expression_tree(expression: str, parameters: list[str]) -> ast.Expression:
         raise WorkerBlocked("candidate_syntax") from None
     nodes = list(ast.walk(tree))
     require(len(nodes) <= 96 and all(type(n) in NODES for n in nodes), "candidate_grammar")
+    call_names = set()
+    for node in nodes:
+        if isinstance(node, ast.Call):
+            require(type(node.func) is ast.Name and node.func.id in {"min", "max"}
+                    and len(node.args) == 2 and not node.keywords, "candidate_call")
+            call_names.add(id(node.func))
     pending = [(tree, 0)]
     while pending:
         node, depth = pending.pop()
         require(depth <= 16, "candidate_depth")
         pending.extend((n, depth + 1) for n in ast.iter_child_nodes(node))
         if isinstance(node, ast.Name):
-            require(node.id in parameters, "candidate_name")
+            require(node.id in parameters or id(node) in call_names, "candidate_name")
         if isinstance(node, ast.Constant):
             require(numeric(node.value), "candidate_constant")
     return tree
@@ -111,7 +119,7 @@ def source_for(task: dict, reply: str) -> str:
 
 
 def check_source(source: str, task: dict) -> int:
-    """Run only a structurally validated, bounded expression; no builtins."""
+    """Run a bounded expression; only pure two-number min/max primitives."""
     task_spec(task)
     require(type(source) is str and len(source.encode()) <= 2048, "source_size")
     try:
@@ -127,7 +135,7 @@ def check_source(source: str, task: dict) -> int:
                 and len(fn.body) == 1 and type(fn.body[0]) is ast.Return
                 and fn.body[0].value is not None, "source_signature")
         expression_tree(ast.unparse(fn.body[0].value), task["parameters"])
-        scope: dict[str, Any] = {"__builtins__": {}}
+        scope: dict[str, Any] = {"__builtins__": {}, "min": min, "max": max}
         exec(compile(tree, "<validated-numeric-function>", "exec"), scope)
         passed = 0
         for case in task["cases"]:
@@ -348,10 +356,11 @@ class LocalOllama:
                       + "\nTrusted input/output acceptance examples:\n"
                       + json.dumps(task["cases"][:8], separators=(",", ":"))
                       + "\nReturn JSON with only the key expression. Its value must be a CORRECTED Python "
-                      "expression, not a copy of the defective return value. Do not use min or max. "
-                      "Use only the function parameters, numeric literals, comparisons, +, -, *, "
-                      "and conditional expressions (x if condition else y). "
-                      "No calls, imports, attributes or statements.")
+                      "expression, not a copy of the defective return value. "
+                      "Use function parameters, numeric literals, comparisons, +, -, *, "
+                      "conditional expressions (x if condition else y), and optionally min or max "
+                      "with exactly two numeric arguments. No other calls, imports, attributes, "
+                      "function definitions, return statements or Markdown.")
             response = self.request(client, "POST", "/api/chat", json={
                 "model": MODEL, "messages": [
                     {"role": "system", "content": "Fix the code to satisfy the input/output tests. "

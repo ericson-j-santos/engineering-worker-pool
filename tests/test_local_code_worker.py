@@ -60,7 +60,7 @@ def test_real_git_repair_independent_process_and_replay(checkout):
 @pytest.mark.parametrize("expression", [
     '__import__("os").system("PRIVATE_COMMAND")', "value.__class__", "value[0]",
     "(x for x in [1])", "[value]", "{'x':value}", "'secret'", "True",
-    "10 ** 10000000", "(lambda: value)()", "max(value, lower)", "unknown",
+    "10 ** 10000000", "(lambda: value)()", "unknown",
     "(x := value)", "value / 0", "1e999", "9" * 1100,
 ])
 def test_model_cannot_escape_numeric_grammar(expression):
@@ -269,3 +269,31 @@ def test_no_cloud_positive_runtime_readback(monkeypatch):
     monkeypatch.setattr(worker, "process", inspect)
     worker.LocalOllama.no_cloud()
     assert observed == [["docker", "inspect", "--format", "{{json .Config.Env}}", worker.CONTAINER]]
+
+
+def test_pure_min_max_are_validated_numeric_primitives():
+    task = make_task()
+    source = worker.source_for(task, '{"expression":"min(max(value, lower), upper)"}')
+    assert worker.check_source(source, task) == len(task["cases"])
+
+
+@pytest.mark.parametrize("expression", [
+    "sum(value, lower)", "eval(value)", "open(value)", "max", "min",
+    "max(value)", "max(value, lower, upper)", "max(value, key=lower)",
+    "max(*value)", "max(value, lower).__class__", "getattr(value, lower)",
+    "min([value, lower])", "(lambda a: a)(value)", "abs(value)", "float(value)",
+])
+def test_only_exact_two_argument_min_max_calls_are_allowed(expression):
+    with pytest.raises(worker.WorkerBlocked):
+        worker.source_for(make_task(), json.dumps({"expression": expression}))
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("function", "min"), ("function", "max"),
+    ("parameters", ["min", "lower", "upper"]), ("parameters", ["max", "lower", "upper"]),
+])
+def test_math_primitives_cannot_be_shadowed(field, value):
+    task = make_task()
+    task[field] = value
+    with pytest.raises(worker.WorkerBlocked):
+        worker.task_spec(task)

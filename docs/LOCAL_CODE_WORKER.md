@@ -22,10 +22,13 @@ O modelo só fornece JSON com uma expressão; não escolhe caminho, comandos,
 testes, dependências ou destinos de rede.
 
 A gramática aceita parâmetros numéricos limitados, comparações, operações
-`+`, `-`, `*` e condicionais. Bloqueia chamadas, imports, atributos, indexação,
-loops, coleções, strings, atribuições, potência e código fora desse escopo.
+`+`, `-`, `*`, condicionais e as primitivas puras `min(a, b)` / `max(a, b)`.
+Essas duas chamadas exigem nome exato, exatamente dois argumentos numéricos e
+nenhum keyword, expansão ou acesso a atributo. Nomes reservados não podem ser
+sobrescritos por função/parâmetros. Bloqueia todas as demais chamadas, imports,
+atributos, indexação, loops, coleções, strings, atribuições e potência.
 A árvore é limitada em tamanho/profundidade antes da compilação com builtins
-vazios. Esse é um contrato restrito, não um sandbox para Python arbitrário.
+vazios e apenas as duas primitivas numéricas explicitamente vinculadas. Esse é um contrato restrito, não um sandbox para Python arbitrário.
 
 O worker exige Git limpo, branch de trabalho, ausência de remoto e hooks ativos,
 arquivo regular sem link simbólico/hardlink, hashes exatos e estado separado
