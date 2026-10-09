@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -211,6 +212,39 @@ def run_inner() -> None:
                     server.wait(timeout=5)
 
 
+def launch_session(root: Path, rules: Path, policy_path: Path, sha: str, correlation: str) -> str:
+    """GitHub workspace sources require a verified remote ref, even when allowlisted."""
+    branch = os.environ.get("GITHUB_HEAD_REF") or os.environ.get("GITHUB_REF_NAME", "")
+    require(bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}", branch))
+            and ".." not in branch and "//" not in branch
+            and not branch.endswith(("/", ".", ".lock")), "source_ref_invalid")
+    argv = [
+        sys.executable, str(rules / "scripts/session_launcher.py"), "--policy", str(policy_path),
+        "--repo", str(root), "--session-prefix", "worker-code-ci",
+        "--correlation-id", correlation, "--expected-head", sha,
+        "--sync-ref", "origin/" + branch,
+    ]
+    try:
+        result = subprocess.run(argv, cwd=root, capture_output=True, text=True,
+                                timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        raise WorkerBlocked("bootstrap_process_unavailable") from None
+    if result.returncode:
+        # Only the canonical launcher's structured, already-redacted error is eligible.
+        # Never relay arbitrary process output, environment or provider responses.
+        try:
+            failure = json.loads(result.stderr.strip())
+            if failure.get("result") == "SESSION_LAUNCH_BLOCKED":
+                code = failure.get("gateway_exit_code")
+                if type(code) is int:
+                    print("SESSION_LAUNCH_BLOCKED code=" + str(code), flush=True)
+        except (ValueError, AttributeError):
+            pass
+        raise WorkerBlocked("bootstrap_process_failed")
+    require(len(result.stdout) <= 65536, "bootstrap_output_size")
+    return result.stdout.strip()
+
+
 def run_outer() -> None:
     root, sha, correlation = context()
     rules = root / "_rules"
@@ -222,11 +256,7 @@ def run_outer() -> None:
                   worktree_root=str(sandbox / "worktrees"), state_dir=str(sandbox / "gateway-state"))
     policy_path = sandbox / "policy.json"
     atomic_json(policy_path, policy)
-    raw = process([
-        sys.executable, str(rules / "scripts/session_launcher.py"), "--policy", str(policy_path),
-        "--repo", str(root), "--session-prefix", "worker-code-ci",
-        "--correlation-id", correlation, "--expected-head", sha,
-    ], root, timeout=60)
+    raw = launch_session(root, rules, policy_path, sha, correlation)
     try:
         session = json.loads(raw.splitlines()[-1])
     except (ValueError, IndexError):
