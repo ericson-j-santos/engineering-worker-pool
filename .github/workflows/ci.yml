@@ -54,7 +54,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Compile
-        run: python -m compileall -q app tests scripts/local_worker_e2e.py
+        run: python -m compileall -q app tests scripts/local_worker_e2e.py scripts/structured_worker_e2e.py scripts/structured_acceptance.py
       - name: Test
         run: python -m pytest -q
 
@@ -102,6 +102,21 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Repair real structured function in governed copy
+        id: structured_e2e
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        timeout-minutes: 5
+        run: python scripts/structured_worker_e2e.py
+
+      - name: Upload structured-function evidence and patch
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v7
+        with:
+          name: structured-code-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/structured-code-e2e/
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Remove disposable local model
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         shell: bash
@@ -116,6 +131,7 @@ jobs:
           VALIDATION_RESULT: ${{ job.status }}
           COMMENT_ID: ${{ github.event.comment.id }}
           LOCAL_CODE_E2E: ${{ steps.code_e2e.outcome }}
+          STRUCTURED_E2E: ${{ steps.structured_e2e.outcome }}
         run: |
           {
             echo "## Worker Pool native CI"
@@ -127,4 +143,5 @@ jobs:
             echo "Physical hosts touched: false"
             echo "Product tasks dispatched: false"
             echo "Local-code E2E: $LOCAL_CODE_E2E"
+            echo "Structured-code E2E: $STRUCTURED_E2E"
           } >> "$GITHUB_STEP_SUMMARY"
