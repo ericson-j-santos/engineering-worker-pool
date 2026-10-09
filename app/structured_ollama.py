@@ -10,7 +10,7 @@ from app.structured_code_worker import task_spec, need
 
 
 MODEL = "qwen2.5-coder:7b"
-FUNCTION_PATTERN = r"^def [^\[\]]+$"
+FUNCTION_PATTERN = r"^def [^\[\]+]+$"
 
 
 class StructuredOllama(LocalOllama):
@@ -46,6 +46,7 @@ class StructuredOllama(LocalOllama):
                   "Allowed builtins: isinstance, str, dict, list, len, bool, int, float. "
                   "Allowed methods: get, strip, join, append, with positional arguments only. "
                   "Use get instead of indexing. Create empty lists with list(), never brackets. "
+                  "Append strings to the list, then join it. No addition or augmented assignments. "
                   "Concatenate text with an EMPTY separator, never add spaces between fragments. "
                   "Do not coerce data with str. "
                   "A malformed rich-text fragment must immediately return an empty string, "

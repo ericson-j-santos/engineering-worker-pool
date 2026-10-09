@@ -24,9 +24,10 @@ estado único por repositório são responsabilidade conjunta do chamador. Mudan
 concorrente bloqueia a escrita. O resultado é commit LOCAL, patch e recibo;
 nenhuma chamada publica o patch ou faz merge.
 
-Há uma proposta do modelo por tentativa de execução, sem retry invisível e
-sem código de correção pronto como fallback. Erro de sintaxe, segurança ou
-aceite bloqueia. Replay confere código/commit/patch e testes, sem nova inferência.
+Há uma proposta inicial e no máximo uma correção, somente após falha semântica
+real nos testes. A correção recebe a função reprovada e os mesmos casos, com os
+que falharam primeiro. Sintaxe, segurança, ausência de mudança ou infraestrutura
+bloqueiam sem retry. Não há código de correção pronto como fallback. Replay confere código/commit/patch e testes, sem nova inferência.
 Falhas durante Git deixam a cópia incompleta bloqueada, nunca forçam reset.
 
 ## Problema real usado no E2E
@@ -84,3 +85,11 @@ a excluir colchetes via pattern no JSON Schema; o prompt solicita get e
 list(). A validação AST permanece independente e obrigatória, mesmo quando
 o provedor aceita o schema. Os requisitos de campo inválido e concatenação
 sem separador foram explicitados; não existe substituição da proposta.
+
+A resposta no HEAD 0722e54 foi bloqueada por AugAssign; o gerador passa a
+excluir também adição, solicitando append/join. A gramática de execução
+continua inalterada. Acrescentou-se no máximo uma correção após validação
+semântica real, com registro de cada proposta e revalidação de concorrência.
+Essa ampliação substitui a limitação histórica de uma única proposta; não
+autoriza repetir falhas de segurança, sintaxe ou infraestrutura. O cliente
+limita cada inferência a 180 segundos; o E2E continua limitado a cinco minutos.

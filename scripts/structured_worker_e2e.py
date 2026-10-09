@@ -46,7 +46,7 @@ def verify_evidence(folder: Path, sha: str, correlation: str) -> dict:
          and result["after_sha256"] == sha256(after)
          and result["patch_sha256"] == sha256(patch)
          and result["base_sha"] == sha and result["produced_sha"] != sha
-         and result["model_calls"] == 1
+         and result["model_calls"] in (1, 2)
          and result["baseline"]["passed"] < result["baseline"]["total"]
          and result["validation"]["passed"] == result["validation"]["total"]
          and result["validation"]["errors"] == 0, "evidence_content")
@@ -81,16 +81,21 @@ def inner() -> None:
         atomic_json(artifact / "task.json", task)
         (artifact / "before.py").write_bytes(before)
         provider = StructuredOllama()
+        proposals = []
         def propose(spec, source):
             reply = provider(spec, source)
             # Public-source proposal only; never contains runtime credentials.
+            proposals.append({"attempt": len(proposals) + 1,
+                              "response_sha256": sha256(reply.encode()), "reply": reply})
             atomic_json(artifact / "proposal.json", {
                 "expected_sha": sha, "correlation_id": correlation,
                 "response_sha256": sha256(reply.encode()), "reply": reply,
+                "attempts": list(proposals),
             })
             return reply
         result = repair(clone, state, task, propose)
-        need(provider.process_verified is True, "inference_not_proved")
+        need(provider.process_verified is True and len(proposals) == result["model_calls"],
+             "inference_not_proved")
         replay = repair(clone, state, task, provider)
         need(replay["replayed"] is True and replay["model_calls"] == 0
              and replay["produced_sha"] == result["produced_sha"], "replay")
@@ -153,9 +158,9 @@ def outer() -> None:
         process([
             sys.executable, str(rules / "scripts/command_gateway.py"), "--policy", str(policy_path),
             "--correlation-id", correlation, "run", "--cwd", str(worktree),
-            "--session-id", session["session_id"], "--risk", "2", "--timeout", "240",
+            "--session-id", session["session_id"], "--risk", "2", "--timeout", "285",
             "--expected-head", sha, "--", "python", "scripts/structured_worker_e2e.py", "--inner",
-        ], root, timeout=255)
+        ], root, timeout=295)
     finally:
         target = root / ARTIFACT
         target.mkdir(parents=True, exist_ok=True)

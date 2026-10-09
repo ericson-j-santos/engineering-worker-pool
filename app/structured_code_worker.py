@@ -339,12 +339,38 @@ def repair(root: Path, state: Path, task: dict, propose: Callable[[dict, str], s
              and sha256(before_bytes) == task["before_sha256"], "source_changed")
         baseline = validate(before, task)
         need(baseline["passed"] < baseline["total"], "no_failing_baseline")
-        # One model proposal. Failure is terminal; no invisible retries or templates.
-        after = render(before, task, propose(task, extracted(before, task)))
-        need(after != before, "no_change")
-        checked = validate(after, task)
-        need(checked["passed"] == checked["total"] and checked["errors"] == 0,
-             "candidate_tests_failed")
+        # One initial proposal and at most one correction after REAL semantic failures.
+        # Syntax, grammar, safety, no-change and infrastructure failures are terminal.
+        proposal_task = dict(task)
+        proposal_source = extracted(before, task)
+        attempts = []
+        for attempt in (1, 2):
+            need(git(root, "rev-parse", "HEAD") == task["base_sha"]
+                 and git(root, "status", "--porcelain", "--untracked-files=all") == ""
+                 and sha256(path.read_bytes()) == task["before_sha256"], "concurrent_change")
+            after = render(before, task, propose(proposal_task, proposal_source))
+            need(after != before, "no_change")
+            checked = validate(after, task)
+            attempts.append({"attempt": attempt, "candidate_sha256": sha256(after.encode()),
+                             "validation": checked})
+            if checked["passed"] == checked["total"] and checked["errors"] == 0:
+                break
+            if attempt == 2:
+                raise StructuredBlocked("candidate_tests_failed")
+            failing, passing = [], []
+            for case in task["cases"]:
+                control = validate(after, {**task, "cases": [case, case]})
+                (passing if control["passed"] == 2 and control["errors"] == 0
+                 else failing).append(case)
+            need(bool(failing), "semantic_feedback_missing")
+            feedback = (task["instruction"] + "\nPREVIOUS PROPOSAL FAILED REAL TESTS. "
+                        "The first " + str(len(failing)) + " examples below failed. "
+                        "Fix those errors without breaking the other examples. "
+                        "Previous rejected function:\n" + extracted(after, task))
+            need(len(feedback) <= 4000, "semantic_feedback_size")
+            proposal_task = {**task, "instruction": feedback, "cases": failing + passing}
+            task_spec(proposal_task)
+            proposal_source = extracted(after, task)
         need(git(root, "rev-parse", "HEAD") == task["base_sha"]
              and git(root, "status", "--porcelain", "--untracked-files=all") == ""
              and sha256(path.read_bytes()) == task["before_sha256"], "concurrent_change")
@@ -368,7 +394,7 @@ def repair(root: Path, state: Path, task: dict, propose: Callable[[dict, str], s
             "path": task["path"], "function": task["function"],
             "before_sha256": sha256(before_bytes), "after_sha256": sha256(path.read_bytes()),
             "baseline": baseline, "validation": checked, "patch_sha256": sha256(patch.encode()),
-            "replayed": False, "model_calls": 1,
+            "replayed": False, "model_calls": len(attempts), "attempts": attempts,
         }
         (state / "change.patch").write_text(patch, encoding="utf-8")
         temporary = receipt.with_suffix(".tmp")

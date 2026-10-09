@@ -60,9 +60,11 @@ def test_output_pattern_blocks_observed_subscripts_not_valid_get_code():
     pattern = ast.literal_eval(pattern_node)
     correct = FIXED.replace("parts = []", "parts = list()")
     assert re.fullmatch(pattern, correct)
-    assert not re.fullmatch(pattern, "def _property(properties, name):\n    return properties[name]\n")
-    assert not re.fullmatch(pattern, "_property(properties, name):\n    return ''\n")
+    assert not re.fullmatch(pattern, "def _property(properties, name):\\n    return properties[name]\\n")
+    assert not re.fullmatch(pattern, "_property(properties, name):\\n    return ''\\n")
     # Existing execution guards still reject prohibited code even if a format constraint misses it.
     with pytest.raises(worker.StructuredBlocked):
-        worker.render(BEFORE, task(), json.dumps({"function": "def _property(properties, name):\n    import os\n    return ''\n"}))
+        worker.render(BEFORE, task(), json.dumps({"function": "def _property(properties, name):\\n    import os\\n    return ''\\n"}))
     assert worker.validate(correct, task())["passed"] == len(task()["cases"])
+
+    assert not re.fullmatch(pattern, "def _property(properties, name):\n    result = ''\n    result += name\n    return result\n")
