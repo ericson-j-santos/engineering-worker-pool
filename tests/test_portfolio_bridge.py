@@ -44,12 +44,13 @@ class FakeUpstream:
     def __init__(self, client: TestClient | None = None):
         self.client = client
         self.calls = []
-        self.page = {"object": "page", "parent": {"type": "data_source_id", "data_source_id": SOURCE},
+        self.page = {"object": "page", "id": PAGE, "archived": False, "in_trash": False,
+                     "parent": {"type": "data_source_id", "data_source_id": SOURCE},
                      "properties": props()}
         self.issue = {"number": ISSUE_NUMBER, "state": "open",
                       "html_url": f"https://github.com/{REPO}/issues/{ISSUE_NUMBER}"}
         self.repo = {"full_name": REPO, "default_branch": "main"}
-        self.ref = {"object": {"type": "commit", "sha": SHA}}
+        self.ref = {"ref": "refs/heads/main", "object": {"type": "commit", "sha": SHA}}
         self.latest_ref = self.ref
         self.todo_change_on_reread = False
         self.notion_calls = 0
@@ -130,6 +131,11 @@ def test_execute_e2e_real_worker_api_persists_once_with_independent_readback(
     first = run(fake, execute=True)
     assert first["state"] == "enqueued_verified"
     assert first["created"] is True
+    write_index = next(i for i, (s, m, _) in enumerate(fake.calls) if s == "worker" and m == "POST")
+    before_write = fake.calls[:write_index]
+    assert sum(s == "notion" for s, _, _ in before_write) == 2
+    assert sum(u.endswith("/issues/13") for _, _, u in before_write) == 2
+    assert sum(u.endswith("/git/ref/heads/main") for _, _, u in before_write) == 2
     fake2 = FakeUpstream(client)
     replay = run(fake2, execute=True)
     assert replay["task_id"] == first["task_id"]
@@ -172,7 +178,7 @@ def test_closed_or_pull_request_rejected() -> None:
 def test_github_head_moves_between_check_and_dispatch(tmp_path, monkeypatch) -> None:
     client = worker(tmp_path, monkeypatch)
     fake = FakeUpstream(client)
-    fake.latest_ref = {"object": {"type": "commit", "sha": "b" * 40}}
+    fake.latest_ref = {"ref": "refs/heads/main", "object": {"type": "commit", "sha": "b" * 40}}
     with pytest.raises(BridgeRejected, match="github_head_changed_before_dispatch"):
         run(fake, execute=True)
     assert len(client.get("/v1/snapshot", headers={"Authorization":"Bearer worker-test"}).json()["tasks"]) == 0
