@@ -1,31 +1,77 @@
 name: CI
+run-name: Worker Pool CI · ${{ github.event_name }} · ${{ github.event.comment.id || github.run_id }}
 
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: read
 
 concurrency:
-  group: engineering-worker-pool-ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: engineering-worker-pool-ci-${{ github.event_name == 'issue_comment' && 'native-validation' || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'issue_comment' }}
 
 jobs:
   test:
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (
+        github.event.action == 'created' &&
+        github.actor == 'ericson-j-santos' &&
+        github.event.repository.full_name == 'ericson-j-santos/engineering-worker-pool' &&
+        github.event.repository.private == false &&
+        github.event.issue.number == 13 &&
+        github.event.issue.state == 'open' &&
+        !github.event.issue.pull_request &&
+        github.event.comment.user.login == 'ericson-j-santos' &&
+        github.event.comment.user.type == 'User' &&
+        github.event.comment.body == '/worker validate'
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.EXPECTED_SHA }}
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
+      - name: Confirm immutable checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Admit exact owner comment
+        if: github.event_name == 'issue_comment'
+        run: python -m app.ci_entrypoint
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Compile
         run: python -m compileall -q app tests
       - name: Test
         run: python -m pytest -q
+      - name: Record native validation receipt
+        if: always()
+        shell: bash
+        env:
+          VALIDATION_RESULT: ${{ job.status }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          {
+            echo "## Worker Pool native CI"
+            echo "SHA: $EXPECTED_SHA"
+            echo "Event: $GITHUB_EVENT_NAME"
+            echo "Comment: $COMMENT_ID"
+            echo "Run: $GITHUB_RUN_ID"
+            echo "Result: $VALIDATION_RESULT"
+            echo "Physical hosts touched: false"
+            echo "Product tasks dispatched: false"
+            echo "Model inference invoked: false"
+          } >> "$GITHUB_STEP_SUMMARY"
