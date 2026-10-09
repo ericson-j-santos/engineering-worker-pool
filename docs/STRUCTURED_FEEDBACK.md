@@ -47,3 +47,25 @@ artefato de aprovação pode homologar a geração. A suíte unitária não subs
 
 O E2E e o workflow existentes são reutilizados. Esta mudança não aplica proteção da main,
 não consome TODO Global live e não implanta serviço ou altera Noteri/Desktop.
+
+
+## Revisão por edições exatas
+
+A primeira chamada ainda solicita a função completa. A revisão solicita até seis
+substituições literais `old`/`new`, sem reenviar a função inteira como resposta.
+Cada trecho deve ocorrer exatamente uma vez no corpo da função anterior; alterações
+na assinatura, sobreposição, trechos ausentes ou repetidos e violações da gramática
+bloqueiam antes da validação. Não há correção pronta: o modelo escolhe os trechos e
+seu conteúdo; o executor apenas monta a proposta e repete os mesmos controles.
+
+O segundo turno conserva o contrato comportamental, a função anterior e as falhas
+estruturadas, sem duplicar os exemplos que passaram. O limite de saída da revisão
+é 768 tokens; a primeira proposta permanece com 1400. Os 42 casos executados não
+mudam, tampouco o limite total do Gateway ou a quantidade máxima de inferências.
+A redução visa caber no orçamento existente, não prova que o modelo convergiu.
+Uma revisão sintaticamente inválida, truncada ou sem mudança continua bloqueada.
+
+A identidade da resposta bruta e as edições ficam disponíveis em memória no
+provedor; o artefato atual grava a função montada pelo transporte. A montagem não
+é um fallback de implementação. Sua validação unitária usa edições sintéticas
+explicitamente identificadas; o E2E real deve comprovar o resultado funcional.
