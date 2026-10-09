@@ -70,3 +70,10 @@ provedor estruturado passou a 7b (Apache-2.0, catálogo oficial Ollama) e o
 prompt explicita a assinatura exigida. Os 42 casos e os guards permanecem
 inalterados. Cada execução continua tendo somente uma proposta.
 Fonte: https://ollama.com/library/qwen2.5-coder:7b
+
+A proposta seguinte (HEAD 8c681bc) usou Break/Subscript, ainda proibidos,
+e repetiu parte do defeito. Foi rejeitada. O pedido ao modelo agora é
+construído a partir do contrato comportamental e de todos os exemplos,
+sem retransmitir o corpo defeituoso como texto a ser copiado. O executor
+continua vinculando a alteração ao hash exato do arquivo original. Nenhum
+corpo de solução é fornecido ao provedor; os mesmos 42 casos são exigidos.

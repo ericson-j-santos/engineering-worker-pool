@@ -30,22 +30,27 @@ class StructuredOllama(LocalOllama):
             need(not metadata.get("remote_host") and not metadata.get("remote_model")
                  and type(metadata.get("details")) is dict
                  and metadata["details"].get("format") == "gguf", "model_weights")
+            # The first runs copied faulty source. Generate from the trusted behavioral
+            # contract instead; the executor still binds the patch to the exact source hash.
             prompt = (
-                task["instruction"] + "\nRequired definition header (include def):\n"
-                + "def " + task["function"] + "(" + ", ".join(task["parameters"]) + "):\n"
-                + "\nKnown defective function; do NOT copy it unchanged:\n" + before
-                + "\nTrusted acceptance examples:\n"
+                "Write a NEW implementation from the behavioral contract, not a transcription.\n"
+                + "Required definition header: def " + task["function"] + "("
+                + ", ".join(task["parameters"]) + "):\n"
+                + "The JSON function string must include def, the full signature and its body.\n"
+                + "Trusted input/output examples:\n"
                 + json.dumps(task["cases"], ensure_ascii=False, separators=(",", ":"))
-                + "\nReturn JSON with ONLY key function containing the complete corrected Python function. "
-                  "Keep its name and parameter names. No annotations, imports, decorators, helper functions, "
-                  "try/except, while, comprehensions, indexing, recursion, file or network operations. "
-                  "Use simple local assignments, if, return and at most one for loop. "
+                + "\nExecution constraints: no imports, helpers, annotations, decorators, try/except, "
+                  "while, break, continue, comprehensions, indexing with brackets or recursion. "
+                  "Use only local assignments, if/elif/else, return and at most one for loop. "
                   "Allowed builtins: isinstance, str, dict, list, len, bool, int, float. "
-                  "Allowed methods: get, strip, join, append. Only positional call arguments. "
-                  "Build fragment strings in a list with append and join the list. "
-                  "Check the type of each container BEFORE using get or iterating. "
-                  "Invalid values must produce empty string, never str(value). "
-                  "Do not output tests or Markdown."
+                  "Allowed methods: get, strip, join, append, with positional arguments only. "
+                  "Use get instead of indexing. Do not coerce data with str. "
+                  "A malformed rich-text fragment must immediately return an empty string, "
+                  "not be skipped and not produce a partial result. "
+                  "Check the top-level properties object before calling its get method. "
+                  "Check select.name is a string. An empty plain_text is valid and overrides text.content. "
+                  "Do not output tests or Markdown. Return only JSON with key function.\n"
+                + "AUTHORITATIVE BEHAVIORAL CONTRACT:\n" + task["instruction"]
             )
             response = self.request(client, "POST", "/api/chat", json={
                 "model": MODEL,
