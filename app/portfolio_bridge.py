@@ -106,8 +106,9 @@ def _validated_notion_page(page: Any, data_source_id: str) -> dict[str, str]:
     _require(isinstance(page, dict) and page.get("object") == "page", "notion_page_invalid")
     parent = page.get("parent") or {}
     _require(
-        parent.get("type") == "data_source_id"
-        and parent.get("data_source_id", "").replace("-", "").lower()
+        isinstance(parent, dict) and parent.get("type") == "data_source_id"
+        and isinstance(parent.get("data_source_id"), str)
+        and parent["data_source_id"].replace("-", "").lower()
         == data_source_id.replace("-", "").lower(),
         "notion_source_mismatch",
     )
@@ -123,10 +124,16 @@ def _get(transport, service: str, url: str, token: str) -> Any:
 
 
 def _read_notion(transport, page_id: str, data_source_id: str, token: str) -> dict[str, str]:
-    return _validated_notion_page(
-        _get(transport, "notion", f"{NOTION_API}/v1/pages/{page_id}", token),
-        data_source_id,
-    )
+    page = _get(transport, "notion", f"{NOTION_API}/v1/pages/{page_id}", token)
+    _require(isinstance(page, dict), "notion_page_invalid")
+    try:
+        returned_id = str(uuid.UUID(page.get("id", "")))
+    except (ValueError, TypeError, AttributeError):
+        raise BridgeRejected("notion_page_id_invalid") from None
+    _require(returned_id == page_id, "notion_page_id_mismatch")
+    _require(page.get("archived") is False and page.get("in_trash") is False,
+             "notion_page_not_active")
+    return _validated_notion_page(page, data_source_id)
 
 
 def _github_snapshot(transport, external_id: str, token: str, observed_at: datetime) -> dict[str, Any]:
@@ -142,16 +149,22 @@ def _github_snapshot(transport, external_id: str, token: str, observed_at: datet
     issue_number = int(number_text)
     issue = _get(transport, "github", f"{root}/issues/{issue_number}", token)
     _require(
-        isinstance(issue, dict) and issue.get("number") == issue_number
+        isinstance(issue, dict) and type(issue.get("number")) is int
+        and issue["number"] == issue_number
         and issue.get("state") == "open" and "pull_request" not in issue
         and issue.get("html_url") == f"https://github.com/{repo}/issues/{issue_number}",
         "github_issue_not_open_or_mismatch",
     )
     ref_url = f"{root}/git/ref/heads/{quote(branch, safe='/')}"
     ref = _get(transport, "github", ref_url, token)
-    sha = (ref.get("object") or {}).get("sha") if isinstance(ref, dict) else None
-    _require(isinstance(sha, str), "github_ref_missing")
-    _require((ref.get("object") or {}).get("type") == "commit", "github_ref_not_commit")
+    _require(isinstance(ref, dict) and ref.get("ref") == "refs/heads/" + branch,
+             "github_ref_identity_mismatch")
+    ref_object = ref.get("object")
+    _require(isinstance(ref_object, dict), "github_ref_missing")
+    sha = ref_object.get("sha")
+    _require(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) is not None,
+             "github_ref_missing")
+    _require(ref_object.get("type") == "commit", "github_ref_not_commit")
     return {
         "repository": repo, "issue_number": issue_number,
         "issue_url": issue["html_url"], "state": "open", "is_pull_request": False,
@@ -209,14 +222,18 @@ def run_page(
         lane is not None and lane.get("enabled") is True and lane.get("max_in_flight") == 1,
         "worker_lane_not_admitted",
     )
-    # Estado canônico e ref podem avançar entre a seleção e o envio.
+    # Revalidate the page, open issue and default branch before the only write.
+    # Independent APIs are not a distributed transaction; the executor must
+    # re-admit current state before performing work, including on replay.
     reread = _read_notion(transport, page_id, data_source_id, notion_token)
     _require(reread == todo, "todo_changed_before_dispatch")
-    latest_ref = _get(transport, "github", snapshot["_ref_url"], github_token)
-    _require(
-        (latest_ref.get("object") or {}).get("sha") == payload["base_sha"],
-        "github_head_changed_before_dispatch",
+    latest = _github_snapshot(
+        transport, todo["Identificador externo"], github_token, clock,
     )
+    _require(latest["default_branch"] == snapshot["default_branch"],
+             "github_default_branch_changed_before_dispatch")
+    _require(latest["base_sha"] == payload["base_sha"],
+             "github_head_changed_before_dispatch")
     status, response = transport.request("worker", "POST", f"{url}/v1/tasks", worker_token, payload)
     _require(status in (200, 201) and isinstance(response, dict), "worker_enqueue_not_confirmed")
     task = response.get("task") or {}
