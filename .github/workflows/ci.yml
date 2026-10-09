@@ -54,15 +54,68 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Compile
-        run: python -m compileall -q app tests
+        run: python -m compileall -q app tests scripts/local_worker_e2e.py
       - name: Test
         run: python -m pytest -q
+
+      - name: Checkout canonical rules for disposable E2E
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/checkout@v4
+        with:
+          repository: ericson-j-santos/chatgpt-operational-rules
+          ref: 6cd74b32a24810cae7213744b697564e00be8b25
+          path: _rules
+          persist-credentials: false
+
+      - name: Start local-only coding model
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name worker-pool-local-code -p 127.0.0.1:11434:11434 \
+            -e OLLAMA_NO_CLOUD=1 \
+            ollama/ollama:0.34.3@sha256:7ab595e4ead391f6818c7215297781282babe0701f6d9a9f8862ac591360a58b
+          ready=false
+          for attempt in {1..30}; do
+            if curl --max-time 2 --fail --silent http://127.0.0.1:11434/api/tags >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = true
+          docker exec worker-pool-local-code ollama pull qwen2.5-coder:0.5b
+
+      - name: Execute governed queue to local-code E2E
+        id: code_e2e
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        timeout-minutes: 5
+        run: python scripts/local_worker_e2e.py
+
+      - name: Upload local-code evidence and patch
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v7
+        with:
+          name: local-code-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/local-code-e2e/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove disposable local model
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        run: |
+          docker rm -f worker-pool-local-code >/dev/null 2>&1 || true
+          test -z "$(docker ps -aq --filter name=^/worker-pool-local-code$)"
+
       - name: Record native validation receipt
         if: always()
         shell: bash
         env:
           VALIDATION_RESULT: ${{ job.status }}
           COMMENT_ID: ${{ github.event.comment.id }}
+          LOCAL_CODE_E2E: ${{ steps.code_e2e.outcome }}
         run: |
           {
             echo "## Worker Pool native CI"
@@ -73,5 +126,5 @@ jobs:
             echo "Result: $VALIDATION_RESULT"
             echo "Physical hosts touched: false"
             echo "Product tasks dispatched: false"
-            echo "Model inference invoked: false"
+            echo "Local-code E2E: $LOCAL_CODE_E2E"
           } >> "$GITHUB_STEP_SUMMARY"
