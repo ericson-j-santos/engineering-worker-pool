@@ -74,7 +74,7 @@ def test_second_timeout_is_terminal(monkeypatch):
     monkeypatch.setattr(image, "command", lambda argv: (calls.append(argv), result(False, TIMEOUT))[1])
     monkeypatch.setattr(image.time, "sleep", lambda _: None)
     monkeypatch.setattr(image, "authorization_ready", lambda: True)
-    with pytest.raises(image.PreparationBlocked, match="image_pull_failed"):
+    with pytest.raises(image.PreparationBlocked, match="image_pull_timeout"):
         image.prepare()
     assert len(calls) == 2
 
@@ -133,3 +133,35 @@ def test_ci_uses_verified_digest_before_starting_same_container():
     assert "--pull=never" in content
     assert image.IMAGE in content
     assert "OLLAMA_NO_CLOUD=1" in content
+
+
+def test_public_pull_uses_fresh_config_without_runner_credentials(monkeypatch, tmp_path):
+    existing = tmp_path / "runner-docker-config"
+    existing.mkdir()
+    (existing / "config.json").write_text('{"auths":{"registry":"PRIVATE_VALUE"}}')
+    monkeypatch.setenv("DOCKER_CONFIG", str(existing))
+    monkeypatch.setenv("DOCKER_HOST", "tcp://unrelated.invalid:2375")
+    seen = []
+    def run(argv, **kwargs):
+        config = Path(kwargs["env"]["DOCKER_CONFIG"])
+        assert config.is_dir() and not list(config.iterdir())
+        assert config != existing and set(kwargs["env"]) == {"PATH", "DOCKER_CONFIG"}
+        assert argv == ["docker", "pull", image.IMAGE]
+        seen.append(config)
+        return result()
+    monkeypatch.setattr(image.subprocess, "run", run)
+    image.command(["docker", "pull", image.IMAGE])
+    image.command(["docker", "pull", image.IMAGE])
+    assert len(set(seen)) == 2 and all(not path.exists() for path in seen)
+    assert "PRIVATE_VALUE" in (existing / "config.json").read_text()
+
+
+def test_temporary_config_is_removed_even_on_subprocess_failure(monkeypatch):
+    seen = []
+    def run(*args, **kwargs):
+        seen.append(Path(kwargs["env"]["DOCKER_CONFIG"]))
+        raise OSError("PRIVATE_VALUE")
+    monkeypatch.setattr(image.subprocess, "run", run)
+    with pytest.raises(image.PreparationBlocked, match="image_process_unavailable"):
+        image.command(["docker", "pull", image.IMAGE])
+    assert seen and all(not path.exists() for path in seen)

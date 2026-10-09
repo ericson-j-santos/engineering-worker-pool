@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import time
+import tempfile
 
 import httpx
 
@@ -26,8 +27,13 @@ class PreparationBlocked(RuntimeError):
 
 def command(arguments):
     try:
-        return subprocess.run(arguments, capture_output=True, text=True,
-                              timeout=75, check=False)
+        # Public image only: do not inherit runner login, credential helpers,
+        # remote Docker contexts or user-specific client configuration.
+        with tempfile.TemporaryDirectory(prefix="worker-public-image-") as config:
+            return subprocess.run(arguments, capture_output=True, text=True,
+                                  timeout=75, check=False,
+                                  env={"PATH": os.environ.get("PATH", os.defpath),
+                                       "DOCKER_CONFIG": config})
     except (OSError, subprocess.TimeoutExpired):
         raise PreparationBlocked("image_process_unavailable") from None
 
@@ -77,8 +83,9 @@ def prepare():
                     or REPO_DIGEST not in digests):
                 raise PreparationBlocked("image_digest_mismatch")
             return attempt
-        if attempt == 2 or not transient_timeout(pulled):
-            raise PreparationBlocked("image_pull_failed")
+        transient = transient_timeout(pulled)
+        if attempt == 2 or not transient:
+            raise PreparationBlocked("image_pull_timeout" if transient else "image_pull_failed")
         time.sleep(2)
         if not authorization_ready():
             raise PreparationBlocked("image_registry_not_ready")
