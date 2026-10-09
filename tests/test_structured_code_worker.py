@@ -28,7 +28,7 @@ def test_real_decoder_regression_and_positive():
     assert before["passed"] < before["total"] and before["errors"] > 0
     after = worker.render(BEFORE, contract, json.dumps({"function": FIXED}))
     actual = worker.validate(after, contract)
-    assert actual == {"passed": len(cases()), "total": len(cases()), "errors": 0}
+    assert actual == {"passed": len(cases()), "total": len(cases()), "errors": 0, "failures": []}
     assert before["passed"] < actual["passed"]
 
 
@@ -156,7 +156,7 @@ def test_concurrent_change_is_preserved(tmp_path):
 
 def test_failing_candidate_never_changes_git(tmp_path):
     root, state, contract = repository(tmp_path)
-    with pytest.raises(worker.StructuredBlocked, match="candidate_tests_failed"):
+    with pytest.raises(worker.StructuredBlocked, match="candidate_repeated"):
         worker.repair(root, state, contract, lambda *_: json.dumps(
             {"function": "def _property(properties, name):\n    return ''\n"}))
     assert worker.git(root, "rev-parse", "HEAD") == contract["base_sha"]

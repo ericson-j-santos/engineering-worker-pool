@@ -199,6 +199,139 @@ def render(before: str, task: dict, reply: str) -> str:
     return after
 
 
+
+OBSERVATION_TYPES = {"NoneType", "str", "bool", "int", "float", "list", "dict"}
+EXCEPTION_TYPES = {"AttributeError", "TypeError", "ValueError", "KeyError", "IndexError",
+                   "NameError", "UnboundLocalError", "OverflowError", "RuntimeError",
+                   "RecursionError", "MemoryError", "InvalidResult", "Exception"}
+FEEDBACK_LIMIT = 12000
+
+
+def observation(value) -> dict:
+    """Bounded JSON observation; never a repr of an arbitrary Python object."""
+    json_value(value)
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False).encode()
+    if len(encoded) > 512:
+        return {"kind": "value", "type": type(value).__name__, "truncated": True,
+                "bytes": len(encoded), "sha256": sha256(encoded)}
+    return {"kind": "value", "type": type(value).__name__, "value": value}
+
+
+def validate_observation(value: dict) -> None:
+    need(type(value) is dict, "observation_schema")
+    if value.get("kind") == "exception":
+        need(set(value) == {"kind", "type"} and type(value["type"]) is str
+             and value["type"] in EXCEPTION_TYPES,
+             "observation_exception")
+        return
+    need(value.get("kind") == "value" and type(value.get("type")) is str
+         and value["type"] in OBSERVATION_TYPES,
+         "observation_type")
+    if "value" in value:
+        need(set(value) == {"kind", "type", "value"}
+             and type(value["value"]).__name__ == value["type"], "observation_value")
+        need(observation(value["value"]) == value, "observation_size")
+    else:
+        need(set(value) == {"kind", "type", "truncated", "bytes", "sha256"}
+             and value.get("truncated") is True
+             and type(value.get("bytes")) is int and value["bytes"] > 512
+             and type(value.get("sha256")) is str
+             and re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is not None,
+             "observation_digest")
+
+
+def validate_report(evidence: dict, task: dict) -> dict:
+    """Validate the child-process protocol, including totals and failure indices."""
+    need(type(evidence) is dict and set(evidence) == {"passed", "total", "errors", "failures"},
+         "validator_evidence")
+    need(all(type(evidence[k]) is int for k in ("passed", "total", "errors"))
+         and evidence["total"] == len(task["cases"])
+         and 0 <= evidence["passed"] <= evidence["total"]
+         and 0 <= evidence["errors"] <= evidence["total"] - evidence["passed"],
+         "validator_counts")
+    failures = evidence["failures"]
+    need(type(failures) is list
+         and len(failures) == evidence["total"] - evidence["passed"], "validator_failures")
+    indices = []
+    for failure in failures:
+        need(type(failure) is dict and set(failure) == {"case_index", "observed"}
+             and type(failure["case_index"]) is int
+             and 0 <= failure["case_index"] < evidence["total"], "validator_case")
+        indices.append(failure["case_index"])
+        validate_observation(failure["observed"])
+        observed = failure["observed"]
+        if "value" in observed:
+            expected = task["cases"][failure["case_index"]]["expected"]
+            need(type(observed["value"]) is not type(expected) or observed["value"] != expected,
+                 "validator_false_failure")
+    need(indices == sorted(set(indices)), "validator_case_order")
+    need(sum(f["observed"]["kind"] == "exception" for f in failures) == evidence["errors"],
+         "validator_error_count")
+    return evidence
+
+
+def candidate_fingerprint(source: str, task: dict) -> str:
+    """Ignore comments, quote style and whitespace, but never bypass the AST guard."""
+    return sha256(ast.dump(guarded(source, task), include_attributes=False).encode())
+
+
+def proposal_spec(proposal: dict) -> dict:
+    """Internal proposal envelope; the public/trusted task schema remains unchanged."""
+    need(type(proposal) is dict, "proposal_schema")
+    task = {key: value for key, value in proposal.items() if key != "feedback"}
+    task_spec(task)
+    if "feedback" not in proposal:
+        return task
+    feedback = proposal["feedback"]
+    need(type(feedback) is dict
+         and set(feedback) == {"schema_version", "candidate_sha256", "failed_count", "failures"}
+         and type(feedback["schema_version"]) is int and feedback["schema_version"] == 1
+         and type(feedback["candidate_sha256"]) is str
+         and re.fullmatch(r"[0-9a-f]{64}", feedback["candidate_sha256"]) is not None
+         and type(feedback["failed_count"]) is int
+         and 1 <= feedback["failed_count"] <= len(task["cases"]),
+         "feedback_schema")
+    failures = feedback["failures"]
+    need(type(failures) is list and 1 <= len(failures) <= min(8, feedback["failed_count"]),
+         "feedback_failures")
+    indices = []
+    for failure in failures:
+        need(type(failure) is dict
+             and set(failure) == {"case_index", "args", "expected", "observed"}
+             and type(failure["case_index"]) is int
+             and 0 <= failure["case_index"] < len(task["cases"]), "feedback_case")
+        case = task["cases"][failure["case_index"]]
+        # Compare JSON, not Python equality (True must not substitute 1).
+        need(json.dumps({"args": failure["args"], "expected": failure["expected"]},
+                        sort_keys=True, allow_nan=False)
+             == json.dumps(case, sort_keys=True, allow_nan=False), "feedback_case_changed")
+        validate_observation(failure["observed"])
+        indices.append(failure["case_index"])
+    need(indices == sorted(set(indices)), "feedback_case_order")
+    need(len(json.dumps(feedback, ensure_ascii=False).encode()) <= FEEDBACK_LIMIT,
+         "feedback_size")
+    return task
+
+
+def semantic_feedback(task: dict, source: str, report: dict) -> dict:
+    validate_report(report, task)
+    failures = report["failures"]
+    need(bool(failures), "semantic_feedback_missing")
+    feedback = {"schema_version": 1, "candidate_sha256": candidate_fingerprint(source, task),
+                "failed_count": len(failures), "failures": []}
+    # Bounded model context, complete count retained; all cases are still validated.
+    for failure in failures[:8]:
+        case = task["cases"][failure["case_index"]]
+        entry = {"case_index": failure["case_index"], **copy.deepcopy(case),
+                 "observed": copy.deepcopy(failure["observed"])}
+        trial = {**feedback, "failures": feedback["failures"] + [entry]}
+        if len(json.dumps(trial, ensure_ascii=False).encode()) > FEEDBACK_LIMIT:
+            break
+        feedback = trial
+    proposal_spec({**task, "feedback": feedback})
+    return feedback
+
+
 def validate(source: str, task: dict) -> dict:
     """Independent interpreter process, no imports of candidate modules."""
     task_spec(task)
@@ -212,14 +345,12 @@ def validate(source: str, task: dict) -> dict:
         )
     except (OSError, subprocess.TimeoutExpired):
         raise StructuredBlocked("validator_unavailable") from None
-    need(result.returncode == 0 and len(result.stdout) <= 4096, "validator_process")
+    need(result.returncode == 0 and len(result.stdout) <= 131072, "validator_process")
     try:
         evidence = json.loads(result.stdout)
     except ValueError:
         raise StructuredBlocked("validator_json") from None
-    need(type(evidence) is dict and type(evidence.get("passed")) is int
-         and evidence.get("total") == len(task["cases"]), "validator_evidence")
-    return evidence
+    return validate_report(evidence, task)
 
 
 def _validate_child() -> None:
@@ -238,14 +369,23 @@ def _validate_child() -> None:
     scope = {"__builtins__": BUILTINS.copy()}
     exec(compile(tree, "<guarded-json-function>", "exec"), scope)
     passed = errors = 0
-    for case in task["cases"]:
+    failures = []
+    for index, case in enumerate(task["cases"]):
         try:
             result = scope[task["function"]](*copy.deepcopy(case["args"]))
             json_value(result)
-            passed += type(result) is type(case["expected"]) and result == case["expected"]
-        except Exception:
+            if type(result) is type(case["expected"]) and result == case["expected"]:
+                passed += 1
+                continue
+            observed = observation(result)
+        except Exception as error:
             errors += 1
-    print(json.dumps({"passed": passed, "total": len(task["cases"]), "errors": errors}))
+            category = "InvalidResult" if isinstance(error, StructuredBlocked) else type(error).__name__
+            observed = {"kind": "exception",
+                        "type": category if category in EXCEPTION_TYPES else "Exception"}
+        failures.append({"case_index": index, "observed": observed})
+    print(json.dumps({"passed": passed, "total": len(task["cases"]), "errors": errors,
+                      "failures": failures}, ensure_ascii=True))
 
 
 def git(root: Path, *arguments: str) -> str:
@@ -341,15 +481,19 @@ def repair(root: Path, state: Path, task: dict, propose: Callable[[dict, str], s
         need(baseline["passed"] < baseline["total"], "no_failing_baseline")
         # One initial proposal and at most one correction after REAL semantic failures.
         # Syntax, grammar, safety, no-change and infrastructure failures are terminal.
-        proposal_task = dict(task)
+        proposal_task = copy.deepcopy(task)
         proposal_source = extracted(before, task)
         attempts = []
+        seen_candidates = set()
         for attempt in (1, 2):
             need(git(root, "rev-parse", "HEAD") == task["base_sha"]
                  and git(root, "status", "--porcelain", "--untracked-files=all") == ""
                  and sha256(path.read_bytes()) == task["before_sha256"], "concurrent_change")
-            after = render(before, task, propose(proposal_task, proposal_source))
+            after = render(before, task, propose(copy.deepcopy(proposal_task), proposal_source))
             need(after != before, "no_change")
+            fingerprint = candidate_fingerprint(after, task)
+            need(fingerprint not in seen_candidates, "candidate_repeated")
+            seen_candidates.add(fingerprint)
             checked = validate(after, task)
             attempts.append({"attempt": attempt, "candidate_sha256": sha256(after.encode()),
                              "validation": checked})
@@ -357,19 +501,10 @@ def repair(root: Path, state: Path, task: dict, propose: Callable[[dict, str], s
                 break
             if attempt == 2:
                 raise StructuredBlocked("candidate_tests_failed")
-            failing, passing = [], []
-            for case in task["cases"]:
-                control = validate(after, {**task, "cases": [case, case]})
-                (passing if control["passed"] == 2 and control["errors"] == 0
-                 else failing).append(case)
-            need(bool(failing), "semantic_feedback_missing")
-            feedback = (task["instruction"] + "\nPREVIOUS PROPOSAL FAILED REAL TESTS. "
-                        "The first " + str(len(failing)) + " examples below failed. "
-                        "Fix those errors without breaking the other examples. "
-                        "Previous rejected function:\n" + extracted(after, task))
-            need(len(feedback) <= 4000, "semantic_feedback_size")
-            proposal_task = {**task, "instruction": feedback, "cases": failing + passing}
-            task_spec(proposal_task)
+            # Reuse observed results from the same validation pass, not 42 subprocess reruns.
+            # Keep the authoritative instruction and the ordered acceptance cases intact.
+            proposal_task = {**copy.deepcopy(task),
+                             "feedback": semantic_feedback(task, after, checked)}
             proposal_source = extracted(after, task)
         need(git(root, "rev-parse", "HEAD") == task["base_sha"]
              and git(root, "status", "--porcelain", "--untracked-files=all") == ""

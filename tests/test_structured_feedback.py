@@ -12,7 +12,8 @@ def test_semantic_feedback_converges_with_same_cases_and_one_commit(tmp_path):
         observed.append((spec, source))
         if len(observed) == 1:
             return json.dumps({"function": "def _property(properties, name):\n    return ''\n"})
-        assert "PREVIOUS PROPOSAL FAILED REAL TESTS" in spec["instruction"]
+        assert spec["instruction"] == contract["instruction"]
+        assert spec["feedback"]["failed_count"] > 0
         assert sorted(json.dumps(c, sort_keys=True) for c in spec["cases"]) == sorted(
             json.dumps(c, sort_keys=True) for c in contract["cases"])
         assert "return ''" in source
@@ -32,7 +33,7 @@ def test_second_failed_proposal_is_terminal_and_does_not_write(tmp_path):
     def propose(*_):
         calls.append(1)
         return json.dumps({"function": "def _property(properties, name):\n    return ''\n"})
-    with pytest.raises(worker.StructuredBlocked, match="^candidate_tests_failed$"):
+    with pytest.raises(worker.StructuredBlocked, match="^candidate_repeated$"):
         worker.repair(root, state, contract, propose)
     assert len(calls) == 2
     assert worker.git(root, "rev-parse", "HEAD") == contract["base_sha"]
