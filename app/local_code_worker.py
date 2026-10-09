@@ -21,7 +21,7 @@ import httpx
 SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
 IDENT = re.compile(r"[a-z][a-z0-9_]{0,40}")
-MODEL = "qwen2.5-coder:0.5b"
+MODEL = "qwen2.5-coder:1.5b"
 OLLAMA_URL = "http://127.0.0.1:11434"
 CONTAINER = "worker-pool-local-code"
 NODES = (

@@ -85,7 +85,7 @@ jobs:
             sleep 1
           done
           test "$ready" = true
-          docker exec worker-pool-local-code ollama pull qwen2.5-coder:0.5b
+          docker exec worker-pool-local-code ollama pull qwen2.5-coder:1.5b
 
       - name: Execute governed queue to local-code E2E
         id: code_e2e

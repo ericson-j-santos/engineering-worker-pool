@@ -89,3 +89,10 @@ def test_repair_prompt_includes_failure_context_without_solution_fallback(monkey
     assert "current implementation fails" in messages[1]["content"]
     assert json.dumps(make_task()["cases"][:8], separators=(",", ":")) in messages[1]["content"]
     assert json.loads(GOOD)["expression"] not in messages[1]["content"]
+
+
+def test_model_pulled_matches_strict_provider_inventory():
+    root = Path(__file__).resolve().parents[1]
+    workflow = (root / ".github/workflows/ci.yml").read_text()
+    assert f"ollama pull {worker.MODEL}" in workflow
+    assert worker.MODEL == "qwen2.5-coder:1.5b"

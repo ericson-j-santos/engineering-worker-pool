@@ -82,4 +82,4 @@ ou prontidão de operação permanente.
 - Ollama Chat API: https://docs.ollama.com/api/chat
 - Modelo local carregado: https://docs.ollama.com/api/ps
 - Desabilitar nuvem: https://docs.ollama.com/faq
-- Modelo de qualificação: https://ollama.com/library/qwen2.5-coder:0.5b
+- Modelo de qualificação: https://ollama.com/library/qwen2.5-coder:1.5b
