@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.local_code_worker import WorkerBlocked, atomic_json, process
@@ -22,6 +23,53 @@ from structured_acceptance import cases, INSTRUCTION
 
 ARTIFACT = Path("artifacts/structured-code-e2e")
 SOURCE_PATH = "app/portfolio_bridge.py"
+
+
+# Fixed diagnostic vocabulary: never persist model text, prompts or exceptions.
+MODEL_STEPS = {
+    ("GET", "/api/tags"): "inventory",
+    ("POST", "/api/show"): "weights",
+    ("POST", "/api/chat"): "generation",
+    ("GET", "/api/ps"): "process_readback",
+}
+MODEL_PHASES = frozenset(("initial", "revision"))
+MODEL_EVENTS = frozenset(("started", "completed", "failed"))
+
+
+def record_model_progress(path: Path, *, sha: str, correlation: str,
+                          phase: str, step: str, event: str, elapsed_ms: int) -> None:
+    """Persist only the last bounded stage; valid even if the process is killed."""
+    need(type(phase) is str and phase in MODEL_PHASES
+         and type(step) is str and step in (*MODEL_STEPS.values(), "proposal")
+         and type(event) is str and event in MODEL_EVENTS
+         and type(elapsed_ms) is int and 0 <= elapsed_ms <= 3_600_000,
+         "model_progress_invalid")
+    atomic_json(path, {
+        "schema_version": 1, "result": "STRUCTURED_MODEL_PROGRESS",
+        "expected_sha": sha, "correlation_id": correlation,
+        "phase": phase, "step": step, "event": event,
+        "elapsed_ms": elapsed_ms,
+    })
+
+
+class DiagnosticStructuredOllama(StructuredOllama):
+    """Observe exact local transport phases without changing the model request."""
+    progress_observer = None
+
+    def request(self, client, method, path, **kwargs):
+        step = MODEL_STEPS.get((method, path))
+        need(step is not None, "model_transport_unrecognized")
+        if self.progress_observer is not None:
+            self.progress_observer(step, "started")
+        try:
+            response = super().request(client, method, path, **kwargs)
+        except Exception:
+            if self.progress_observer is not None:
+                self.progress_observer(step, "failed")
+            raise
+        if self.progress_observer is not None:
+            self.progress_observer(step, "completed")
+        return response
 
 
 def verify_evidence(folder: Path, sha: str, correlation: str) -> dict:
@@ -80,7 +128,17 @@ def inner() -> None:
         }
         atomic_json(artifact / "task.json", task)
         (artifact / "before.py").write_bytes(before)
-        provider = StructuredOllama()
+        provider = DiagnosticStructuredOllama()
+        progress_state = {"phase": "initial", "started_ns": time.monotonic_ns()}
+
+        def progress(step, event):
+            record_model_progress(
+                artifact / "model-progress.json", sha=sha, correlation=correlation,
+                phase=progress_state["phase"], step=step, event=event,
+                elapsed_ms=(time.monotonic_ns() - progress_state["started_ns"]) // 1_000_000,
+            )
+
+        provider.progress_observer = progress
         def revision_observer(diagnostic):
             # Metadata is emitted before assembly/guards and survives their rejection.
             atomic_json(artifact / "revision-diagnostic.json", {
@@ -91,7 +149,15 @@ def inner() -> None:
         provider.revision_observer = revision_observer
         proposals = []
         def propose(spec, source):
-            reply = provider(spec, source)
+            progress_state["phase"] = "revision" if "feedback" in spec else "initial"
+            progress_state["started_ns"] = time.monotonic_ns()
+            progress("proposal", "started")
+            try:
+                reply = provider(spec, source)
+            except Exception:
+                progress("proposal", "failed")
+                raise
+            progress("proposal", "completed")
             # Public-source proposal only; never contains runtime credentials.
             proposals.append({"attempt": len(proposals) + 1,
                               "response_sha256": sha256(reply.encode()), "reply": reply})
@@ -173,7 +239,8 @@ def outer() -> None:
         target = root / ARTIFACT
         target.mkdir(parents=True, exist_ok=True)
         for name in ("evidence.json", "task.json", "before.py", "after.py", "change.patch",
-                     "failure.json", "proposal.json", "revision-diagnostic.json"):
+                     "failure.json", "proposal.json", "revision-diagnostic.json",
+                     "model-progress.json"):
             source = worktree / ARTIFACT / name
             if source.is_file():
                 destination = "inner-failure.json" if name == "failure.json" else name
