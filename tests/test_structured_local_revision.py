@@ -93,7 +93,7 @@ def assert_revision_call_contract(text):
 
 def test_provider_limits_revision_output_and_preserves_initial_contract():
     text=(Path(__file__).resolve().parents[1]/"app/structured_ollama.py").read_text()
-    assert '"format": anchored_schema(before) if is_revision else' in text
+    assert '"format": inference_schema(before) if is_revision else' in text
     assert '"num_predict": 768 if is_revision else 1400' in text
     assert_revision_call_contract(text)
     assert "self.last_revision = edits" in text
