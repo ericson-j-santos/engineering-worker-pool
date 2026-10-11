@@ -37,8 +37,9 @@ def test_anchor_schema_excludes_signature_and_free_paths():
     assert guard_variant["required"] == ["anchor", "guard", "return_expression"]
     assert list(sorted(branches, key=lambda x:int(x[1:]))) == ["L2", "L3", "L4", "L5", "L6"]
     assert "L1" not in line_catalog(SOURCE)
-    for var in variants:
+    for var in replacement_variants:
         assert var["required"] == ["anchor", "new"]
+    for var in variants:
         assert var["additionalProperties"] is False
     assert not re.fullmatch(branches["L2"]["properties"]["new"]["pattern"], "return 1")
     assert re.fullmatch(branches["L2"]["properties"]["new"]["pattern"], "if not x:\n    return 1\nif x is None:")
