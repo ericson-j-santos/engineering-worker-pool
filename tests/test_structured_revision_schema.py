@@ -68,7 +68,7 @@ def test_real_execution_guard_still_rejects_subscript_even_without_schema():
 def test_provider_supplies_same_revision_schema_and_no_extra_attempt():
     root = Path(__file__).resolve().parents[1]
     text = (root / "app/structured_ollama.py").read_text()
-    assert '"format": REVISION_SCHEMA if is_revision else' in text
+    assert '"format": anchored_schema(before) if is_revision else' in text
     assert '"num_predict": 768 if is_revision else 1400' in text
     assert "Never use square brackets in replacement text." in text
     assert "observer=self.revision_observer" in text

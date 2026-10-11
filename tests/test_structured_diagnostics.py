@@ -162,7 +162,7 @@ def test_integration_provider_diagnoses_before_failed_return(tmp_path, monkeypat
     provider = StructuredOllama()
     monkeypatch.setattr(provider, "no_cloud", lambda: None)
     digest = "a" * 64
-    reply = json.dumps({"edits": [{"old": "return None", "new": "return x[0]"}]})
+    reply = json.dumps({"edits": [{"anchor": "L2", "new": "return x[0]"}]})
     def request(client, method, path, **kwargs):
         if path == "/api/tags":
             return {"models": [{"name": MODEL, "digest": digest}]}

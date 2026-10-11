@@ -79,7 +79,7 @@ def test_revision_asks_for_bounded_edits_not_whole_function():
 def assert_revision_call_contract(text):
     calls = [node for node in ast.walk(ast.parse(text))
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-             and node.func.id == "apply_local_edits"]
+             and node.func.id == "apply_anchored_edits"]
     assert len(calls) == 1
     call = calls[0]
     assert len(call.args) == 3
@@ -93,7 +93,7 @@ def assert_revision_call_contract(text):
 
 def test_provider_limits_revision_output_and_preserves_initial_contract():
     text=(Path(__file__).resolve().parents[1]/"app/structured_ollama.py").read_text()
-    assert '"format": REVISION_SCHEMA if is_revision else' in text
+    assert '"format": anchored_schema(before) if is_revision else' in text
     assert '"num_predict": 768 if is_revision else 1400' in text
     assert_revision_call_contract(text)
     assert "self.last_revision = edits" in text

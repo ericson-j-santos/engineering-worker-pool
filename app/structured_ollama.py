@@ -7,7 +7,7 @@ import httpx
 
 from app.local_code_worker import LocalOllama, OLLAMA_URL, DIGEST
 from app.structured_code_worker import proposal_spec, candidate_fingerprint, extracted, need
-from app.structured_revision import REVISION_SCHEMA, apply_local_edits
+from app.structured_anchors import anchored_schema, apply_anchored_edits
 
 
 MODEL = "qwen2.5-coder:7b"
@@ -57,7 +57,7 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
         # authoritative in the executor, but do not duplicate passing examples in this turn.
         messages[0]["content"] = (
             "Repair the previous function using exact localized replacements. "
-            "Return ONLY JSON with key edits, an array of objects with old and new strings. "
+            "Return ONLY JSON with key edits, an array of objects with anchor and new strings. "
             "Never return the whole function, prose or Markdown.")
         messages[1]["content"] = (
             task["instruction"] + "\n"
@@ -76,16 +76,23 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
              "For EACH failure below, compare expected with observed (or exception type), "
              "locate the responsible expression/branch, and correct it. "
              "Do not modify the tests, signature, or execution constraints. "
-             'Return ONLY JSON with edits, each containing exact old and replacement new strings. '
+             'Return ONLY JSON with edits, each containing anchor and new strings. '
 
              "Use at most six non-overlapping replacements in the previous function. "
-             "Every old string must match exactly once, including indentation/newlines. "
+             "Select each anchor at most once from the immutable line identifiers below. "
+             "Each new string replaces ONE original line. Write its first line with NO "
+             "leading indentation; indent additional lines relative to that line. "
+             "The assembler preserves the original line indentation. "
+             "Anchor L1 is never editable. Do not copy or guess old text. "
              "Keep replacements as small as possible while fixing the failing cases. "
              "In every new string use dict.get(...) for dictionary access and list() for an "
              "empty list. Never use square brackets in replacement text. "
              "Do not wrap the whole function in an edit. "
              "An unchanged function will be rejected without executing it again.\n"
-             "VALIDATOR_OBSERVATIONS_V1\n" + json.dumps(feedback, ensure_ascii=False,
+             "IMMUTABLE_SOURCE_LINE_ANCHORS\n"
+             + "\n".join(f"L{number}: {line}" for number, line in
+                         enumerate(extracted(before, task).splitlines(), 1) if number > 1)
+             + "\nVALIDATOR_OBSERVATIONS_V1\n" + json.dumps(feedback, ensure_ascii=False,
                                                        separators=(",", ":"))},
         ])
     return messages
@@ -118,7 +125,7 @@ class StructuredOllama(LocalOllama):
                 "model": MODEL,
                 "messages": messages,
                 "stream": False, "keep_alive": "5m",
-                "format": REVISION_SCHEMA if is_revision else {"type": "object", "properties": {"function": {"type": "string",
+                "format": anchored_schema(before) if is_revision else {"type": "object", "properties": {"function": {"type": "string",
                                                                     "pattern": FUNCTION_PATTERN}},
                            "required": ["function"], "additionalProperties": False},
                 "options": {"temperature": 0, "seed": 7, "num_predict": 768 if is_revision else 1400, "num_ctx": 8192},
@@ -142,7 +149,7 @@ class StructuredOllama(LocalOllama):
             import hashlib
             self.last_model_reply_sha256 = hashlib.sha256(reply.encode()).hexdigest()
             if is_revision:
-                assembled, edits = apply_local_edits(
+                assembled, edits = apply_anchored_edits(
                     reply, before, task, observer=self.revision_observer)
                 self.last_revision = edits
                 return assembled
