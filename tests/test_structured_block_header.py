@@ -40,9 +40,11 @@ def test_replay_and_multi_line_header_preservation():
 
 def test_schema_still_bounded_and_signature_not_editable():
     item=anchored_schema(SOURCE)['properties']['edits']['items']
-    assert 'L1' not in item['properties']['anchor']['enum']
-    assert item['properties']['new']['maxLength']==6000
-    assert item['additionalProperties'] is False
+    variants=item['oneOf']
+    anchors=sum((v['properties']['anchor']['enum'] for v in variants), [])
+    assert 'L1' not in anchors and len(anchors)==len(set(anchors))
+    assert all(v['properties']['new']['maxLength']==6000 for v in variants)
+    assert all(v['additionalProperties'] is False for v in variants)
 
 
 def test_negative_control_rejects_broken_header_without_relaxing_ast():
@@ -50,3 +52,18 @@ def test_negative_control_rejects_broken_header_without_relaxing_ast():
     assert 'revision_block_header' in REASONS
     with pytest.raises(AnchorRejected):
         assemble_anchors(make([{'anchor':'L2','new':'return x[0]'}]),SOURCE)
+
+
+def test_generation_schema_rejects_block_header_removal_before_runtime():
+    import re
+    schema=anchored_schema(SOURCE)
+    variants=schema['properties']['edits']['items']['oneOf']
+    def matches(anchor,new):
+        return any(anchor in v['properties']['anchor']['enum'] and
+                   re.fullmatch(v['properties']['new']['pattern'],new) is not None
+                   for v in variants)
+    assert matches('L2','if not x:\n    return 1\nif x is None:')
+    assert not matches('L2','return 1')
+    assert matches('L6','return 1')
+    assert not matches('L6','return x[0]')
+    assert not matches('L1','if x:')

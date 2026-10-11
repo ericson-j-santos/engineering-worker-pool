@@ -27,12 +27,19 @@ def test_duplicate_source_lines_have_distinct_immutable_anchors():
 def test_anchor_schema_excludes_signature_and_free_paths():
     schema = anchored_schema(SOURCE)
     item = schema["properties"]["edits"]["items"]
-    assert item["properties"]["anchor"]["enum"] == ["L2", "L3", "L4", "L5", "L6"]
+    variants = item["oneOf"]
+    assert len(variants) == 2
+    branches = {key: var for var in variants
+                for key in var["properties"]["anchor"]["enum"]}
+    assert list(sorted(branches, key=lambda x:int(x[1:]))) == ["L2", "L3", "L4", "L5", "L6"]
     assert "L1" not in line_catalog(SOURCE)
-    assert item["required"] == ["anchor", "new"]
-    assert not re.fullmatch(item["properties"]["new"]["pattern"], "return x[0]")
-    assert re.fullmatch(item["properties"]["new"]["pattern"], "return x.get('name')")
-    assert item["additionalProperties"] is False
+    for var in variants:
+        assert var["required"] == ["anchor", "new"]
+        assert var["additionalProperties"] is False
+    assert not re.fullmatch(branches["L2"]["properties"]["new"]["pattern"], "return 1")
+    assert re.fullmatch(branches["L2"]["properties"]["new"]["pattern"], "if not x:\n    return 1\nif x is None:")
+    assert not re.fullmatch(branches["L6"]["properties"]["new"]["pattern"], "return x[0]")
+    assert re.fullmatch(branches["L6"]["properties"]["new"]["pattern"], "return x.get('name')")
     assert schema["properties"]["edits"]["maxItems"] == 6
 
 

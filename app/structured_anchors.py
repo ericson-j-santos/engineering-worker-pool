@@ -7,6 +7,7 @@ import json
 from app.structured_diagnostics import RevisionTrace
 
 NEW_PATTERN = r"^[^\[\]]*$"
+HEADER_NEW_PATTERN = r"^[^\[\]]*:[ \n]*$"
 
 
 class AnchorRejected(ValueError):
@@ -34,18 +35,26 @@ def line_catalog(source: str) -> dict[str, int]:
 def anchored_schema(source: str) -> dict:
     anchors = line_catalog(source)
     require(bool(anchors), "revision_anchor_source")
+    lines = source.splitlines(keepends=True)
+    headers = [anchor for anchor, index in anchors.items()
+               if lines[index].rstrip().endswith(":")]
+    ordinary = [anchor for anchor in anchors if anchor not in headers]
+    variants = []
+    for permitted, pattern in ((headers, HEADER_NEW_PATTERN), (ordinary, NEW_PATTERN)):
+        if permitted:
+            variants.append({
+                "type": "object",
+                "properties": {
+                    "anchor": {"type": "string", "enum": permitted},
+                    "new": {"type": "string", "maxLength": 6000, "pattern": pattern},
+                },
+                "required": ["anchor", "new"], "additionalProperties": False,
+            })
     return {
         "type": "object",
         "properties": {"edits": {
             "type": "array", "minItems": 1, "maxItems": 6,
-            "items": {
-                "type": "object",
-                "properties": {
-                    "anchor": {"type": "string", "enum": list(anchors)},
-                    "new": {"type": "string", "maxLength": 6000, "pattern": NEW_PATTERN},
-                },
-                "required": ["anchor", "new"], "additionalProperties": False,
-            },
+            "items": {"oneOf": variants} if len(variants) > 1 else variants[0],
         }},
         "required": ["edits"], "additionalProperties": False,
     }

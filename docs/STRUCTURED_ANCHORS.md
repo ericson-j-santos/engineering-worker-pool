@@ -49,3 +49,17 @@ não vazia também termine em `:`. Assim, o corpo existente não é deixado
 código, não corrige automaticamente a resposta do modelo e não afrouxa
 nenhum guard. Substituições multilinha válidas continuam aceitas.
 Os 42 casos e as políticas de segurança permanecem inalterados.
+
+
+## Contrato de saída condicionado pela âncora
+
+O run 38138410985 demonstrou que uma instrução textual não basta:
+o modelo retornou uma alteração com `revision_block_header`, e o
+montador a bloqueou antes de gerar qualquer patch.
+Agora o JSON Schema enviado ao Ollama separa âncoras de cabeçalho
+(cuja linha original abre um bloco com `:`) das demais. Apenas
+esses cabeçalhos exigem que o novo texto termine em `:`.
+A opção `oneOf` associa cada âncora à restrição correspondente;
+o validador de montagem continua independente e obrigatório.
+A implementação não altera o modelo, os 42 casos ou as regras AST.
+Nenhuma tarefa real da fila é despachada por esse teste.
