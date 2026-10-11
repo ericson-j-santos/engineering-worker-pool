@@ -141,7 +141,8 @@ class StructuredOllama(LocalOllama):
                 "format": inference_schema(before) if is_revision else {"type": "object", "properties": {"function": {"type": "string",
                                                                     "pattern": FUNCTION_PATTERN}},
                            "required": ["function"], "additionalProperties": False},
-                "options": {"temperature": 0, "seed": 7, "num_predict": 768 if is_revision else 1400, "num_ctx": 8192},
+                "options": {"temperature": 0, "seed": 7, "num_predict": 384 if is_revision else 1400,
+                            "num_ctx": 4096 if is_revision else 8192},
             })
             need(response.get("done") is True and response.get("model") == MODEL
                  and type(response.get("eval_count")) is int and response["eval_count"] > 0,

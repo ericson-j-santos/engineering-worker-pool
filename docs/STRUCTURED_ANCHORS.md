@@ -106,3 +106,24 @@ sendo rejeitada** pelo guard independente. Assinatura, AST, execução isolada,
 42 casos e ausência de fallback sintético permanecem inalterados. O ganho de
 tempo e a aceitação do modelo real só poderão ser afirmados depois de um novo
 E2E no SHA corrigido.
+
+
+## Limite de custo computacional da revisão no CPU (11/10/2026)
+
+No E2E `38143653191` (HEAD `42a73a2`), o artefato validado
+`11703519256` registrou `phase=revision`, `step=generation`,
+`event=started` e nenhum evento terminal antes do encerramento do gateway
+em aproximadamente 285 segundos. O compactador de esquema não bastou.
+
+A menor hipótese reversível a verificar é limitar somente a segunda geração
+(`num_predict` de 768 para 384 tokens e `num_ctx` de 8192 para 4096),
+preservando temperatura zero, seed, o modelo Qwen2.5-Coder 7B, a quantidade
+de propostas, o primeiro prompt e todos os limites de execução. A resposta
+modelada continua sujeita a parser JSON completo, esquema exato de edições,
+AST, SHA, 42 casos, replay e validação independente; respostas truncadas
+falham fechadas e nunca são aplicadas ou apresentadas como sucesso.
+
+Esse limite reduz o trabalho computacional máximo por revisão, mas não prova
+que a revisão passará nos testes nem que o modelo completará dentro do prazo.
+O resultado real depende de novo E2E no SHA corrigido, sem reruns no SHA
+anterior, serviços pagos ou aumento de timeout.
