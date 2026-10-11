@@ -41,9 +41,11 @@ def test_replay_and_multi_line_header_preservation():
 def test_schema_still_bounded_and_signature_not_editable():
     item=anchored_schema(SOURCE)['properties']['edits']['items']
     variants=item['oneOf']
-    anchors=sum((v['properties']['anchor']['enum'] for v in variants), [])
+    anchors=sum((v['properties']['anchor']['enum'] for v in variants
+                 if 'new' in v['properties']), [])
     assert 'L1' not in anchors and len(anchors)==len(set(anchors))
-    assert all(v['properties']['new']['maxLength']==6000 for v in variants)
+    assert all(v['properties']['new']['maxLength']==6000 for v in variants
+               if 'new' in v['properties'])
     assert all(v['additionalProperties'] is False for v in variants)
 
 
@@ -61,7 +63,7 @@ def test_generation_schema_rejects_block_header_removal_before_runtime():
     def matches(anchor,new):
         return any(anchor in v['properties']['anchor']['enum'] and
                    re.fullmatch(v['properties']['new']['pattern'],new) is not None
-                   for v in variants)
+                   for v in variants if 'new' in v['properties'])
     assert matches('L2','if not x:\n    return 1\nif x is None:')
     assert not matches('L2','return 1')
     assert matches('L6','return 1')

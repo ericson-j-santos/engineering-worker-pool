@@ -8,6 +8,7 @@ from app.structured_diagnostics import RevisionTrace
 
 NEW_PATTERN = r"^[^\[\]]*$"
 HEADER_NEW_PATTERN = r"^[^\[\]]*:[ \n]*$"
+GUARD_EXPRESSION_PATTERN = r"^[^\[\]\r\n\t\x00]+$"
 
 
 class AnchorRejected(ValueError):
@@ -39,6 +40,9 @@ def anchored_schema(source: str) -> dict:
     headers = [anchor for anchor, index in anchors.items()
                if lines[index].rstrip().endswith(":")]
     ordinary = [anchor for anchor in anchors if anchor not in headers]
+    guardable = [anchor for anchor, index in anchors.items()
+                 if lines[index].lstrip().startswith("if ")
+                 and lines[index].rstrip().endswith(":")]
     variants = []
     for permitted, pattern in ((headers, HEADER_NEW_PATTERN), (ordinary, NEW_PATTERN)):
         if permitted:
@@ -50,6 +54,20 @@ def anchored_schema(source: str) -> dict:
                 },
                 "required": ["anchor", "new"], "additionalProperties": False,
             })
+    if guardable:
+        variants.append({
+            "type": "object",
+            "properties": {
+                "anchor": {"type": "string", "enum": guardable},
+                "guard": {"type": "string", "minLength": 1, "maxLength": 2000,
+                          "pattern": GUARD_EXPRESSION_PATTERN},
+                "return_expression": {"type": "string", "minLength": 1,
+                                      "maxLength": 2000,
+                                      "pattern": GUARD_EXPRESSION_PATTERN},
+            },
+            "required": ["anchor", "guard", "return_expression"],
+            "additionalProperties": False,
+        })
     return {
         "type": "object",
         "properties": {"edits": {
@@ -74,7 +92,30 @@ def assemble_anchors(reply: str, source: str) -> tuple[str, list[dict]]:
     lines = source.splitlines(keepends=True)
     replacements = {}
     for edit in edits:
-        require(type(edit) is dict and set(edit) == {"anchor", "new"}
+        require(type(edit) is dict, "revision_edit_schema")
+        # A typed early-return guard cannot remove an existing block header.
+        # Expressions are supplied by the model; the assembler supplies syntax only.
+        if set(edit) == {"anchor", "guard", "return_expression"}:
+            anchor = edit["anchor"]
+            condition, value = edit["guard"], edit["return_expression"]
+            require(type(anchor) is str and type(condition) is str
+                    and type(value) is str and 1 <= len(condition) <= 2000
+                    and 1 <= len(value) <= 2000,
+                    "revision_edit_schema")
+            require(anchor in anchors, "revision_anchor_invalid")
+            index = anchors[anchor]
+            require(index not in replacements, "revision_anchor_duplicate")
+            original = lines[index]
+            require(original.lstrip().startswith("if ") and original.rstrip().endswith(":"),
+                    "revision_anchor_invalid")
+            require(all(char not in condition and char not in value
+                        for char in "\r\n\t\0[]"), "revision_indentation")
+            indent = original[:len(original) - len(original.lstrip(" "))]
+            replacements[index] = (indent + "if " + condition + ":\n"
+                                   + indent + "    return " + value + "\n"
+                                   + original)
+            continue
+        require(set(edit) == {"anchor", "new"}
                 and type(edit["anchor"]) is str and type(edit["new"]) is str
                 and len(edit["new"]) <= 6000, "revision_edit_schema")
         anchor, new = edit["anchor"], edit["new"]
@@ -87,7 +128,6 @@ def assemble_anchors(reply: str, source: str) -> tuple[str, list[dict]]:
         require(not added or (added[0] and not added[0][0].isspace()),
                 "revision_indentation")
         # Do not orphan the existing indented suite by removing its block opener.
-        # Only indentation from the immutable selected line is supplied by the assembler.
         original = lines[index]
         if original.rstrip().endswith(":"):
             require(bool(added) and added[-1].rstrip().endswith(":"),

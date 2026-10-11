@@ -28,9 +28,13 @@ def test_anchor_schema_excludes_signature_and_free_paths():
     schema = anchored_schema(SOURCE)
     item = schema["properties"]["edits"]["items"]
     variants = item["oneOf"]
-    assert len(variants) == 2
-    branches = {key: var for var in variants
+    assert len(variants) == 3
+    replacement_variants = [var for var in variants if "new" in var["properties"]]
+    branches = {key: var for var in replacement_variants
                 for key in var["properties"]["anchor"]["enum"]}
+    guard_variant = next(var for var in variants if "guard" in var["properties"])
+    assert guard_variant["properties"]["anchor"]["enum"] == ["L2", "L4"]
+    assert guard_variant["required"] == ["anchor", "guard", "return_expression"]
     assert list(sorted(branches, key=lambda x:int(x[1:]))) == ["L2", "L3", "L4", "L5", "L6"]
     assert "L1" not in line_catalog(SOURCE)
     for var in variants:

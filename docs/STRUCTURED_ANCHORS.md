@@ -63,3 +63,22 @@ A opção `oneOf` associa cada âncora à restrição correspondente;
 o validador de montagem continua independente e obrigatório.
 A implementação não altera o modelo, os 42 casos ou as regras AST.
 Nenhuma tarefa real da fila é despachada por esse teste.
+
+
+## Edição estruturada de guarda com retorno antecipado
+
+O E2E `38140932676`, HEAD `68d1f168`, concluiu a chamada
+de revisão, mas rejeitou `revision_block_header` novamente.
+Isso demonstra que o contrato de saída condicionado por `oneOf`
+não assegurou, sozinho, o preservamento do cabeçalho.
+
+Uma nova variante tipada aceita `{anchor, guard, return_expression}`
+somente em cabeçalhos `if` existentes. O modelo escolhe ambas as
+expressões. O montador emite a estrutura fixa `if <guard>: return
+<return_expression>` antes do cabeçalho original, mantendo a função,
+assinatura, indentação e bloco existentes. Não há solução pronta,
+substituição de código pelo executor nem normalização silenciosa.
+As expressões e a função inteira continuam submetidas à AST original,
+aos 42 casos, ao SHA de origem, ao limite de seis edições e à
+validação independente. Entradas com índice, quebras de linha ou
+âncoras erradas são rejeitadas antes da montagem.

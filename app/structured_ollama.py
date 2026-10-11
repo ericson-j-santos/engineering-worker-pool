@@ -57,7 +57,8 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
         # authoritative in the executor, but do not duplicate passing examples in this turn.
         messages[0]["content"] = (
             "Repair the previous function using exact localized replacements. "
-            "Return ONLY JSON with key edits, an array of objects with anchor and new strings. "
+            "Return ONLY JSON with key edits, each either {anchor,new} or "
+            "{anchor,guard,return_expression}. "
             "Never return the whole function, prose or Markdown.")
         messages[1]["content"] = (
             task["instruction"] + "\n"
@@ -87,6 +88,14 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
              "When the original anchored line ends in a colon, the LAST nonempty line "
              "of its replacement must also end in a colon to keep the existing body. "
              "Do not replace a block opener with a return or assignment. "
+             "For a malformed item BEFORE an existing if-header, you may choose "
+             "a typed guard edit with keys anchor, guard and return_expression "
+             "INSTEAD of anchor and new. The guard and return_expression values "
+             "must be single Python expressions, not statements. The assembler "
+             "inserts an early-return if-guard before the original unchanged "
+             "if-header; do not include if, return or colons in these values. "
+             "Use a guard edit instead of replacing a header when the original "
+             "nested suite must remain intact. "
              "Anchor L1 is never editable. Do not copy or guess old text. "
              "Keep replacements as small as possible while fixing the failing cases. "
              "In every new string use dict.get(...) for dictionary access and list() for an "
