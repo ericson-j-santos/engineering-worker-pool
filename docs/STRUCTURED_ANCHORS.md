@@ -33,3 +33,19 @@ inalterado e diferenças apenas cosméticas continuam bloqueados antes de testes
 do candidato ou gravação. A identidade/duplicidade das âncoras e todos os
 controles de segurança permanecem. Não há aproveitamento automático de proposta
 que reprovou testes; apenas montagem atômica do conjunto submetido.
+
+
+## Prevenção de cabeçalho órfão
+
+No run 38137690003 a montagem retornou `candidate_syntax`:
+`unexpected_indent` na linha 28, após linha anterior sem `:`.
+O texto da revisão não foi persistido, portanto não é possível atribuir
+com certeza qual âncora causou o problema.
+
+Como proteção contra essa classe de erro, uma âncora cujo texto original
+termina em `:` (abre bloco) só admite substituição cuja última linha
+não vazia também termine em `:`. Assim, o corpo existente não é deixado
+órfão por uma edição isolada. A regra é restritiva: não cria ou reindenta
+código, não corrige automaticamente a resposta do modelo e não afrouxa
+nenhum guard. Substituições multilinha válidas continuam aceitas.
+Os 42 casos e as políticas de segurança permanecem inalterados.

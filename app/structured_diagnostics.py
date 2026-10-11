@@ -15,7 +15,7 @@ REASONS = frozenset({
     "revision_json", "revision_schema", "revision_edit_schema",
     "revision_edit_not_unique", "revision_signature_edit", "revision_edits_overlap",
     "revision_anchor_source", "revision_anchor_invalid", "revision_anchor_duplicate",
-    "revision_indentation",
+    "revision_indentation", "revision_block_header",
     "candidate_repeated", "candidate_grammar", "candidate_function_only",
     "candidate_syntax", "candidate_loops", "candidate_depth", "candidate_name",
     "candidate_call", "candidate_attribute", "nested_function", "reserved_assignment",

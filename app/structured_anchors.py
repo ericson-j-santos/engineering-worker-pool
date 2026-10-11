@@ -77,8 +77,12 @@ def assemble_anchors(reply: str, source: str) -> tuple[str, list[dict]]:
         added = new.splitlines()
         require(not added or (added[0] and not added[0][0].isspace()),
                 "revision_indentation")
+        # Do not orphan the existing indented suite by removing its block opener.
         # Only indentation from the immutable selected line is supplied by the assembler.
         original = lines[index]
+        if original.rstrip().endswith(":"):
+            require(bool(added) and added[-1].rstrip().endswith(":"),
+                    "revision_block_header")
         indent = original[:len(original) - len(original.lstrip(" "))]
         replacement = "".join(indent + line + "\n" for line in added)
         # A no-op entry is harmless; only a wholly unchanged candidate is rejected.
