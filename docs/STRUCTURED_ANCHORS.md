@@ -82,3 +82,27 @@ As expressões e a função inteira continuam submetidas à AST original,
 aos 42 casos, ao SHA de origem, ao limite de seis edições e à
 validação independente. Entradas com índice, quebras de linha ou
 âncoras erradas são rejeitadas antes da montagem.
+
+
+## Otimização da gramática de inferência — evidência de 11/10/2026
+
+Os runs [38140932676](https://github.com/ericson-j-santos/engineering-worker-pool/actions/runs/38140932676) e
+[38142010897](https://github.com/ericson-j-santos/engineering-worker-pool/actions/runs/38142010897)
+distinguem duas situações: rejeição por \`revision_block_header\` e, depois,
+ausência de conclusão da chamada \`/api/chat\` de revisão até o limite governado.
+A gramática \`oneOf\` com três variantes é uma hipótese de alto impacto no custo
+do modelo local, ainda não demonstrada por benchmark isolado.
+
+A entrada \`format\` enviada ao Ollama passa a usar \`inference_schema\`, um
+envelope com âncora enumerada, no máximo seis edições, limites de tamanho e
+restrição de colchetes. Não há \`oneOf\` no envelope de geração. A presença
+dos campos opcionais na geração **não autoriza** combinações arbitrárias:
+\`assemble_anchors\` continua exigindo uma das duas formas exatas
+(\`anchor/new\` ou \`anchor/guard/return_expression\`) e, para cabeçalhos
+originais, continua exigindo preservação de \`:\` e da sintaxe Python.
+
+Portanto, uma proposta malformada pode sair do modelo, mas **deve continuar
+sendo rejeitada** pelo guard independente. Assinatura, AST, execução isolada,
+42 casos e ausência de fallback sintético permanecem inalterados. O ganho de
+tempo e a aceitação do modelo real só poderão ser afirmados depois de um novo
+E2E no SHA corrigido.

@@ -78,6 +78,42 @@ def anchored_schema(source: str) -> dict:
     }
 
 
+
+def inference_schema(source: str) -> dict:
+    """Compact output grammar for local generation; assembly remains authoritative.
+
+    Ollama's nested oneOf schema has three disjoint edit variants and caused
+    revision generation to remain unfinished until the governed time limit.
+    The small envelope constrains anchors, sizes and character patterns.
+    assemble_anchors independently enforces exact edit shapes, header syntax,
+    guardable lines, allowed AST, signature and the fixed acceptance contract.
+    """
+    anchors = line_catalog(source)
+    require(bool(anchors), "revision_anchor_source")
+    return {
+        "type": "object",
+        "properties": {"edits": {
+            "type": "array", "minItems": 1, "maxItems": 6,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "anchor": {"type": "string", "enum": list(anchors)},
+                    "new": {"type": "string", "maxLength": 6000,
+                            "pattern": NEW_PATTERN},
+                    "guard": {"type": "string", "minLength": 1,
+                              "maxLength": 2000, "pattern": GUARD_EXPRESSION_PATTERN},
+                    "return_expression": {"type": "string", "minLength": 1,
+                                          "maxLength": 2000,
+                                          "pattern": GUARD_EXPRESSION_PATTERN},
+                },
+                "required": ["anchor"],
+                "additionalProperties": False,
+            },
+        }},
+        "required": ["edits"], "additionalProperties": False,
+    }
+
+
 def assemble_anchors(reply: str, source: str) -> tuple[str, list[dict]]:
     anchors = line_catalog(source)
     require(type(reply) is str and len(reply.encode()) <= 16384, "revision_size")
