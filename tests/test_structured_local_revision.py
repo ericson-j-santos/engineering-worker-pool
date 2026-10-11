@@ -75,11 +75,27 @@ def test_revision_asks_for_bounded_edits_not_whole_function():
     assert "Trusted input/output examples:" not in messages[1]["content"]
     assert "VALIDATOR_OBSERVATIONS_V1" in messages[-1]["content"]
 
+
+def assert_revision_call_contract(text):
+    calls = [node for node in ast.walk(ast.parse(text))
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+             and node.func.id == "apply_local_edits"]
+    assert len(calls) == 1
+    call = calls[0]
+    assert len(call.args) == 3
+    assert [ast.dump(arg, include_attributes=False) for arg in call.args] == [
+        ast.dump(ast.Name(id=name, ctx=ast.Load()), include_attributes=False)
+        for name in ("reply", "before", "task")]
+    assert len(call.keywords) == 1 and call.keywords[0].arg == "observer"
+    expected = ast.parse("self.revision_observer", mode="eval").body
+    assert ast.dump(call.keywords[0].value, include_attributes=False) == ast.dump(
+        expected, include_attributes=False)
+
 def test_provider_limits_revision_output_and_preserves_initial_contract():
     text=(Path(__file__).resolve().parents[1]/"app/structured_ollama.py").read_text()
     assert '"format": REVISION_SCHEMA if is_revision else' in text
     assert '"num_predict": 768 if is_revision else 1400' in text
-    assert "assembled, edits = apply_local_edits(reply, before, task)" in text
+    assert_revision_call_contract(text)
     assert "self.last_revision = edits" in text
     ast.parse(text)
 
@@ -93,3 +109,15 @@ def test_six_localized_edits_fix_all_original_cases_synthetic_control():
     # Source-bound edits cannot be replayed against another function version.
     with pytest.raises(worker.StructuredBlocked,match="feedback_candidate_mismatch"):
         apply_local_edits(json.dumps({"edits":edits}),after,spec)
+
+@pytest.mark.parametrize("replacement", [
+    "observer=None", "observer=self.unknown_sink", "**self.options",
+])
+def test_provider_call_contract_detects_disconnected_observer(replacement):
+    text=(Path(__file__).resolve().parents[1]/"app/structured_ollama.py").read_text()
+    assert_revision_call_contract(text)
+    mutated = text.replace("observer=self.revision_observer", replacement)
+    assert mutated != text
+    with pytest.raises(AssertionError):
+        assert_revision_call_contract(mutated)
+    assert_revision_call_contract(text)
