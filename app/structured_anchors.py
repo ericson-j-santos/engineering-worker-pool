@@ -81,11 +81,12 @@ def assemble_anchors(reply: str, source: str) -> tuple[str, list[dict]]:
         original = lines[index]
         indent = original[:len(original) - len(original.lstrip(" "))]
         replacement = "".join(indent + line + "\n" for line in added)
-        require(replacement != original, "candidate_repeated")
+        # A no-op entry is harmless; only a wholly unchanged candidate is rejected.
         replacements[index] = replacement
     for index, replacement in replacements.items():
         lines[index] = replacement
     assembled = "".join(lines)
+    require(assembled != source, "candidate_repeated")
     require(len(assembled.encode()) <= 20000, "revision_size")
     return assembled, edits
 

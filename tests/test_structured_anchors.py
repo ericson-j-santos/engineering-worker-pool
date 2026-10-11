@@ -140,3 +140,25 @@ def test_integration_original_42_case_control_uses_model_shaped_anchors():
     assembled,_=apply_anchored_edits(json.dumps({"edits":edits}),source,spec)
     checked=worker.validate(json.loads(assembled)["function"],worker.proposal_spec(spec))
     assert checked=={"passed":42,"total":42,"errors":0,"failures":[]}
+
+
+def test_noop_entry_does_not_discard_an_independent_real_change():
+    raw=json.dumps({"edits":[
+        {"anchor":"L2","new":"if x is None:"},
+        {"anchor":"L6","new":"return 0"},
+    ]})
+    assembled, _=assemble_anchors(raw,SOURCE)
+    assert assembled==SOURCE.replace("    return x\n","    return 0\n")
+    assert assemble_anchors(raw,SOURCE)[0]==assembled
+
+
+def test_integration_cosmetic_only_revision_is_still_rejected_by_ast():
+    from app.structured_anchors import apply_anchored_edits
+    from app.structured_code_worker import StructuredBlocked
+    from test_structured_diagnostics import revision_contract
+    before, proposal=revision_contract()
+    seen=[]
+    with pytest.raises(StructuredBlocked, match="candidate_repeated"):
+        apply_anchored_edits(reply("L2","return (None)"),before,proposal,observer=seen.append)
+    assert seen[-1]["stage"]=="rejected"
+    assert seen[-1]["reason_code"]=="candidate_repeated"

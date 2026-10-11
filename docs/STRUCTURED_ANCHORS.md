@@ -23,3 +23,13 @@ normalização de código proibido ou mudança da função de produto no reposit
 O diagnóstico continua sem código-fonte, prompts ou credenciais e é preservado
 mesmo quando uma âncora ou o guard é rejeitado. A aprovação ainda depende do
 E2E real, patch reaplicável, regressão independente e replay.
+
+## Entradas sem efeito e repetição real
+
+Uma revisão pode mencionar uma linha sem modificá-la junto com outras mudanças.
+O montador não rejeita o conjunto por essa entrada isolada: compara a montagem
+com a origem e, em seguida, compara a AST completa. Conjunto inteiramente
+inalterado e diferenças apenas cosméticas continuam bloqueados antes de testes
+do candidato ou gravação. A identidade/duplicidade das âncoras e todos os
+controles de segurança permanecem. Não há aproveitamento automático de proposta
+que reprovou testes; apenas montagem atômica do conjunto submetido.
