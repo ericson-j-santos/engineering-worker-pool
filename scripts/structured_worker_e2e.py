@@ -81,6 +81,14 @@ def inner() -> None:
         atomic_json(artifact / "task.json", task)
         (artifact / "before.py").write_bytes(before)
         provider = StructuredOllama()
+        def revision_observer(diagnostic):
+            # Metadata is emitted before assembly/guards and survives their rejection.
+            atomic_json(artifact / "revision-diagnostic.json", {
+                "result": "STRUCTURED_REVISION_DIAGNOSTIC",
+                "expected_sha": sha, "correlation_id": correlation,
+                "task_id": task["task_id"], "diagnostic": diagnostic,
+            })
+        provider.revision_observer = revision_observer
         proposals = []
         def propose(spec, source):
             reply = provider(spec, source)
@@ -165,7 +173,7 @@ def outer() -> None:
         target = root / ARTIFACT
         target.mkdir(parents=True, exist_ok=True)
         for name in ("evidence.json", "task.json", "before.py", "after.py", "change.patch",
-                     "failure.json", "proposal.json"):
+                     "failure.json", "proposal.json", "revision-diagnostic.json"):
             source = worktree / ARTIFACT / name
             if source.is_file():
                 destination = "inner-failure.json" if name == "failure.json" else name

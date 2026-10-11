@@ -90,6 +90,8 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
 
 
 class StructuredOllama(LocalOllama):
+    revision_observer = None  # Opt-in trusted callback; never a default file output.
+
     def __call__(self, task: dict, before: str) -> str:
         messages = proposal_messages(task, before)
         self.last_revision = None
@@ -138,7 +140,8 @@ class StructuredOllama(LocalOllama):
             import hashlib
             self.last_model_reply_sha256 = hashlib.sha256(reply.encode()).hexdigest()
             if is_revision:
-                assembled, edits = apply_local_edits(reply, before, task)
+                assembled, edits = apply_local_edits(
+                    reply, before, task, observer=self.revision_observer)
                 self.last_revision = edits
                 return assembled
             return reply

@@ -8,8 +8,10 @@ from __future__ import annotations
 import json
 
 from app.structured_code_worker import (
-    candidate_fingerprint, extracted, need, proposal_spec, render, StructuredBlocked,
+    candidate_fingerprint, extracted, need, proposal_spec, render, StructuredBlocked, NODES,
 )
+
+from app.structured_diagnostics import RevisionTrace
 
 REVISION_SCHEMA = {
     "type": "object",
@@ -24,7 +26,18 @@ REVISION_SCHEMA = {
 }
 
 
-def apply_local_edits(reply: str, before: str, proposal: dict) -> tuple[str, list[dict]]:
+def apply_local_edits(reply: str, before: str, proposal: dict, *, observer=None) -> tuple[str, list[dict]]:
+    trace = RevisionTrace(reply, observer)
+    try:
+        result = _apply_local_edits(reply, before, proposal, trace)
+    except StructuredBlocked as error:
+        trace.rejected(str(error))
+        raise
+    trace.accepted()
+    return result
+
+
+def _apply_local_edits(reply: str, before: str, proposal: dict, trace: RevisionTrace) -> tuple[str, list[dict]]:
     task = proposal_spec(proposal)
     need("feedback" in proposal, "revision_feedback_missing")
     need(candidate_fingerprint(before, task) == proposal["feedback"]["candidate_sha256"],
@@ -56,6 +69,7 @@ def apply_local_edits(reply: str, before: str, proposal: dict) -> tuple[str, lis
     for start, end, new in reversed(spans):
         source = source[:start] + new + source[end:]
     # Re-apply the same full-function boundary/signature/AST validation before assembly.
+    trace.before_guard(source, NODES)
     candidate = render(before, task, json.dumps({"function": source}))
     need(candidate_fingerprint(candidate, task) != proposal["feedback"]["candidate_sha256"],
          "candidate_repeated")
