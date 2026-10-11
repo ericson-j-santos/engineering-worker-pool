@@ -37,3 +37,19 @@ continuar descrevendo exatamente a origem. São mantidos seis edits, os mesmos
 limites, testes e guards de execução. Não se normaliza nem executa código
 rejeitado. Essa mudança corrige a ausência de restrição na geração, mas só
 um novo E2E real pode comprovar a convergência do reparador.
+
+
+## Detalhamento sanitizado de falha sintática
+
+Quando `ast.parse` rejeita a revisão, o diagnóstico agora preserva a categoria
+sintática de uma enumeração fechada, linha e coluna limitadas, tamanho,
+indentação e hash da linha e indicador de dois-pontos da linha anterior.
+`SyntaxError.msg`, `SyntaxError.text`, trechos do código, nomes, literais,
+prompts, respostas brutas e credenciais continuam excluídos. Categorias
+desconhecidas são `other`. O registro é feito antes da rejeição e é
+conservado pelo E2E mesmo quando o patch é bloqueado.
+
+O incremento é estritamente de observabilidade; não modifica gramática de
+execução, comportamento do modelo, casos de aceite nem permissão de escrita.
+A interpretação causal dos campos precisa ser corroborada por reprodução
+determinística antes da próxima alteração funcional.

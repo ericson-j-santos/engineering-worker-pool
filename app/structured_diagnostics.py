@@ -28,6 +28,34 @@ REASONS = frozenset({
 })
 
 
+
+# Fixed categories only. SyntaxError.msg can contain user text; never persist it.
+SYNTAX_KINDS = (
+    ("expected an indented block", "missing_block"),
+    ("unexpected indent", "unexpected_indent"),
+    ("unindent does not match", "bad_unindent"),
+    ("inconsistent use of tabs and spaces", "tabs_spaces"),
+    ("expected ':'", "missing_colon"),
+    ("invalid syntax", "invalid_syntax"),
+    ("'return' outside function", "return_outside"),
+    ("'break' outside loop", "break_outside"),
+    ("unterminated string", "unterminated_string"),
+    ("'(' was never closed", "open_parenthesis"),
+    ("'[' was never closed", "open_bracket"),
+    ("'{' was never closed", "open_brace"),
+)
+
+
+def syntax_kind(error: SyntaxError) -> str:
+    message = error.msg
+    if not isinstance(message, str):
+        return "other"
+    for prefix, category in SYNTAX_KINDS:
+        if message.startswith(prefix):
+            return category
+    return "other"
+
+
 class DiagnosticWriteError(RuntimeError):
     """Fixed message only; observer exceptions are never propagated as text."""
 
@@ -60,7 +88,30 @@ class RevisionTrace:
         self.record["assembly_sha256"] = hashlib.sha256(source.encode()).hexdigest()
         try:
             tree = ast.parse(source)
-        except (SyntaxError, ValueError, RecursionError):
+        except SyntaxError as error:
+            self.record["ast_parse"] = "invalid"
+            # Only bounded integers, enum and SHA-256. Never error.text or error.msg.
+            lines = source.splitlines()
+            line = error.lineno
+            offset = error.offset
+            self.record["syntax_kind"] = syntax_kind(error)
+            if type(line) is int and 1 <= line <= len(lines) and line <= 400:
+                content = lines[line - 1]
+                self.record["syntax_line"] = line
+                self.record["syntax_line_sha256"] = hashlib.sha256(content.encode()).hexdigest()
+                self.record["syntax_line_indent"] = len(content) - len(content.lstrip(" "))
+                self.record["syntax_line_characters"] = len(content)
+                if type(offset) is int and 1 <= offset <= len(content) + 1:
+                    self.record["syntax_column"] = offset
+                if line > 1:
+                    previous = lines[line - 2]
+                    self.record["syntax_prior_line_colon"] = previous.rstrip().endswith(":")
+                    self.record["syntax_prior_line_indent"] = (
+                        len(previous) - len(previous.lstrip(" "))
+                    )
+            self.emit()
+            return
+        except (ValueError, RecursionError):
             self.record["ast_parse"] = "invalid"
             self.emit()
             return
