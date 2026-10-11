@@ -23,3 +23,17 @@ real exige artefato do mesmo HEAD produzido pelo modelo local e, para
 qualificar o reparador, 42/42, patch reaplicável e regressão independente.
 A instrumentação não modifica modelo, schema de geração, testes de aceite,
 timeout, permissões, fila, computadores ou política da main.
+
+## Correção de geração baseada no diagnóstico real
+
+O run `38108465920`, HEAD `e1d915b9785294d75e8a291420258c975526e027`,
+preservou a revisão bloqueada como metadados: `candidate_grammar`, um
+`Subscript` na linha 9/coluna 88 da função montada, 282 nós (sem truncamento).
+O diagnóstico permaneceu disponível depois da rejeição.
+
+A restrição de geração de `edits[].new` agora impede colchetes, e a instrução
+de revisão exige `get`/`list()`. O campo `old` não recebe essa restrição, para
+continuar descrevendo exatamente a origem. São mantidos seis edits, os mesmos
+limites, testes e guards de execução. Não se normaliza nem executa código
+rejeitado. Essa mudança corrige a ausência de restrição na geração, mas só
+um novo E2E real pode comprovar a convergência do reparador.

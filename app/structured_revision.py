@@ -13,13 +13,17 @@ from app.structured_code_worker import (
 
 from app.structured_diagnostics import RevisionTrace
 
+# Generation constraint mirrors the observed Subscript rejection; execution NODES is unchanged.
+REVISION_NEW_PATTERN = r"^[^\[\]]*$"
+
 REVISION_SCHEMA = {
     "type": "object",
     "properties": {"edits": {
         "type": "array", "minItems": 1, "maxItems": 6,
         "items": {"type": "object",
                   "properties": {"old": {"type": "string", "minLength": 1, "maxLength": 3000},
-                                 "new": {"type": "string", "maxLength": 6000}},
+                                 "new": {"type": "string", "maxLength": 6000,
+                                         "pattern": REVISION_NEW_PATTERN}},
                   "required": ["old", "new"], "additionalProperties": False},
     }},
     "required": ["edits"], "additionalProperties": False,

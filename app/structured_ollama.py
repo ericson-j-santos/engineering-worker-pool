@@ -81,6 +81,8 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
              "Use at most six non-overlapping replacements in the previous function. "
              "Every old string must match exactly once, including indentation/newlines. "
              "Keep replacements as small as possible while fixing the failing cases. "
+             "In every new string use dict.get(...) for dictionary access and list() for an "
+             "empty list. Never use square brackets in replacement text. "
              "Do not wrap the whole function in an edit. "
              "An unchanged function will be rejected without executing it again.\n"
              "VALIDATOR_OBSERVATIONS_V1\n" + json.dumps(feedback, ensure_ascii=False,
