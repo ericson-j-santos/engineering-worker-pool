@@ -206,7 +206,13 @@ def test_authenticated_http_diagnostics_without_reconciliation(tmp_path: Path, m
 
     replay = client.get(f"/v1/tasks/{task_id}/diagnostics", headers=headers)
     assert replay.status_code == 200
-    assert replay.json()["task"] == payload["task"]
+    replay_task = replay.json()["task"]
+    # elapsed time is computed per read, not a persisted state mutation.
+    volatile = {"progress_age_seconds"}
+    assert {key: val for key, val in replay_task.items() if key not in volatile} == {
+        key: val for key, val in payload["task"].items() if key not in volatile
+    }
+    assert replay_task["progress_age_seconds"] >= payload["task"]["progress_age_seconds"]
 
     assert client.get(
         "/v1/tasks/cwp-" + "f" * 24 + "/diagnostics", headers=headers
