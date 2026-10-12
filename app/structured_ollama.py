@@ -89,7 +89,12 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
              "IMMUTABLE_SOURCE_LINE_ANCHORS\n"
              + "\n".join(f"L{number}: {line}" for number, line in
                          enumerate(extracted(before, task).splitlines(), 1) if number > 1)
-             + "\nGUARDABLE_IF_ANCHORS_JSON\n"\n             + json.dumps([f"L{number}" for number, line in\n                           enumerate(extracted(before, task).splitlines(), 1)\n                           if number > 1 and line.lstrip().startswith("if ")\n                           and line.rstrip().endswith(":")], separators=(",", ":"))\n             + "\nVALIDATOR_OBSERVATIONS_V1\n" + json.dumps(feedback, ensure_ascii=False,
+             + "\nGUARDABLE_IF_ANCHORS_JSON\n"
+             + json.dumps([f"L{number}" for number, line in
+                           enumerate(extracted(before, task).splitlines(), 1)
+                           if number > 1 and line.lstrip().startswith("if ")
+                           and line.rstrip().endswith(":")], separators=(",", ":"))
+             + "\nVALIDATOR_OBSERVATIONS_V1\n" + json.dumps(feedback, ensure_ascii=False,
                                                        separators=(",", ":"))},
         ])
     return messages
