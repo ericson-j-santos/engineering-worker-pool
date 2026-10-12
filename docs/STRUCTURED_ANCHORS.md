@@ -161,3 +161,28 @@ pronta, novas tentativas ou relaxamento de 42 casos.
 
 A eficácia depende do E2E real no novo HEAD, incluindo patch, replay e
 regressões independentes. Esta mudança não autoriza merge.
+
+## Substituições sem guardas geradas pelo modelo — 11/10/2026
+
+O E2E real [38188056623](https://github.com/ericson-j-santos/engineering-worker-pool/actions/runs/38188056623)
+no SHA `6b0bc272c75f33d4e9020b4ce5ac78658154b67e` validou
+as duas propostas, incluindo a revisão com sintaxe/AST aprovadas. Porém,
+`candidate_tests_failed` bloqueou a aprovação dos 42 casos. O artefato
+`11719534827` (ZIP SHA-256
+`1c51d7ac6e1fbdc4210b086a7a6582db29b048f58205ea868c896665531439ed`)
+permitiu examinar a proposta: a revisão adicionou retornos antecipados
+para condições válidas, tornando a função semanticamente incorreta.
+
+A geração da segunda proposta passa a permitir exclusivamente objetos
+`{anchor,new}`, vinculados a linhas válidas, em até seis substituições.
+O modelo recebe instruções explícitas para inserir verificação de dados
+inválidos antes de um `if` original sem remover o cabeçalho do bloco.
+O formato tipado `{anchor,guard,return_expression}` continua aceito pelo
+montador sob os controles anteriores para manter o contrato de execução
+existente, mas não é anunciado nem permitido pelo esquema enviado ao modelo.
+As regras AST, o SHA do candidato, o orçamento de execução, os 42 casos,
+a verificação independente e o replay são mantidos. Nenhuma resposta
+sintética substitui a inferência.
+
+A efetividade desta redução de ambiguidade depende do E2E no novo HEAD;
+não declarar mergeável com base apenas em testes unitários.

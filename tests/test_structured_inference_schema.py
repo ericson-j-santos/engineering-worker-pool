@@ -6,7 +6,7 @@ import re
 import pytest
 
 from app.structured_anchors import (
-    inference_schema, lightweight_anchor_schema, anchored_schema, assemble_anchors, AnchorRejected,
+    inference_schema, lightweight_anchor_schema, replacement_only_schema, anchored_schema, assemble_anchors, AnchorRejected,
 )
 
 SOURCE = ("def f(x):\n"
@@ -59,6 +59,23 @@ def test_lightweight_schema_enumerates_source_anchors_without_regex_cost():
         assert "pattern" in strict["properties"]["edits"]["items"]["properties"][name]
     assert lightweight_anchor_schema(SOURCE) == lite
     assert "L1" not in items["properties"]["anchor"]["enum"]
+
+
+
+def test_model_only_uses_anchor_line_replacements_not_guard_shortcuts():
+    schema = replacement_only_schema(SOURCE)
+    items = schema["properties"]["edits"]["items"]
+    assert items["required"] == ["anchor", "new"]
+    assert set(items["properties"]) == {"anchor", "new"}
+    assert items["properties"]["anchor"]["enum"] == ["L2", "L3", "L4"]
+    assert items["additionalProperties"] is False
+    assert schema["properties"]["edits"]["maxItems"] == 6
+    assert replacement_only_schema(SOURCE) == schema
+    # Existing trusted callers can still use typed guards; only model generation is restricted.
+    old = json.dumps({"edits": [{"anchor": "L2", "guard": "not isinstance(x, dict)",
+                                "return_expression": "''"}]})
+    parsed, _ = assemble_anchors(old, SOURCE)
+    assert "if not isinstance(x, dict):" in parsed
 
 
 def test_valid_literal_and_typed_guard_edits_remain_pure_and_replayable():

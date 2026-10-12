@@ -7,7 +7,7 @@ import httpx
 
 from app.local_code_worker import LocalOllama, OLLAMA_URL, DIGEST
 from app.structured_code_worker import proposal_spec, candidate_fingerprint, extracted, need
-from app.structured_anchors import lightweight_anchor_schema, apply_anchored_edits
+from app.structured_anchors import replacement_only_schema, apply_anchored_edits
 
 
 MODEL = "qwen2.5-coder:7b"
@@ -57,8 +57,7 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
         # authoritative in the executor, but do not duplicate passing examples in this turn.
         messages[0]["content"] = (
             "Repair the previous function using exact localized replacements. "
-            "Return ONLY JSON with key edits, each either {anchor,new} or "
-            "{anchor,guard,return_expression}. "
+            "Return ONLY JSON with key edits, each containing anchor and new. "
             "Never return the whole function, prose or Markdown.")
         messages[1]["content"] = (
             task["instruction"] + "\n"
@@ -76,20 +75,20 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
              "Use observed failures to fix responsible branches or expressions; "
              "preserve passing cases, signature, tests and execution restrictions. "
              "Return JSON with key edits; at most six unique anchors. "
-             "Each edit is {anchor,new} or {anchor,guard,return_expression}. "
+             "Each edit is {anchor,new}; never return guard or return_expression keys. "
              "Select from L2 onward; L1 is the signature and cannot change. "
              "Each new replaces one original line; its first line is unindented "
              "and additional lines are relative to that original line. "
              "A block opener ending with : must still end with : after replacement. "
-             "Do not orphan its original suite; use a typed guard instead. "
-             "Typed guard edits apply only to existing if-headers; guard and "
-             "return_expression are single expressions, not if/return statements. "
+             "Do not orphan the suite: insert negative validity checks before "
+             "the original if-header, preserving that header as the last line. "
+             "Only return an empty string for invalid data, never for valid input. "
              "Use dict.get and list(). Never use square brackets in replacement text. "
              "Do not change the whole function; a no-op is rejected.\n"
              "IMMUTABLE_SOURCE_LINE_ANCHORS\n"
              + "\n".join(f"L{number}: {line}" for number, line in
                          enumerate(extracted(before, task).splitlines(), 1) if number > 1)
-             + "\nGUARDABLE_IF_ANCHORS_JSON\n"
+             + "\nIF_HEADER_ANCHORS_JSON\n"
              + json.dumps([f"L{number}" for number, line in
                            enumerate(extracted(before, task).splitlines(), 1)
                            if number > 1 and line.lstrip().startswith("if ")
@@ -127,7 +126,7 @@ class StructuredOllama(LocalOllama):
                 "model": MODEL,
                 "messages": messages,
                 "stream": False, "keep_alive": "5m",
-                "format": lightweight_anchor_schema(before) if is_revision else {"type": "object", "properties": {"function": {"type": "string",
+                "format": replacement_only_schema(before) if is_revision else {"type": "object", "properties": {"function": {"type": "string",
                                                                     "pattern": FUNCTION_PATTERN}},
                            "required": ["function"], "additionalProperties": False},
                 "options": {"temperature": 0, "seed": 7, "num_predict": 384 if is_revision else 1400,

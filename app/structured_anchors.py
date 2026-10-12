@@ -129,6 +129,20 @@ def lightweight_anchor_schema(source: str) -> dict:
     return schema
 
 
+
+def replacement_only_schema(source: str) -> dict:
+    """Generate only exact line replacements; reject typed guards at the model boundary.
+
+    Keep the independently validated guard-edit form available to the assembler
+    for compatibility, but do not offer it to the model in this repair phase.
+    """
+    schema = lightweight_anchor_schema(source)
+    edits = schema["properties"]["edits"]["items"]
+    edits["properties"] = {name: edits["properties"][name] for name in ("anchor", "new")}
+    edits["required"] = ["anchor", "new"]
+    return schema
+
+
 def assemble_anchors(reply: str, source: str) -> tuple[str, list[dict]]:
     anchors = line_catalog(source)
     require(type(reply) is str and len(reply.encode()) <= 16384, "revision_size")
