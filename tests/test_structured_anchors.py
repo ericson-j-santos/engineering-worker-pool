@@ -270,8 +270,8 @@ def test_valid_guard_retains_legacy_structured_assembly():
                                  "return_expression": "None"}]})
     resulting, edits = assemble_anchors(edit, before)
     assert len(edits) == 1
-    assert resulting.startswith("def f(x):\\n"
-                                "    if not isinstance(x, dict):\\n"
-                                "        return None\\n"
-                                "    if x is None:\\n")
+    assert resulting.startswith("def f(x):\n"
+                                "    if not isinstance(x, dict):\n"
+                                "        return None\n"
+                                "    if x is None:\n")
     assert before == SOURCE

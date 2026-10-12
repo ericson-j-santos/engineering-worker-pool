@@ -56,6 +56,10 @@ def syntax_kind(error: SyntaxError) -> str:
     return "other"
 
 
+# Sanitized enum for source-bound rejects; never model text or raw anchor IDs.
+ANCHOR_FAILURE_KINDS = frozenset({"unknown_anchor", "guard_not_if_header"})
+
+
 class DiagnosticWriteError(RuntimeError):
     """Fixed message only; observer exceptions are never propagated as text."""
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from app.structured_diagnostics import RevisionTrace, DiagnosticWriteError
+from app.structured_diagnostics import RevisionTrace, DiagnosticWriteError, ANCHOR_FAILURE_KINDS
 
 SOURCE = "def f(x):\n    return x\n"
 ALLOWED = {type(n) for n in ast.walk(ast.parse(SOURCE))}
@@ -221,3 +221,7 @@ def test_legacy_rejections_have_no_added_anchor_kind():
     assert events[-1]["reason_code"] == "candidate_syntax"
     assert "anchor_failure_kind" not in events[-1]
     assert "PRIVATE_SECRET" not in json.dumps(events)
+
+
+def test_anchor_failure_kind_allowlist_is_exact_and_stable():
+    assert ANCHOR_FAILURE_KINDS == frozenset({"unknown_anchor", "guard_not_if_header"})
