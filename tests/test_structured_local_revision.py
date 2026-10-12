@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import pytest
 from app import structured_code_worker as worker
-from app.structured_revision import apply_local_edits
+from app.structured_revision import apply_local_edits, apply_full_function_revision
 from test_structured_observations import candidate, message_builder
 from test_structured_code_worker import task, BEFORE
 
@@ -64,14 +64,14 @@ def test_feedback_not_applied_to_different_candidate():
     with pytest.raises(worker.StructuredBlocked,match="feedback_candidate_mismatch"):
         apply_local_edits(edit("x","y"),source.replace("return ''","return 'different'"),spec)
 
-def test_revision_asks_for_bounded_edits_not_whole_function():
-    source,spec=proposal()
-    messages=message_builder()(spec,source)
-    assert "Return ONLY JSON with key edits" in messages[0]["content"]
-    assert "at most six" in messages[-1]["content"]
+def test_revision_asks_for_complete_function_and_same_cases():
+    source, spec = proposal()
+    messages = message_builder()(spec, source)
+    assert "one JSON object with key function" in messages[0]["content"]
+    assert "COMPLETE CORRECTED FUNCTION" in messages[-1]["content"]
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
     assert spec["instruction"] in messages[1]["content"]
     assert spec["cases"] == task()["cases"]
-    # Passing examples are not duplicated in the revision context.
     assert "Trusted input/output examples:" not in messages[1]["content"]
     assert "VALIDATOR_OBSERVATIONS_V1" in messages[-1]["content"]
 
@@ -79,7 +79,7 @@ def test_revision_asks_for_bounded_edits_not_whole_function():
 def assert_revision_call_contract(text):
     calls = [node for node in ast.walk(ast.parse(text))
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-             and node.func.id == "apply_anchored_edits"]
+             and node.func.id == "apply_full_function_revision"]
     assert len(calls) == 1
     call = calls[0]
     assert len(call.args) == 3
@@ -94,10 +94,10 @@ def assert_revision_call_contract(text):
 def test_provider_limits_revision_output_and_preserves_initial_contract():
     text=(Path(__file__).resolve().parents[1]/"app/structured_ollama.py").read_text()
     assert '"format": "json" if is_revision else' in text
-    assert '"num_predict": 384 if is_revision else 1400' in text
+    assert '"num_predict": 1024 if is_revision else 1400' in text
     assert '"num_ctx": 4096 if is_revision else 8192' in text
     assert_revision_call_contract(text)
-    assert "self.last_revision = edits" in text
+    assert 'self.last_revision = "whole_function"' in text
     ast.parse(text)
 
 def test_six_localized_edits_fix_all_original_cases_synthetic_control():
@@ -122,3 +122,43 @@ def test_provider_call_contract_detects_disconnected_observer(replacement):
     with pytest.raises(AssertionError):
         assert_revision_call_contract(mutated)
     assert_revision_call_contract(text)
+
+
+def test_complete_model_revision_preserves_full_acceptance_and_observer():
+    from test_structured_code_worker import FIXED
+    source, spec = proposal()
+    original_cases = spec["cases"]
+    response = json.dumps({"function": FIXED})
+    stages = []
+    assert apply_full_function_revision(response, source, spec, observer=stages.append) == response
+    after = worker.render(source, task(), response)
+    assert worker.validate(after, task()) == {"passed": 42, "total": 42, "errors": 0, "failures": []}
+    assert [event["stage"] for event in stages] == ["received", "guard", "accepted"]
+    assert original_cases == spec["cases"]
+    with pytest.raises(worker.StructuredBlocked, match="feedback_candidate_mismatch"):
+        apply_full_function_revision(response, FIXED, spec)
+
+
+@pytest.mark.parametrize(("function", "expected"), [
+    ("def _property(properties, name):\n    return properties[name]\n", "candidate_grammar"),
+    ("def _property(properties, name):\n    import os\n    return ''\n", "candidate_grammar"),
+    ("def _property(properties, name):\n    return (\n", "candidate_syntax"),
+    ("def other(properties, name):\n    return ''\n", "function_identity"),
+])
+def test_whole_revision_guards_reject_unsafe_code_without_patch(function, expected):
+    source, spec = proposal()
+    events = []
+    with pytest.raises(worker.StructuredBlocked, match="^" + expected + "$"):
+        apply_full_function_revision(json.dumps({"function": function}), source, spec,
+                                     observer=events.append)
+    assert events[-1]["stage"] == "rejected"
+
+
+def test_whole_revision_rejects_wrong_schema_replay_and_unchanged_ast():
+    source, spec = proposal()
+    for reply in ('{"edits":[]}', "not json"):
+        with pytest.raises(worker.StructuredBlocked):
+            apply_full_function_revision(reply, source, spec)
+    same = json.dumps({"function": worker.extracted(source, task())})
+    with pytest.raises(worker.StructuredBlocked, match="candidate_repeated"):
+        apply_full_function_revision(same, source, spec)

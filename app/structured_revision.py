@@ -78,3 +78,28 @@ def _apply_local_edits(reply: str, before: str, proposal: dict, trace: RevisionT
     need(candidate_fingerprint(candidate, task) != proposal["feedback"]["candidate_sha256"],
          "candidate_repeated")
     return json.dumps({"function": extracted(candidate, task)}, ensure_ascii=False), value["edits"]
+
+def apply_full_function_revision(reply: str, before: str, proposal: dict, *, observer=None) -> str:
+    """Check a complete model revision against the immutable candidate and AST guard."""
+    trace = RevisionTrace(reply, observer)
+    try:
+        task = proposal_spec(proposal)
+        need("feedback" in proposal, "revision_feedback_missing")
+        need(candidate_fingerprint(before, task) == proposal["feedback"]["candidate_sha256"],
+             "feedback_candidate_mismatch")
+        need(type(reply) is str and len(reply.encode()) <= 16384, "revision_size")
+        try:
+            value = json.loads(reply)
+        except ValueError:
+            raise StructuredBlocked("reply_json") from None
+        need(type(value) is dict and set(value) == {"function"}
+             and type(value["function"]) is str, "reply_schema")
+        trace.before_guard(value["function"], NODES)
+        candidate = render(before, task, reply)
+        need(candidate_fingerprint(candidate, task) != proposal["feedback"]["candidate_sha256"],
+             "candidate_repeated")
+    except StructuredBlocked as error:
+        trace.rejected(str(error))
+        raise
+    trace.accepted()
+    return reply

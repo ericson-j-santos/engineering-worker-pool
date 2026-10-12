@@ -52,7 +52,7 @@ def test_revision_is_actual_assistant_user_turn_and_binds_candidate():
     proposal = {**contract, "feedback": feedback}
     messages = message_builder()(proposal, candidate())
     assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
-    assert "LOCALIZED EDITS" in messages[-1]["content"]
+    assert "COMPLETE CORRECTED FUNCTION" in messages[-1]["content"]
     actual = json.loads(messages[-1]["content"].split("VALIDATOR_OBSERVATIONS_V1\n", 1)[1])
     assert actual == feedback
     assert json.loads(messages[-2]["content"])["function"] == worker.extracted(candidate(), contract)

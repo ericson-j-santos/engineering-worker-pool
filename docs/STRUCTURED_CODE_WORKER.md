@@ -93,3 +93,35 @@ semântica real, com registro de cada proposta e revalidação de concorrência.
 Essa ampliação substitui a limitação histórica de uma única proposta; não
 autoriza repetir falhas de segurança, sintaxe ou infraestrutura. O cliente
 limita cada inferência a 180 segundos; o E2E continua limitado a cinco minutos.
+
+
+## Revisão por função completa vinculada à origem — 11/10/2026
+
+O E2E real 38189156767 no SHA ce75ae3ce15dc19dfe932d3043b835c17a8be563
+rejeitou uma revisão montada com erro de sintaxe (candidate_syntax,
+linha 7), sem gravar patch. O artefato 11720796343 (SHA-256
+153d40cfb2b3bc2686410dcee462d9d84cde3f9bdf92d110c0a8b3183331f750)
+continha somente a primeira proposta registrada, o feedback e metadados
+sanitizados da revisão. Uma primeira proposta produzida pelo mesmo modelo
+já havia validado 37 dos 42 casos. Erros de montagem por linhas e guardas
+introduziram regressões sem aproximar o aceite.
+
+Para evitar inconsistência de cabeçalho/indentação ao unir trechos, a
+segunda e última proposta do modelo passa a retornar uma função inteira
+em JSON com a chave function, vinculada ao fingerprint do candidato
+inicial e aos resultados reais dos testes falhos. A função inteira
+é revalidada antes de retornar ao executor: objeto JSON exato, tamanho,
+assinatura, AST, identidade do candidato e bloqueio de repetição. Um
+diagnóstico sanitizado preserva apenas hashes, categorias/posições e códigos
+de rejeição, inclusive em erro sintático. O executor volta a validar a
+função completa e os mesmos 42 casos, exige um único arquivo modificado,
+commit local, patch reaplicável, replay sem nova inferência e regressões
+independentes no E2E.
+
+Não há correção pré-programada, execução de resposta insegura, fallback,
+terceira chamada, novo modelo, aumento de tempo ou alteração de runtime.
+Os contratos históricos de edição por âncora permanecem disponíveis para
+chamadores explícitos e seus testes, mas deixam de ser a forma usada
+pela segunda geração do modelo. A saída final permanece bloqueada até
+que o novo SHA comprove todos os requisitos no E2E real; a main e sua
+proteção administrativa não são modificadas.

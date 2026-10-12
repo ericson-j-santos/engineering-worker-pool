@@ -7,7 +7,7 @@ import httpx
 
 from app.local_code_worker import LocalOllama, OLLAMA_URL, DIGEST
 from app.structured_code_worker import proposal_spec, candidate_fingerprint, extracted, need
-from app.structured_anchors import apply_anchored_edits
+from app.structured_revision import apply_full_function_revision
 
 
 MODEL = "qwen2.5-coder:7b"
@@ -53,48 +53,31 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
         feedback = proposal["feedback"]
         need(candidate_fingerprint(before, task) == feedback["candidate_sha256"],
              "feedback_candidate_mismatch")
-        # Keep the revision context bounded: the original instruction and ALL tests stay
-        # authoritative in the executor, but do not duplicate passing examples in this turn.
         messages[0]["content"] = (
-            "Repair the previous function using exact localized replacements. "
-            "Return ONLY JSON with key edits, each containing anchor and new. "
-            "Never return the whole function, prose or Markdown.")
+            "Repair the previous complete Python function from REAL test failures. "
+            "Return ONLY one JSON object with key function and a complete corrected "
+            "function definition. No edits, explanation or Markdown.")
         messages[1]["content"] = (
             task["instruction"] + "\n"
-            "The function is supplied in the next message. Preserve its signature and "
-            "passing behavior. Allowed constructs: local assignments, if/elif/else, return "
-            "and at most one for loop; builtins isinstance, str, dict, list, len, bool, int, float; "
-            "methods get, strip, join, append. No imports, helpers, indexing, try, while, "
+            "Preserve the exact function name and parameters. Allowed constructs: "
+            "local assignments, if/elif/else, return, and at most one for loop. "
+            "Allowed builtins: isinstance, str, dict, list, len, bool, int, float; "
+            "methods: get, strip, join, append. No imports, indexing, try, while, "
             "break, continue, comprehensions, recursion, addition or augmented assignment.")
-        # A real assistant/user revision turn: observations are not hidden in the instruction.
         messages.extend([
             {"role": "assistant", "content": json.dumps(
                 {"function": extracted(before, task)}, ensure_ascii=False)},
             {"role": "user", "content":
-             "PREVIOUS PROPOSAL FAILED REAL TESTS. Make LOCALIZED EDITS only. "
-             "Use observed failures to fix responsible branches or expressions; "
-             "preserve passing cases, signature, tests and execution restrictions. "
-             "Return JSON with key edits; at most six unique anchors. "
-             "Each edit is {anchor,new}; never return guard or return_expression keys. "
-             "Select from L2 onward; L1 is the signature and cannot change. "
-             "Each new replaces one original line; its first line is unindented "
-             "and additional lines are relative to that original line. "
-             "A block opener ending with : must still end with : after replacement. "
-             "Do not orphan the suite: insert negative validity checks before "
-             "the original if-header, preserving that header as the last line. "
-             "Only return an empty string for invalid data, never for valid input. "
-             "Use dict.get and list(). Never use square brackets in replacement text. "
-             "Do not change the whole function; a no-op is rejected.\n"
-             "IMMUTABLE_SOURCE_LINE_ANCHORS\n"
-             + "\n".join(f"L{number}: {line}" for number, line in
-                         enumerate(extracted(before, task).splitlines(), 1) if number > 1)
-             + "\nIF_HEADER_ANCHORS_JSON\n"
-             + json.dumps([f"L{number}" for number, line in
-                           enumerate(extracted(before, task).splitlines(), 1)
-                           if number > 1 and line.lstrip().startswith("if ")
-                           and line.rstrip().endswith(":")], separators=(",", ":"))
-             + "\nVALIDATOR_OBSERVATIONS_V1\n" + json.dumps(feedback, ensure_ascii=False,
-                                                       separators=(",", ":"))},
+             "PREVIOUS PROPOSAL FAILED REAL TESTS. Return a COMPLETE CORRECTED FUNCTION. "
+             "Fix each observed failure without changing previously passing behavior. "
+             "Compare expected and observed values or exceptions; correct relevant branches. "
+             "Keep valid JSON semantics, including valid empty strings. "
+             "Never add unconditional early returns for valid inputs. "
+             "Use dict.get and list(), append/join for accumulation; no square brackets. "
+             "Do not copy the previous function unchanged. "
+             "Reply exactly as JSON with one key function containing the entire definition.\n"
+             "VALIDATOR_OBSERVATIONS_V1\n"
+             + json.dumps(feedback, ensure_ascii=False, separators=(",", ":"))},
         ])
     return messages
 
@@ -129,7 +112,7 @@ class StructuredOllama(LocalOllama):
                 "format": "json" if is_revision else {"type": "object", "properties": {"function": {"type": "string",
                                                                     "pattern": FUNCTION_PATTERN}},
                            "required": ["function"], "additionalProperties": False},
-                "options": {"temperature": 0, "seed": 7, "num_predict": 384 if is_revision else 1400,
+                "options": {"temperature": 0, "seed": 7, "num_predict": 1024 if is_revision else 1400,
                             "num_ctx": 4096 if is_revision else 8192},
             })
             need(response.get("done") is True and response.get("model") == MODEL
@@ -147,12 +130,13 @@ class StructuredOllama(LocalOllama):
             need(type(message) is dict and type(message.get("content")) is str,
                  "provider_content")
             reply = message["content"]
-            # Retain transport identity for callers; the returned function is assembled from model edits.
+            # The model returns a complete candidate; the same executor guards, tests,
+            # commit scope and replay rules remain authoritative.
             import hashlib
             self.last_model_reply_sha256 = hashlib.sha256(reply.encode()).hexdigest()
             if is_revision:
-                assembled, edits = apply_anchored_edits(
+                verified = apply_full_function_revision(
                     reply, before, task, observer=self.revision_observer)
-                self.last_revision = edits
-                return assembled
+                self.last_revision = "whole_function"
+                return verified
             return reply

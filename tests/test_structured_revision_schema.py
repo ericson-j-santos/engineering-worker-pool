@@ -69,9 +69,9 @@ def test_provider_supplies_same_revision_schema_and_no_extra_attempt():
     root = Path(__file__).resolve().parents[1]
     text = (root / "app/structured_ollama.py").read_text()
     assert '"format": "json" if is_revision else' in text
-    assert '"num_predict": 384 if is_revision else 1400' in text
+    assert '"num_predict": 1024 if is_revision else 1400' in text
     assert '"num_ctx": 4096 if is_revision else 8192' in text
     assert '"seed": 7' in text and '"temperature": 0' in text
-    assert "Never use square brackets in replacement text." in text
-    assert "IF_HEADER_ANCHORS_JSON" in text
+    assert "COMPLETE CORRECTED FUNCTION" in text
+    assert "No edits, explanation or Markdown" in text
     assert "observer=self.revision_observer" in text
