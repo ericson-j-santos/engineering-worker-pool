@@ -231,3 +231,33 @@ como fallback e a execução continua local.
 A passagem dos testes sintéticos não comprova êxito do modelo real. A aceitação
 exige novo E2E do HEAD publicado, 42/42, patch, replay, regressão independente
 na cópia governada e validação dos dados externos de integridade.
+
+## Retomada com corpo de bloco tipado — 12/10/2026
+
+O run [38296430515](https://github.com/ericson-j-santos/engineering-worker-pool/actions/runs/38296430515)
+no SHA `172516f4` terminou com `candidate_syntax`: o diagnóstico
+sanitizado informou `missing_block` na linha 22/coluna 25 da função
+montada. O modelo já retornou uma revisão por âncoras, mas introduziu um
+bloco Python sem corpo válido. Não se atribui essa falha a um ID de âncora
+específico sem a resposta bruta.
+
+Para o provedor real, `model_strict=True` limita substituições
+`{anchor,new}` a uma linha completa, sem incluir novos cabeçalhos de
+bloco em posições não-cabeçalho. Guardas novos devem usar o formato tipado
+`{anchor,guard,return_expression}`, já suportado pelo montador para
+cabeçalhos `if` originais; somente a condição e a expressão de retorno são
+selecionadas pelo modelo. O montador acrescenta o corpo e a indentação,
+mantém a linha original, SHA/fingerprint, assinatura, AST e 42 casos.
+
+O contrato legado de edições multilinha continua disponível para
+chamadores existentes; a restrição nova é exclusiva da saída do modelo.
+Não há resposta correta de fallback. Os testes de seis edições são
+sintéticos, e a aprovação depende do E2E real com patch, replay e
+regressão independente no SHA publicado.
+
+A execução posterior [38297778509](https://github.com/ericson-j-santos/engineering-worker-pool/actions/runs/38297778509)
+no SHA `d6eb29a0` também foi rejeitada por `candidate_syntax/missing_block`,
+com linha de montagem 11/coluna 8 e `failed_stage=guard`. O foco em
+linhas do candidato não eliminou a causa estrutural; este é o motivo para
+limitar *a forma* de edição gerada pelo modelo, sem alterar os dados de
+aceite ou transformar código reprovado em solução de contingência.

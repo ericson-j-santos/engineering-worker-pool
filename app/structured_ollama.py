@@ -74,17 +74,23 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
         messages[0]["content"] = (
             "Repair ONLY the failing lines of the previous Python function. "
             "Return exactly one JSON object with key edits: an array of 1 to 6 "
-            "objects containing ONLY anchor and new. "
+            "objects using EXACTLY ONE of: {anchor,new} to replace one line, "
+            "or {anchor,guard,return_expression} to add a typed early-return guard "
+            "before an existing if header. "
             "Never output a full function, a replacement implementation, Markdown or tests.")
         messages[1]["content"] = (
             task["instruction"] + "\n"
             "Preserve the exact signature and all unmentioned lines. Each anchor L<number> "
             "identifies one existing, immutable source line; use only the listed IDs, "
-            "at most once each. The new field replaces that line using its existing "
-            "indentation: start the first replacement line without leading spaces; "
-            "subsequent lines use relative four-space indentation. "
-            "If the old line ends in a colon, keep a block-opening colon on the "
-            "last new line so its existing suite stays attached. "
+            "at most once each. For {anchor,new}, new MUST contain ONE complete "
+            "Python line, with NO newline or leading indentation; the assembler "
+            "keeps the existing indentation. Preserve a trailing colon exactly "
+            "when the original line ends with a colon, and NEVER introduce a new "
+            "block header on a non-header line. To add an early-return guard before "
+            "an existing if header, use {anchor,guard,return_expression}; give only "
+            "the condition and return expression, not if/return syntax, indentation "
+            "or a colon. The assembler adds the complete two-line guard while "
+            "preserving the existing if and its body. "
             "No imports, subscripts, list literals, try, while, break, comprehensions "
             "or untrusted calls. Use dict.get, list(), append/join, isinstance. "
             "VALIDATION REQUIREMENTS: Call dict.get only after verifying dict, and str.strip "
@@ -107,7 +113,9 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
             "The anchored lines above represent a rejected candidate, never an approved output. "
             "Use them only to locate minimal edits; all nonedited lines stay unchanged.\n"
             "PATCH THE PREVIOUS CODE AT THE EXACT LISTED LINES ONLY. "
-            "Return ONLY JSON edits with anchor/new, at most six. "
+            "Return ONLY JSON edits in the exact anchor/new or "
+            "anchor/guard/return_expression shapes, at most six. "
+            "Do not emit multiline new values or incomplete if blocks. "
             "Make guards reject invalid JSON types before any .get or .strip. "
             "A single invalid fragment must return empty for the whole field. "
             "Join raw fragments with an empty separator then strip the result once. "
@@ -175,7 +183,8 @@ class StructuredOllama(LocalOllama):
             self.last_model_reply_sha256 = hashlib.sha256(reply.encode()).hexdigest()
             if is_revision:
                 verified, _edits = apply_anchored_edits(
-                    reply, before, task, observer=self.revision_observer)
+                    reply, before, task, observer=self.revision_observer,
+                    model_strict=True)
                 self.last_revision = "anchored_edits"
                 return verified
             return reply

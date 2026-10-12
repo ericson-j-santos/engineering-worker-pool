@@ -68,6 +68,9 @@ def test_revision_asks_for_source_bound_line_edits_and_same_cases():
     source, spec = proposal()
     messages = message_builder()(spec, source)
     assert "one JSON object with key edits" in messages[0]["content"]
+    assert "{anchor,guard,return_expression}" in messages[0]["content"]
+    assert "NO newline" in messages[1]["content"]
+    assert "existing if header" in messages[1]["content"]
     assert "PATCH THE PREVIOUS CODE AT THE EXACT LISTED LINES" in messages[-1]["content"]
     assert [m["role"] for m in messages] == ["system", "user"]
     assert "REJECTED_SOURCE_IS_NOT_AN_ANSWER_V1" in messages[1]["content"]
@@ -89,10 +92,12 @@ def assert_revision_call_contract(text):
     assert [ast.dump(arg, include_attributes=False) for arg in call.args] == [
         ast.dump(ast.Name(id=name, ctx=ast.Load()), include_attributes=False)
         for name in ("reply", "before", "task")]
-    assert len(call.keywords) == 1 and call.keywords[0].arg == "observer"
+    assert [keyword.arg for keyword in call.keywords] == ["observer", "model_strict"]
     expected = ast.parse("self.revision_observer", mode="eval").body
     assert ast.dump(call.keywords[0].value, include_attributes=False) == ast.dump(
         expected, include_attributes=False)
+    assert isinstance(call.keywords[1].value, ast.Constant)
+    assert call.keywords[1].value.value is True
 
 def test_provider_limits_revision_output_and_preserves_initial_contract():
     text=(Path(__file__).resolve().parents[1]/"app/structured_ollama.py").read_text()

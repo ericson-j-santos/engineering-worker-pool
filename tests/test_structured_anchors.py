@@ -174,3 +174,55 @@ def test_integration_cosmetic_only_revision_is_still_rejected_by_ast():
         apply_anchored_edits(reply("L2","return (None)"),before,proposal,observer=seen.append)
     assert seen[-1]["stage"]=="rejected"
     assert seen[-1]["reason_code"]=="candidate_repeated"
+
+def test_model_strict_guard_and_single_line_repairs_all_42_synthetically():
+    # Positive control only. This does not supply a production fallback answer.
+    from app.structured_anchors import apply_anchored_edits
+    from app import structured_code_worker as worker
+    from test_structured_local_revision import proposal
+    source, spec = proposal()
+    replacements = {
+        "return select_value.get('name').strip()":
+            "return select_value.get('name').strip() if isinstance(select_value.get('name'), str) else ''",
+        "text_content = fragment.get('text', {}).get('content')":
+            "text_content = fragment.get('text', {}).get('content') if isinstance(fragment.get('text', {}), dict) else None",
+        "if isinstance(fragment, dict):":
+            {"guard": "not isinstance(fragment, dict)", "return_expression": "''"},
+        "result.append(plain_text.strip())": "result.append(plain_text)",
+        "result.append(text_content.strip())": "result.append(text_content)",
+        "return ''.join(result)": "return ''.join(result).strip()",
+    }
+    edits = []
+    for number, line in enumerate(source.splitlines(), 1):
+        replacement = replacements.get(line.strip())
+        if replacement is not None:
+            edits.append({"anchor": f"L{number}",
+                          **(replacement if isinstance(replacement, dict)
+                             else {"new": replacement})})
+    assert len(edits) == 6
+    raw = json.dumps({"edits": edits})
+    generated, used = apply_anchored_edits(raw, source, spec, model_strict=True)
+    assert used == edits
+    assert apply_anchored_edits(raw, source, spec, model_strict=True)[0] == generated
+    report = worker.validate(json.loads(generated)["function"], worker.proposal_spec(spec))
+    assert report == {"passed": 42, "total": 42, "errors": 0, "failures": []}
+
+
+@pytest.mark.parametrize("bad_new", ["", "if x:", "if x:\n    return 2",
+                                     "return x\nreturn x"])
+def test_model_strict_rejects_incomplete_or_multiline_replacements(bad_new):
+    from app.structured_anchors import apply_anchored_edits
+    from app.structured_code_worker import StructuredBlocked
+    from test_structured_diagnostics import revision_contract
+    before, proposal = revision_contract()
+    seen = []
+    with pytest.raises(StructuredBlocked, match="^revision_block_header$"):
+        apply_anchored_edits(reply("L2", bad_new), before, proposal,
+                             observer=seen.append, model_strict=True)
+    assert seen[-1]["stage"] == "rejected"
+    assert seen[-1]["reason_code"] == "revision_block_header"
+
+
+def test_legacy_multiline_assembler_remains_compatible():
+    assert assemble_anchors(reply("L6", "if x:\n    return 2\nreturn x"), SOURCE)[0].endswith(
+        "    if x:\n        return 2\n    return x\n")
