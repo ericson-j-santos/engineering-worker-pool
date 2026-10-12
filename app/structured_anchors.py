@@ -147,6 +147,33 @@ def replacement_only_schema(source: str) -> dict:
     return schema
 
 
+def guard_return_literals(source: str) -> list[str]:
+    """Finite, source-bound literal returns for typed guards, never a fallback.
+
+    The model may choose only an already-existing constant return expression.
+    AST validation is repeated at the trusted assembly boundary.
+    """
+    line_catalog(source)
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError):
+        raise AnchorRejected("revision_anchor_source") from None
+    require(len(tree.body) == 1 and type(tree.body[0]) is ast.FunctionDef,
+            "revision_anchor_source")
+    returns = sorted((node for node in ast.walk(tree.body[0])
+                      if type(node) is ast.Return),
+                     key=lambda node: (node.lineno, node.col_offset))
+    literals: list[str] = []
+    for node in returns:
+        if type(node.value) is ast.Constant:
+            value = node.value.value
+            if value is None or type(value) in (str, bool, int, float):
+                literal = ast.unparse(node.value)
+                if len(literal.encode()) <= 128 and literal not in literals:
+                    literals.append(literal)
+    return literals[:16]
+
+
 def model_split_schema(source: str) -> dict:
     """Constrained revision envelope: existing if-header IDs only for typed guards."""
     anchors = line_catalog(source)
@@ -155,6 +182,7 @@ def model_split_schema(source: str) -> dict:
     guardable = [anchor for anchor, index in anchors.items()
                  if lines[index].lstrip().startswith("if ")
                  and lines[index].rstrip().endswith(":")]
+    return_literals = guard_return_literals(source)
     return {
         "type": "object",
         "properties": {
@@ -166,13 +194,15 @@ def model_split_schema(source: str) -> dict:
                                 "required": ["anchor", "new"],
                                 "additionalProperties": False}},
             "guards": {"type": "array", "minItems": 0,
-                       "maxItems": min(6, len(guardable)),
+                       "maxItems": min(6, len(guardable)) if return_literals else 0,
                        "items": {"type": "object",
                                  "properties": {
                                      "anchor": ({"type": "string", "enum": guardable}
                                                 if guardable else {"type": "string"}),
                                      "guard": {"type": "string"},
-                                     "return_expression": {"type": "string"}},
+                                     "return_expression": (
+                                         {"type": "string", "enum": return_literals}
+                                         if return_literals else {"type": "string"})},
                                  "required": ["anchor", "guard", "return_expression"],
                                  "additionalProperties": False}},
         },
@@ -231,6 +261,21 @@ def assemble_anchors(reply: str, source: str, *, model_split: bool = False) -> t
                                      anchor_failure_kind="guard_not_if_header")
             require(all(char not in condition and char not in value
                         for char in "\r\n\t\0[]"), "revision_indentation")
+            if model_split:
+                # "return ''" is a statement, not an expression. Source-bound
+                # constants and AST parsing keep Python keywords out of values.
+                # Never silently remap an invalid model reply or invent a fallback.
+                try:
+                    guard_ast = ast.parse(condition, mode="eval")
+                    return_ast = ast.parse(value, mode="eval")
+                except (SyntaxError, ValueError, RecursionError):
+                    raise AnchorRejected("revision_edit_schema") from None
+                literal = ast.unparse(return_ast.body)
+                require(type(return_ast.body) is ast.Constant
+                        and literal in guard_return_literals(source),
+                        "revision_edit_schema")
+                condition = ast.unparse(guard_ast.body)
+                value = literal
             indent = original[:len(original) - len(original.lstrip(" "))]
             replacements[index] = (indent + "if " + condition + ":\n"
                                    + indent + "    return " + value + "\n"

@@ -206,6 +206,19 @@ def test_model_strict_guard_and_single_line_repairs_all_42_synthetically():
     assert apply_anchored_edits(raw, source, spec, model_strict=True)[0] == generated
     report = worker.validate(json.loads(generated)["function"], worker.proposal_spec(spec))
     assert report == {"passed": 42, "total": 42, "errors": 0, "failures": []}
+    # Synthetic positive control of the real split-schema assembly, not a
+    # model E2E: the trusted 42 cases must still reject a regression.
+    split = json.dumps({
+        "edits": [e for e in edits if "new" in e],
+        "guards": [e for e in edits if "guard" in e],
+    })
+    split_result, split_edits = apply_anchored_edits(
+        split, source, spec, model_strict=True, model_split=True)
+    assert split_edits == [e for e in edits if "new" in e] + [
+        e for e in edits if "guard" in e]
+    assert split_result == generated
+    assert worker.validate(json.loads(split_result)["function"],
+                           worker.proposal_spec(spec)) == report
 
 
 @pytest.mark.parametrize("bad_new", ["", "if x:", "if x:\n    return 2",
@@ -303,13 +316,13 @@ def test_model_split_negative_boundaries_fail_closed(raw, reason):
 def test_model_split_guard_and_replacement_are_deterministic():
     raw = json.dumps({"edits": [{"anchor": "L6", "new": "return None"}],
                       "guards": [{"anchor": "L2", "guard": "not isinstance(x, dict)",
-                                  "return_expression": "None"}]})
+                                  "return_expression": "''"}]})
     first, changes = assemble_anchors(raw, SOURCE, model_split=True)
     assert first == assemble_anchors(raw, SOURCE, model_split=True)[0]
     assert len(changes) == 2
     assert first.splitlines()[1:4] == [
         "    if not isinstance(x, dict):",
-        "        return None",
+        "        return ''",
         "    if x is None:",
     ]
     assert [edit["anchor"] for edit in changes] == ["L6", "L2"]
@@ -332,3 +345,83 @@ def test_model_split_duplicate_anchor_across_edit_kinds_fails():
     })
     with pytest.raises(AnchorRejected, match="^revision_anchor_duplicate$"):
         assemble_anchors(raw, SOURCE, model_split=True)
+
+def test_guard_return_literals_are_source_bound_constants_not_codegen():
+    from app.structured_anchors import guard_return_literals, model_split_schema
+    assert guard_return_literals(SOURCE) == ["''"]
+    schema = model_split_schema(SOURCE)
+    enum = schema["properties"]["guards"]["items"]["properties"]["return_expression"]["enum"]
+    assert enum == ["''"]
+    assert "return ''" not in enum
+    assert guard_return_literals(SOURCE) == guard_return_literals(SOURCE)
+
+
+def test_model_split_cannot_fabricate_guard_value_without_literal_source():
+    from app.structured_anchors import guard_return_literals, model_split_schema
+    source = "def f(x):\n    if x:\n        return x\n    return x\n"
+    assert guard_return_literals(source) == []
+    assert model_split_schema(source)["properties"]["guards"]["maxItems"] == 0
+
+
+@pytest.mark.parametrize("invalid", [
+    "return ''", "return None", "x", "True", "2", "list()",
+    "[]", "'';import os", "if x:", "not isinstance(x, dict)",
+])
+def test_model_split_rejects_nonliteral_return_expression(invalid):
+    raw = json.dumps({"edits": [], "guards": [{
+        "anchor": "L2", "guard": "not isinstance(x, dict)",
+        "return_expression": invalid,
+    }]})
+    with pytest.raises(AnchorRejected,
+                       match="^(revision_edit_schema|revision_indentation)$"):
+        assemble_anchors(raw, SOURCE, model_split=True)
+
+
+@pytest.mark.parametrize("invalid", [
+    "if not x:", "return x", "x:", "not (", "x\nreturn None",
+])
+def test_model_split_rejects_invalid_guard_expression(invalid):
+    raw = json.dumps({"edits": [], "guards": [{
+        "anchor": "L2", "guard": invalid, "return_expression": "''",
+    }]})
+    with pytest.raises(AnchorRejected,
+                       match="^(revision_edit_schema|revision_indentation)$"):
+        assemble_anchors(raw, SOURCE, model_split=True)
+
+
+def test_model_split_canonicalizes_valid_literal_and_guard_ast():
+    raw = json.dumps({"edits": [], "guards": [{
+        "anchor": "L2", "guard": "not   isinstance(x, dict)",
+        "return_expression": '""',
+    }]})
+    before = SOURCE
+    assembled, edits = assemble_anchors(raw, before, model_split=True)
+    assert len(edits) == 1
+    assert assembled.splitlines()[1:4] == [
+        "    if not isinstance(x, dict):",
+        "        return ''",
+        "    if x is None:",
+    ]
+    assert assemble_anchors(raw, before, model_split=True)[0] == assembled
+    assert before == SOURCE
+
+
+def test_original_sanitized_syntax_fingerprint_reproduces_invalid_return():
+    import ast
+    import hashlib
+    # AST error location and digest observed in the exact real CI run.
+    bad_line = "                return return ''"
+    assert len(bad_line) == 32
+    assert (hashlib.sha256(bad_line.encode()).hexdigest()
+            == "d250a8c888c84a68dbe938d3a90bcec9ae94e6a814cb8bef1d28c041d7981c45")
+    with pytest.raises(SyntaxError) as error:
+        ast.parse("def f(x):\n            if x:\n" + bad_line + "\n")
+    assert error.value.offset == 24
+
+
+def test_legacy_guard_keeps_previous_unrestricted_value_contract():
+    raw = json.dumps({"edits": [{
+        "anchor": "L2", "guard": "not x", "return_expression": "None",
+    }]})
+    assembled, _ = assemble_anchors(raw, SOURCE)
+    assert assembled.splitlines()[2] == "        return None"
