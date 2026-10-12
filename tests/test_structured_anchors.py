@@ -226,3 +226,52 @@ def test_model_strict_rejects_incomplete_or_multiline_replacements(bad_new):
 def test_legacy_multiline_assembler_remains_compatible():
     assert assemble_anchors(reply("L6", "if x:\n    return 2\nreturn x"), SOURCE)[0].endswith(
         "    if x:\n        return 2\n    return x\n")
+
+
+@pytest.mark.parametrize(("change", "expected_kind"), [
+    ({"edits": [{"anchor": "L999", "new": "return x"}]}, "unknown_anchor"),
+    ({"edits": [{"anchor": "L999", "guard": "not x",
+                 "return_expression": "None"}]}, "unknown_anchor"),
+    ({"edits": [{"anchor": "L2", "guard": "not x",
+                 "return_expression": "None"}]}, "guard_not_if_header"),
+])
+def test_anchor_rejection_kind_is_bounded_and_replayable(change, expected_kind):
+    from app.structured_anchors import apply_anchored_edits
+    from app.structured_code_worker import StructuredBlocked
+    from test_structured_diagnostics import revision_contract
+
+    before, spec = revision_contract()
+    original = json.dumps(spec, sort_keys=True)
+    raw = json.dumps(change)
+    snapshots = []
+    for _ in range(2):
+        recorded = []
+        with pytest.raises(StructuredBlocked, match="^revision_anchor_invalid$"):
+            apply_anchored_edits(raw, before, spec, observer=recorded.append,
+                                 model_strict=True)
+        assert [event["stage"] for event in recorded] == ["received", "rejected"]
+        assert "anchor_failure_kind" not in recorded[0]
+        final = recorded[-1]
+        assert final["reason_code"] == "revision_anchor_invalid"
+        assert final["failed_stage"] == "received"
+        assert final["anchor_failure_kind"] == expected_kind
+        assert "L999" not in json.dumps(recorded)
+        assert "not x" not in json.dumps(recorded)
+        assert raw not in json.dumps(recorded)
+        assert json.dumps(spec, sort_keys=True) == original
+        snapshots.append(recorded)
+    assert snapshots[0] == snapshots[1]
+
+
+def test_valid_guard_retains_legacy_structured_assembly():
+    before = SOURCE
+    edit = json.dumps({"edits": [{"anchor": "L2",
+                                 "guard": "not isinstance(x, dict)",
+                                 "return_expression": "None"}]})
+    resulting, edits = assemble_anchors(edit, before)
+    assert len(edits) == 1
+    assert resulting.startswith("def f(x):\\n"
+                                "    if not isinstance(x, dict):\\n"
+                                "        return None\\n"
+                                "    if x is None:\\n")
+    assert before == SOURCE

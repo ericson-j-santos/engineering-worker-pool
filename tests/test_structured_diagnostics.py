@@ -198,3 +198,26 @@ def test_integration_accepted_revision_keeps_validation_and_replay():
         outputs.append((assembled, edits, events))
     assert outputs[0] == outputs[1]
     assert outputs[0][2][-1]["stage"] == "accepted"
+
+
+@pytest.mark.parametrize(("reason", "kind"), [
+    ("candidate_grammar", "unknown_anchor"),
+    ("revision_anchor_invalid", "PRIVATE_SECRET"),
+    ("revision_anchor_invalid", 7),
+])
+def test_diagnostic_rejects_untrusted_anchor_kind(reason, kind):
+    events = []
+    trace = RevisionTrace("PRIVATE_SECRET", events.append)
+    with pytest.raises(DiagnosticWriteError, match="^revision_diagnostic_kind_invalid$"):
+        trace.rejected(reason, anchor_failure_kind=kind)
+    assert [event["stage"] for event in events] == ["received"]
+    assert "PRIVATE_SECRET" not in json.dumps(events)
+
+
+def test_legacy_rejections_have_no_added_anchor_kind():
+    events = []
+    trace = RevisionTrace("PRIVATE_SECRET", events.append)
+    trace.rejected("candidate_syntax")
+    assert events[-1]["reason_code"] == "candidate_syntax"
+    assert "anchor_failure_kind" not in events[-1]
+    assert "PRIVATE_SECRET" not in json.dumps(events)

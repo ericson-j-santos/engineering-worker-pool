@@ -261,3 +261,24 @@ com linha de montagem 11/coluna 8 e `failed_stage=guard`. O foco em
 linhas do candidato não eliminou a causa estrutural; este é o motivo para
 limitar *a forma* de edição gerada pelo modelo, sem alterar os dados de
 aceite ou transformar código reprovado em solução de contingência.
+
+## Diagnóstico da âncora rejeitada — 12/10/2026
+
+O CI [38307032622](https://github.com/ericson-j-santos/engineering-worker-pool/actions/runs/38307032622)
+no SHA `eb897573` falhou com `revision_anchor_invalid`. O recibo
+não diferenciava entre âncora inexistente e guarda em linha não-`if`.
+
+O montador preserva o código público `revision_anchor_invalid` e a
+política fail-closed, mas anexa ao diagnóstico somente a classificação
+enumerada `anchor_failure_kind`: `unknown_anchor` ou
+`guard_not_if_header`. A classificação é derivada de verificações
+sobre o catálogo de linhas imutável, nunca de texto do modelo
+copiado para logs. As duas variantes do contrato de edição são
+cobertas por testes, com controle negativo para categorias desconhecidas,
+idempotência e preservação dos controles de AST/assinatura.
+
+**A nova categoria não aprova o código.** É uma evidência diagnóstica
+necessária para escolher uma correção causal posterior. Identidade de
+SHA, 42 casos, duas inferências, timeout, origens e bloqueios de segurança
+permanecem inalterados. Após mudança de geração, exigir E2E real,
+patch reaplicável, replay e regressão independente.

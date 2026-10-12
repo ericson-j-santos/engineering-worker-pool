@@ -12,7 +12,11 @@ GUARD_EXPRESSION_PATTERN = r"^[^\[\]\r\n\t\x00]+$"
 
 
 class AnchorRejected(ValueError):
-    """Closed reason codes only."""
+    """Closed reason codes, with optional source-free anchor failure classification."""
+
+    def __init__(self, code: str, *, anchor_failure_kind: str | None = None):
+        super().__init__(code)
+        self.anchor_failure_kind = anchor_failure_kind
 
 
 def require(ok: bool, code: str) -> None:
@@ -167,12 +171,16 @@ def assemble_anchors(reply: str, source: str) -> tuple[str, list[dict]]:
                     and type(value) is str and 1 <= len(condition) <= 2000
                     and 1 <= len(value) <= 2000,
                     "revision_edit_schema")
-            require(anchor in anchors, "revision_anchor_invalid")
+            if anchor not in anchors:
+                raise AnchorRejected("revision_anchor_invalid",
+                                     anchor_failure_kind="unknown_anchor")
             index = anchors[anchor]
             require(index not in replacements, "revision_anchor_duplicate")
             original = lines[index]
-            require(original.lstrip().startswith("if ") and original.rstrip().endswith(":"),
-                    "revision_anchor_invalid")
+            if not (original.lstrip().startswith("if ")
+                    and original.rstrip().endswith(":")):
+                raise AnchorRejected("revision_anchor_invalid",
+                                     anchor_failure_kind="guard_not_if_header")
             require(all(char not in condition and char not in value
                         for char in "\r\n\t\0[]"), "revision_indentation")
             indent = original[:len(original) - len(original.lstrip(" "))]
@@ -184,7 +192,9 @@ def assemble_anchors(reply: str, source: str) -> tuple[str, list[dict]]:
                 and type(edit["anchor"]) is str and type(edit["new"]) is str
                 and len(edit["new"]) <= 6000, "revision_edit_schema")
         anchor, new = edit["anchor"], edit["new"]
-        require(anchor in anchors, "revision_anchor_invalid")
+        if anchor not in anchors:
+            raise AnchorRejected("revision_anchor_invalid",
+                                 anchor_failure_kind="unknown_anchor")
         index = anchors[anchor]
         require(index not in replacements, "revision_anchor_duplicate")
         require("\r" not in new and "\t" not in new and "\0" not in new,
@@ -243,7 +253,7 @@ def apply_anchored_edits(reply: str, before: str, proposal: dict, *, observer=No
         need(candidate_fingerprint(candidate, task) != proposal["feedback"]["candidate_sha256"],
              "candidate_repeated")
     except AnchorRejected as error:
-        trace.rejected(str(error))
+        trace.rejected(str(error), anchor_failure_kind=error.anchor_failure_kind)
         raise StructuredBlocked(str(error)) from None
     except StructuredBlocked as error:
         trace.rejected(str(error))

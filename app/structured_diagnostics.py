@@ -134,7 +134,13 @@ class RevisionTrace:
         self.record["rejected_ast_types"] = sorted({item["type"] for item in forbidden})
         self.emit()
 
-    def rejected(self, reason: str) -> None:
+    def rejected(self, reason: str, *, anchor_failure_kind: str | None = None) -> None:
+        if anchor_failure_kind is not None:
+            if (reason != "revision_anchor_invalid"
+                    or type(anchor_failure_kind) is not str
+                    or anchor_failure_kind not in ANCHOR_FAILURE_KINDS):
+                raise DiagnosticWriteError("revision_diagnostic_kind_invalid")
+            self.record["anchor_failure_kind"] = anchor_failure_kind
         self.record["failed_stage"] = self.record["stage"]
         self.record["stage"] = "rejected"
         self.record["reason_code"] = reason if reason in REASONS else "structured_rejection"
