@@ -307,9 +307,16 @@ def test_model_split_guard_and_replacement_are_deterministic():
     first, changes = assemble_anchors(raw, SOURCE, model_split=True)
     assert first == assemble_anchors(raw, SOURCE, model_split=True)[0]
     assert len(changes) == 2
-    assert "    if not isinstance(x, dict):\\n        return None\\n    if x is None:" in first
+    assert first.splitlines()[1:4] == [
+        "    if not isinstance(x, dict):",
+        "        return None",
+        "    if x is None:",
+    ]
     assert [edit["anchor"] for edit in changes] == ["L6", "L2"]
-    assert SOURCE == "def f(x):\\n    if x is None:\\n        return ''\\n    if x:\\n        return ''\\n    return x\\n"
+    assert SOURCE.splitlines() == [
+        "def f(x):", "    if x is None:", "        return ''",
+        "    if x:", "        return ''", "    return x",
+    ]
 
 
 def test_model_split_keeps_legacy_parser_available():
