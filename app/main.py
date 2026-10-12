@@ -15,6 +15,11 @@ from pydantic import BaseModel, Field
 from app.contract import CONTRACT_VERSION, descriptor as contract_descriptor
 from app.reconcile import ReconciliationController
 from app.store import ConflictError, NotFoundError, WorkerPoolStore
+from app.task_diagnostics import (
+    TaskDiagnosticNotFound,
+    TaskDiagnosticUnavailable,
+    read_task_diagnostics,
+)
 from app.work import WorkOrchestrator
 
 
@@ -319,6 +324,25 @@ def enqueue_task(payload: TaskCreate, response: Response) -> dict[str, Any]:
 @app.get("/v1/tasks/{task_id}", dependencies=[Depends(require_auth)])
 def get_task(task_id: str) -> dict[str, Any]:
     return public_task(store.get_task(task_id))
+
+
+@app.get("/v1/tasks/{task_id}/diagnostics", dependencies=[Depends(require_auth)])
+def task_diagnostics(task_id: str) -> dict[str, Any]:
+    """Return a read-only per-task precheck; never claim or reconcile."""
+    try:
+        return read_task_diagnostics(
+            DB_PATH,
+            task_id,
+            expected_rules_sha=store.expected_rules_sha,
+            heartbeat_ttl_seconds=store.heartbeat_ttl_seconds,
+            progress_stall_seconds=store.progress_stall_seconds,
+        )
+    except ValueError:
+        raise HTTPException(status_code=422, detail="invalid_task_id") from None
+    except TaskDiagnosticNotFound:
+        raise HTTPException(status_code=404, detail="task_not_found") from None
+    except TaskDiagnosticUnavailable:
+        raise HTTPException(status_code=503, detail="task_diagnostics_unavailable") from None
 
 
 @app.post("/v1/work", dependencies=[Depends(require_auth)], status_code=201)
