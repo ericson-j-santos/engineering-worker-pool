@@ -127,3 +127,11 @@ Esse limite reduz o trabalho computacional máximo por revisão, mas não prova
 que a revisão passará nos testes nem que o modelo completará dentro do prazo.
 O resultado real depende de novo E2E no SHA corrigido, sem reruns no SHA
 anterior, serviços pagos ou aumento de timeout.
+
+## Transporte JSON leve para revisão — 11/10/2026
+
+A execução [38184529245](https://github.com/ericson-j-santos/engineering-worker-pool/actions/runs/38184529245) no HEAD `4769d8fb02c3b5e6439faeab5f97e11a847e7cca` concluiu compilação, suíte e E2E numérico. O artefato `11719540574` (SHA-256 `111fd678ee28028676fa32c9d74f8b47b4d5a5c5875240fc33fd01a2e7060a3e`) mostra a revisão parada na geração, sem retorno terminal e sem patch/evidência de aceite. Reduzir o prompt e limitar tokens/contexto não eliminou o bloqueio.
+
+Hipótese reversível: a gramática JSON Schema dinâmica tem custo elevado para a revisão do modelo 7B em CPU. Apenas a segunda proposta passa a usar o modo oficial `format: "json"` do Ollama, sem passar esquema dinâmico ao decodificador. Isso **não confere confiança** ao JSON gerado: `apply_anchored_edits` continua executando as mesmas validações estritas de formato de edição, IDs imutáveis, fingerprint, limite de seis edições, cabeçalhos, sintaxe, AST e assinatura. Os 42 casos, replay, patch reaplicável e regressão independente continuam obrigatórios. Modelo, seed, parâmetros de tempo, limite de tokens e modo da proposta inicial não mudam.
+
+A otimização só será aprovada após E2E real no SHA corrigido. Respostas incompletas, JSON fora do contrato ou propostas não autorizadas continuam bloqueadas, sem fallback sintético e sem merge automático.
