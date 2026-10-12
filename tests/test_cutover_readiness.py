@@ -29,6 +29,12 @@ def ready_evidence() -> dict:
         "public_contract_v1_compatible": True,
         "reqsys_consumer_e2e_passed": True,
         "physical_runtime_validated": True,
+        "live_sqlite_backup_verified": True,
+        "isolated_restore_verified": True,
+        "restore_integrity_and_task_identity_verified": True,
+        "candidate_image_digest_attested": True,
+        "isolated_candidate_canary_passed": True,
+        "rollback_rehearsal_passed": True,
         "replay_idempotent": True,
         "independent_readback": True,
         "secrets_migrated_to_git": False,
@@ -98,3 +104,41 @@ def test_runbook_forbids_destructive_rollback_and_premature_legacy_removal() -> 
     assert "não remover" in raw
     assert "reverter a mudança versionada de cutover" in raw
     assert "não excluir" in raw
+
+
+def test_backup_restore_canary_and_rollback_require_real_evidence() -> None:
+    required_keys = (
+        "live_sqlite_backup_verified",
+        "isolated_restore_verified",
+        "restore_integrity_and_task_identity_verified",
+        "candidate_image_digest_attested",
+        "isolated_candidate_canary_passed",
+        "rollback_rehearsal_passed",
+    )
+    p = policy()
+    assert all(p["required_evidence"].get(key) is True for key in required_keys)
+    for key in required_keys:
+        # Both absence and explicit false must block a cutover, without fallback.
+        for mode in ("missing", "false"):
+            evidence = ready_evidence()
+            if mode == "missing":
+                evidence.pop(key)
+                expected = f"evidence_missing:{key}"
+            else:
+                evidence[key] = False
+                expected = f"evidence_mismatch:{key}"
+            result = m.evaluate(p, evidence)
+            assert result["status"] == "CUTOVER_BLOCKED"
+            assert result["legacy_removal_allowed"] is False
+            assert expected in result["blockers"]
+
+
+def test_synthetic_wal_rehearsal_does_not_count_as_physical_backup() -> None:
+    evidence = ready_evidence()
+    evidence["live_sqlite_backup_verified"] = False
+    evidence["isolated_restore_verified"] = False
+    evidence["restore_integrity_and_task_identity_verified"] = False
+    result = m.evaluate(policy(), evidence)
+    assert result["status"] == "CUTOVER_BLOCKED"
+    assert result["legacy_removal_allowed"] is False
+    assert result["rollback_available"] is True

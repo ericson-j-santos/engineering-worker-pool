@@ -17,6 +17,12 @@
     "physical_runtime_validated": true,
     "replay_idempotent": true,
     "independent_readback": true,
+    "live_sqlite_backup_verified": true,
+    "isolated_restore_verified": true,
+    "restore_integrity_and_task_identity_verified": true,
+    "candidate_image_digest_attested": true,
+    "isolated_candidate_canary_passed": true,
+    "rollback_rehearsal_passed": true,
     "secrets_migrated_to_git": false,
     "legacy_reqsys_present": true
   },
