@@ -55,6 +55,16 @@ def test_revision_is_actual_assistant_user_turn_and_binds_candidate():
     assert "COMPLETE CORRECTED FUNCTION" in messages[-1]["content"]
     actual = json.loads(messages[-1]["content"].split("VALIDATOR_OBSERVATIONS_V1\n", 1)[1])
     assert actual == feedback
+    revision_rules = messages[1]["content"]
+    for requirement in (
+        "dict.get only after verifying dict",
+        "str.strip only after verifying str",
+        "For select.name reject any value that is not a string",
+        "never skip invalid fragments or return partial text",
+        "plain_text whenever it is a string, including empty",
+        "strip the final concatenation exactly once",
+    ):
+        assert requirement in revision_rules
     assert json.loads(messages[-2]["content"])["function"] == worker.extracted(candidate(), contract)
     assert original == contract
     assert "feedback" not in contract

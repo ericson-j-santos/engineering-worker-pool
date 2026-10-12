@@ -63,7 +63,14 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
             "local assignments, if/elif/else, return, and at most one for loop. "
             "Allowed builtins: isinstance, str, dict, list, len, bool, int, float; "
             "methods: get, strip, join, append. No imports, indexing, try, while, "
-            "break, continue, comprehensions, recursion, addition or augmented assignment.")
+            "break, continue, comprehensions, recursion, addition or augmented assignment. "
+            "VALIDATION REQUIREMENTS: Call dict.get only after verifying dict, and str.strip only after verifying str. "
+            "For select.name reject any value that is not a string. "
+            "For rich_text reject the entire field if a fragment is not a dict, or if a needed text fallback lacks a dict with string content; "
+            "never skip invalid fragments or return partial text. "
+            "Use plain_text whenever it is a string, including empty; otherwise use the fallback only if plain_text is absent or None. "
+            "Collect fragments without trimming each separately; join with an empty separator and strip the final concatenation exactly once. "
+            "Treat every failed test as mandatory to fix while preserving the previously passing cases.")
         messages.extend([
             {"role": "assistant", "content": json.dumps(
                 {"function": extracted(before, task)}, ensure_ascii=False)},
