@@ -55,13 +55,16 @@ def test_recorded_five_failures_have_actual_values_and_exception_categories():
     assert feedback["failed_count"] == len(feedback["failures"]) == 5
 
 
-def test_revision_is_actual_assistant_user_turn_and_binds_candidate():
+def test_revision_uses_failing_source_as_data_and_binds_candidate():
     contract = task()
     original = copy.deepcopy(contract)
     feedback = worker.semantic_feedback(contract, candidate(), worker.validate(candidate(), contract))
     proposal = {**contract, "feedback": feedback}
     messages = message_builder()(proposal, candidate())
-    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
+    assert [m["role"] for m in messages] == ["system", "user"]
+    assert messages == message_builder()(proposal, candidate())
+    assert "REJECTED_SOURCE_IS_NOT_AN_ANSWER_V1" in messages[1]["content"]
+    assert worker.extracted(candidate(), contract) not in messages[1]["content"]
     assert "PATCH THE PREVIOUS CODE AT THE EXACT LISTED LINES" in messages[-1]["content"]
     assert "IMMUTABLE_SOURCE_ANCHORS_V1" in messages[1]["content"]
     assert "L1:" not in messages[1]["content"]
@@ -82,7 +85,8 @@ def test_revision_is_actual_assistant_user_turn_and_binds_candidate():
         assert requirement in revision_rules
     assert "candidate_line" in revision_rules
     assert "one-based" in revision_rules
-    assert json.loads(messages[-2]["content"])["function"] == worker.extracted(candidate(), contract)
+    assert "IMMUTABLE_SOURCE_ANCHORS_V1" in messages[1]["content"]
+    assert not any(message["role"] == "assistant" for message in messages)
     assert original == contract
     assert "feedback" not in contract
     with pytest.raises(worker.StructuredBlocked, match="feedback_candidate_mismatch"):

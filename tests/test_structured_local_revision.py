@@ -69,7 +69,9 @@ def test_revision_asks_for_source_bound_line_edits_and_same_cases():
     messages = message_builder()(spec, source)
     assert "one JSON object with key edits" in messages[0]["content"]
     assert "PATCH THE PREVIOUS CODE AT THE EXACT LISTED LINES" in messages[-1]["content"]
-    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
+    assert [m["role"] for m in messages] == ["system", "user"]
+    assert "REJECTED_SOURCE_IS_NOT_AN_ANSWER_V1" in messages[1]["content"]
+    assert source.splitlines()[0] not in messages[1]["content"]
     assert spec["instruction"] in messages[1]["content"]
     assert spec["cases"] == task()["cases"]
     assert "Trusted input/output examples:" not in messages[1]["content"]

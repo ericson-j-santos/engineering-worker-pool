@@ -84,20 +84,23 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
             "line in the preceding normalized candidate function, not a suggestion "
             "to change a different anchor. Check the type guards there.\n"
             "IMMUTABLE_SOURCE_ANCHORS_V1\n" + catalog)
-        messages.extend([
-            {"role": "assistant", "content": json.dumps(
-                {"function": source}, ensure_ascii=False)},
-            {"role": "user", "content":
-             "PATCH THE PREVIOUS CODE AT THE EXACT LISTED LINES ONLY. "
-             "Return ONLY JSON edits with anchor/new, at most six. "
-             "Make guards reject invalid JSON types before any .get or .strip. "
-             "A single invalid fragment must return empty for the whole field. "
-             "Join raw fragments with an empty separator then strip the result once. "
-             "Retain source branches for valid inputs. "
-             "Do not return the original function unchanged.\n"
-             "VALIDATOR_OBSERVATIONS_V1\n"
-             + json.dumps(feedback, ensure_ascii=False, separators=(",", ":"))},
-        ])
+        # The failed candidate is still available as source-bound line data above.
+        # Do not demonstrate it as a prior assistant answer: that reinforced copying
+        # the incorrect implementation in real model attempts.
+        messages[1]["content"] += (
+            "\nREJECTED_SOURCE_IS_NOT_AN_ANSWER_V1\n"
+            "The anchored lines above represent a rejected candidate, never an approved output. "
+            "Use them only to locate minimal edits; all nonedited lines stay unchanged.\n"
+            "PATCH THE PREVIOUS CODE AT THE EXACT LISTED LINES ONLY. "
+            "Return ONLY JSON edits with anchor/new, at most six. "
+            "Make guards reject invalid JSON types before any .get or .strip. "
+            "A single invalid fragment must return empty for the whole field. "
+            "Join raw fragments with an empty separator then strip the result once. "
+            "Retain source branches for valid inputs. "
+            "Do not return the original function unchanged.\n"
+            "VALIDATOR_OBSERVATIONS_V1\n"
+            + json.dumps(feedback, ensure_ascii=False, separators=(",", ":")))
+
     return messages
 
 
