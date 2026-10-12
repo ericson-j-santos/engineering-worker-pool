@@ -59,6 +59,18 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
         anchors = line_catalog(source)  # Reject unanchorable candidates BEFORE another model call.
         lines = source.splitlines()
         catalog = "\n".join(f"{anchor}: {lines[index]}" for anchor, index in anchors.items())
+        # Focus only source-bound exception locations. All value mismatches
+        # remain mandatory and the trusted validator decides acceptance.
+        affected = {}
+        for failure in feedback["failures"]:
+            observation = failure["observed"]
+            number = observation.get("candidate_line")
+            anchor = f"L{number}"
+            if (observation["kind"] == "exception" and type(number) is int
+                    and anchor in anchors):
+                affected.setdefault(anchor, []).append(failure["case_index"])
+        focus = [{"anchor": anchor, "failed_case_indices": affected[anchor]}
+                 for anchor in sorted(affected, key=lambda item: int(item[1:]))]
         messages[0]["content"] = (
             "Repair ONLY the failing lines of the previous Python function. "
             "Return exactly one JSON object with key edits: an array of 1 to 6 "
@@ -80,9 +92,12 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
             "or returning partial strings. Preserve valid empty plain_text; join all "
             "fragments before the final strip, not one strip per fragment. "
             "Every failure must be corrected; preserve all previously passing cases. "
-            "When an exception observation has candidate_line, that is the one-based "
-            "line in the preceding normalized candidate function, not a suggestion "
-            "to change a different anchor. Check the type guards there.\n"
+            "When an exception observation has candidate_line, that is a one-based "
+            "line in this rejected candidate, not an approved solution. Prioritize "
+            "those anchors or their necessary preceding type guards. Fix every value "
+            "mismatch too. A new if/elif/else needs a nonempty suite with four spaces "
+            "of relative indentation; do not orphan the existing header's suite. "
+            "Do not emit cosmetic changes or an unchanged AST.\n"
             "IMMUTABLE_SOURCE_ANCHORS_V1\n" + catalog)
         # The failed candidate is still available as source-bound line data above.
         # Do not demonstrate it as a prior assistant answer: that reinforced copying
@@ -98,7 +113,9 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
             "Join raw fragments with an empty separator then strip the result once. "
             "Retain source branches for valid inputs. "
             "Do not return the original function unchanged.\n"
-            "VALIDATOR_OBSERVATIONS_V1\n"
+            "FOCUSED_EXCEPTION_ANCHORS_V1\n"
+            + json.dumps(focus, ensure_ascii=False, separators=(",", ":"))
+            + "\nVALIDATOR_OBSERVATIONS_V1\n"
             + json.dumps(feedback, ensure_ascii=False, separators=(",", ":")))
 
     return messages

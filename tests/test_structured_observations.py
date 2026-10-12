@@ -93,6 +93,123 @@ def test_revision_uses_failing_source_as_data_and_binds_candidate():
         message_builder()(proposal, FIXED)
 
 
+def test_rejected_source_focus_uses_real_candidate_failure_lines_only():
+    contract = task()
+    source = candidate()
+    feedback = worker.semantic_feedback(contract, source, worker.validate(source, contract))
+    spec = {**contract, "feedback": feedback}
+    snapshot = json.dumps(spec, sort_keys=True, ensure_ascii=False)
+    messages = message_builder()(spec, source)
+    assert [msg["role"] for msg in messages] == ["system", "user"]
+    body = messages[1]["content"]
+    focused = json.loads(body.split("FOCUSED_EXCEPTION_ANCHORS_V1\n", 1)[1]
+                         .split("\nVALIDATOR_OBSERVATIONS_V1\n", 1)[0])
+    assert focused == [
+        {"anchor": "L10", "failed_case_indices": [20, 21]},
+        {"anchor": "L22", "failed_case_indices": [7]},
+    ]
+    assert "REJECTED_SOURCE_IS_NOT_AN_ANSWER_V1" in body
+    assert "unchanged AST" in body
+    assert json.loads(body.split("VALIDATOR_OBSERVATIONS_V1\n", 1)[1]) == feedback
+    assert json.dumps(spec, sort_keys=True, ensure_ascii=False) == snapshot
+    assert message_builder()(spec, source) == messages
+
+
+def test_focus_does_not_invent_missing_or_spoofed_lines():
+    contract = task()
+    source = candidate()
+    feedback = worker.semantic_feedback(contract, source, worker.validate(source, contract))
+    for f in feedback["failures"]:
+        f["observed"].pop("candidate_line", None)
+    spec = {**contract, "feedback": feedback}
+    assert "FOCUSED_EXCEPTION_ANCHORS_V1\n[]\nVALIDATOR_OBSERVATIONS_V1\n" in (
+        message_builder()(spec, source)[1]["content"])
+    feedback["failures"][0]["observed"]["candidate_line"] = 400
+    assert "FOCUSED_EXCEPTION_ANCHORS_V1\n[]\nVALIDATOR_OBSERVATIONS_V1\n" in (
+        message_builder()(spec, source)[1]["content"])
+    feedback["failures"][0]["observed"]["candidate_line"] = True
+    with pytest.raises(worker.StructuredBlocked, match="observation_exception"):
+        message_builder()(spec, source)
+
+
+def test_focused_unchanged_ast_is_still_rejected():
+    from app.structured_anchors import apply_anchored_edits
+    contract = task()
+    source = candidate()
+    spec = {**contract, "feedback": worker.semantic_feedback(
+        contract, source, worker.validate(source, contract))}
+    unchanged_line = worker.extracted(source, contract).splitlines()[9].strip()
+    unchanged = json.dumps({"edits": [{"anchor": "L10", "new": unchanged_line}]})
+    observed = []
+    with pytest.raises(worker.StructuredBlocked, match="^candidate_repeated$"):
+        apply_anchored_edits(unchanged, source, spec, observer=observed.append)
+    assert observed[-1]["stage"] == "rejected"
+    assert observed[-1]["reason_code"] == "candidate_repeated"
+
+
+def test_focused_synthetic_model_shaped_edit_reaches_42_and_replays(tmp_path):
+    # Explicit fixture; production cannot access these replacements as fallback.
+    from app.structured_anchors import apply_anchored_edits
+    root, state, contract = repository(tmp_path)
+    calls = []
+    replacements = {
+        "return select_value.get('name').strip()":
+            "return select_value.get('name').strip() if isinstance(select_value.get('name'), str) else ''",
+        "text_content = fragment.get('text', {}).get('content')":
+            "text_value = fragment.get('text')\ntext_content = text_value.get('content') if isinstance(text_value, dict) else None",
+        "if isinstance(fragment, dict):":
+            "if not isinstance(fragment, dict):\n    return ''\nif isinstance(fragment, dict):",
+        "result.append(plain_text.strip())": "result.append(plain_text)",
+        "result.append(text_content.strip())": "result.append(text_content)",
+        "return ''.join(result)": "return ''.join(result).strip()",
+    }
+    def source_bound_propose(spec, source):
+        calls.append("revision" if "feedback" in spec else "initial")
+        if "feedback" not in spec:
+            return REPLY
+        assert spec["feedback"]["failed_count"] == 5
+        message = message_builder()(spec, source)[1]["content"]
+        focused = json.loads(message.split("FOCUSED_EXCEPTION_ANCHORS_V1\n", 1)[1]
+                             .split("\nVALIDATOR_OBSERVATIONS_V1\n", 1)[0])
+        assert [item["anchor"] for item in focused] == ["L10", "L22"]
+        edits = [{"anchor": f"L{idx}", "new": replacements[line.strip()]}
+                 for idx, line in enumerate(source.splitlines(), 1)
+                 if line.strip() in replacements]
+        assert len(edits) == 6
+        result, _ = apply_anchored_edits(json.dumps({"edits": edits}), source, spec)
+        return result
+    result = worker.repair(root, state, contract, source_bound_propose)
+    assert calls == ["initial", "revision"]
+    assert result["model_calls"] == 2
+    assert result["attempts"][0]["validation"]["passed"] == 37
+    assert result["validation"] == {"passed": 42, "total": 42, "errors": 0, "failures": []}
+    again = worker.repair(root, state, contract, lambda *_: pytest.fail("must replay"))
+    assert again["replayed"] is True
+    assert again["model_calls"] == 0
+    assert again["produced_sha"] == result["produced_sha"]
+    assert worker.git(root, "status", "--porcelain") == ""
+
+
+def test_focused_new_header_without_body_is_rejected_as_missing_block():
+    from app.structured_anchors import line_catalog, apply_anchored_edits
+    contract = task()
+    source = candidate()
+    spec = {**contract, "feedback": worker.semantic_feedback(
+        contract, source, worker.validate(source, contract))}
+    lines = worker.extracted(source, contract).splitlines()
+    anchor = next(key for key, index in line_catalog(worker.extracted(source, contract)).items()
+                  if lines[index].strip() == "if isinstance(fragment, dict):")
+    # An empty inserted if suite must not become a valid patch or bypass AST validation.
+    bad_reply = json.dumps({"edits": [{"anchor": anchor,
+        "new": "if not isinstance(fragment, dict):\nif isinstance(fragment, dict):"}]})
+    events = []
+    with pytest.raises(worker.StructuredBlocked, match="^candidate_syntax$"):
+        apply_anchored_edits(bad_reply, source, spec, observer=events.append)
+    assert events[-1]["stage"] == "rejected"
+    assert events[-1]["reason_code"] == "candidate_syntax"
+    assert events[-1]["syntax_kind"] == "missing_block"
+
+
 def test_initial_prompt_has_no_previous_candidate_or_fake_feedback():
     messages = message_builder()(task(), BEFORE)
     assert len(messages) == 2
