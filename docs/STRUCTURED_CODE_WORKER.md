@@ -125,3 +125,37 @@ chamadores explícitos e seus testes, mas deixam de ser a forma usada
 pela segunda geração do modelo. A saída final permanece bloqueada até
 que o novo SHA comprove todos os requisitos no E2E real; a main e sua
 proteção administrativa não são modificadas.
+
+
+## Orçamento de inferência alinhado ao limite do Gateway — 12/10/2026
+
+No E2E [38197666618](https://github.com/ericson-j-santos/engineering-worker-pool/actions/runs/38197666618),
+HEAD aacc98ae188422fe21519ffdd1674f648e986883, a compilação, os testes e
+o E2E numérico passaram. O artefato 11724920154 (SHA-256
+69facd3ee65a84e1bfa1d5276f6f45cdf715757fa82e46f01234df251109a7c4)
+comprovou SESSION_LAUNCH_OK e uma proposta inicial completa; a segunda
+geração foi iniciada, mas o Gateway encerrou o processo após 285 segundos
+globais, sem patch nem aprovação. Duas inferências sequenciais de até
+180 segundos cada podem exigir até 360 segundos, além da validação;
+o teto global anterior era, portanto, menor do que o orçamento já
+permitido aos dois pedidos.
+
+A correção não altera modelo, prompts, segurança nem o número de propostas:
+- prazo do Gateway: 420 segundos (duas inferências de até 180 s,
+  mais 60 s de validação/IO);
+- wrapper: 435 segundos, para observar uma falha fechada do Gateway;
+- etapa E2E no CI: 8 minutos;
+- job completo no CI: 14 minutos, incluindo preparação do runner,
+  download dos pesos e E2E numérico.
+
+O Gateway governado continua com teto configurado de 900 s e a inferência
+individual permanece limitada a 180 s, inferior ao watchdog de 300 s sem
+avanço material. A primeira proposta registrada é progresso material,
+não heartbeat; a segunda chamada também permanece limitada e pode ser
+rejeitada. Não há polling, retry adicional ou tratamento de sucesso falso.
+O runner padrao ubuntu-latest neste repositorio publico nao requer runner
+pago; armazenamento de artefatos continua sujeito aos limites do GitHub.
+
+O aceite continua exigindo função real 42/42, patch reaplicável, replay,
+regressão independente e evidência no SHA atual. A mudança é de orçamento,
+não prova funcional, e não autoriza alterar a main ou fazer merge.

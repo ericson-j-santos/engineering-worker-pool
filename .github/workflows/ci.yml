@@ -33,7 +33,7 @@ jobs:
         github.event.comment.body == '/worker validate'
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 14
     env:
       EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
@@ -116,7 +116,7 @@ jobs:
       - name: Repair real structured function in governed copy
         id: structured_e2e
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: python scripts/structured_worker_e2e.py
 
       - name: Upload structured-function evidence and patch

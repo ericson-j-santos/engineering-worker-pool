@@ -232,9 +232,9 @@ def outer() -> None:
         process([
             sys.executable, str(rules / "scripts/command_gateway.py"), "--policy", str(policy_path),
             "--correlation-id", correlation, "run", "--cwd", str(worktree),
-            "--session-id", session["session_id"], "--risk", "2", "--timeout", "285",
+            "--session-id", session["session_id"], "--risk", "2", "--timeout", "420",
             "--expected-head", sha, "--", "python", "scripts/structured_worker_e2e.py", "--inner",
-        ], root, timeout=295)
+        ], root, timeout=435)
     finally:
         target = root / ARTIFACT
         target.mkdir(parents=True, exist_ok=True)

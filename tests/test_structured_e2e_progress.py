@@ -111,4 +111,25 @@ def test_unlisted_transport_is_rejected_before_network(monkeypatch):
 def test_timeout_checkpoint_is_in_outer_artifact_copy_contract():
     script = (ROOT / "scripts/structured_worker_e2e.py").read_text(encoding="utf-8")
     assert '"model-progress.json"' in script.split("for name in (", 1)[-1]
-    assert "timeout=295" in script and '"--timeout", "285"' in script
+    assert "timeout=435" in script and '"--timeout", "420"' in script
+
+def test_budget_covers_two_bounded_model_calls_and_ci_time_limits():
+    """Fixed ceilings allow two 180s calls plus 60s for guards and validation."""
+    worker = (ROOT / "app/structured_code_worker.py").read_text(encoding="utf-8")
+    provider = (ROOT / "app/structured_ollama.py").read_text(encoding="utf-8")
+    outer = (ROOT / "scripts/structured_worker_e2e.py").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert "for attempt in (1, 2):" in worker
+    assert "timeout=180" in provider
+    model_calls, model_call_timeout = 2, 180
+    gateway_timeout, wrapper_timeout, step_timeout, job_timeout = 420, 435, 8 * 60, 14 * 60
+    assert model_call_timeout < 300  # Material first-proposal evidence resets the watchdog.
+    assert gateway_timeout >= model_calls * model_call_timeout + 60
+    assert gateway_timeout < wrapper_timeout < step_timeout < job_timeout
+    assert '"--timeout", "420"' in outer and "timeout=435" in outer
+    assert '    timeout-minutes: 14' in workflow
+    assert workflow.count("      - name: Repair real structured function in governed copy") == 1
+    assert '        timeout-minutes: 8' in workflow.split(
+        "      - name: Repair real structured function in governed copy", 1)[1].split(
+        "      - name: Upload structured-function evidence and patch", 1)[0]
+    assert not (gateway_timeout - 1 >= model_calls * model_call_timeout + 60)
