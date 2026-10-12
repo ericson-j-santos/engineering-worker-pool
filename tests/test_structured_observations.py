@@ -395,3 +395,61 @@ def test_guard_still_rejects_unsafe_second_candidate(tmp_path):
     with pytest.raises(worker.StructuredBlocked, match="candidate_call"):
         worker.repair(root, state, contract, propose)
     assert len(calls) == 2 and worker.git(root, "status", "--porcelain") == ""
+
+
+def test_guardable_ids_match_assembler_and_exclude_focused_non_if():
+    """Real failed-case line IDs are not automatically legal guard anchors."""
+    from app.structured_anchors import (
+        AnchorRejected, anchored_schema, assemble_anchors, line_catalog,
+    )
+    contract = task()
+    source = candidate()
+    original = copy.deepcopy(contract)
+    report = worker.validate(source, contract)
+    feedback = worker.semantic_feedback(contract, source, report)
+    spec = {**contract, "feedback": feedback}
+    messages = message_builder()(spec, source)
+    body = messages[1]["content"]
+    guardable = json.loads(body.split("GUARDABLE_IF_ANCHORS_V1\n", 1)[1]
+                           .split("\nREJECTED_SOURCE_IS_NOT_AN_ANSWER_V1\n", 1)[0])
+    extracted = worker.extracted(source, contract)
+    lines = extracted.splitlines()
+    catalog = line_catalog(extracted)
+    expected = [key for key, idx in catalog.items()
+                if lines[idx].lstrip().startswith("if ")
+                and lines[idx].rstrip().endswith(":")]
+    variants = anchored_schema(extracted)["properties"]["edits"]["items"]["oneOf"]
+    guarded = next(item for item in variants if "guard" in item["properties"])
+    assert guardable == expected == guarded["properties"]["anchor"]["enum"]
+    assert guardable and "L1" not in guardable
+    assert "L10" not in guardable and "L22" not in guardable
+    assert "GUARDABLE_IF_ANCHORS_V1" in messages[0]["content"] + body
+    assert body == message_builder()(spec, source)[1]["content"]
+    for invalid in ("L10", "L22"):
+        with pytest.raises(AnchorRejected, match="^revision_anchor_invalid$"):
+            assemble_anchors(json.dumps({"edits": [{
+                "anchor": invalid,
+                "guard": "not isinstance(properties, dict)",
+                "return_expression": "''",
+            }]}), extracted)
+    positive = json.dumps({"edits": [{
+        "anchor": guardable[0],
+        "guard": "not isinstance(properties, dict)",
+        "return_expression": "''",
+    }]})
+    modified, edits = assemble_anchors(positive, extracted)
+    assert len(edits) == 1 and modified != extracted
+    assert original == contract and "feedback" not in contract
+
+
+def test_guardable_catalog_has_no_false_eligibility_without_if():
+    from app.structured_anchors import line_catalog
+    from test_structured_diagnostics import revision_contract
+    before, contract = revision_contract()
+    messages = message_builder()(contract, before)
+    body = messages[1]["content"]
+    allowed = json.loads(body.split("GUARDABLE_IF_ANCHORS_V1\n", 1)[1]
+                         .split("\nREJECTED_SOURCE_IS_NOT_AN_ANSWER_V1\n", 1)[0])
+    assert allowed == []
+    assert set(line_catalog(before)) == {"L2"}
+    assert "allowed only for single-line replacements" in body

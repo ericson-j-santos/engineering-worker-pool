@@ -282,3 +282,27 @@ necessária para escolher uma correção causal posterior. Identidade de
 SHA, 42 casos, duas inferências, timeout, origens e bloqueios de segurança
 permanecem inalterados. Após mudança de geração, exigir E2E real,
 patch reaplicável, replay e regressão independente.
+
+## Catálogo explícito de cabeçalhos elegíveis — 12/10/2026
+
+A cápsula do E2E [38309750221](https://github.com/ericson-j-santos/engineering-worker-pool/actions/runs/38309750221),
+HEAD `1980df8e`, identificou o subtipo real
+`anchor_failure_kind=guard_not_if_header`. Um candidato tentou colocar
+`{anchor,guard,return_expression}` em linha existente que não abre um
+bloco `if`, embora estivesse no catálogo geral. O montador bloqueou
+a revisão sem patch; não houve timeout nem aceite 42/42.
+
+A segunda chamada ao modelo recebe agora também a lista
+`GUARDABLE_IF_ANCHORS_V1`, obtida do mesmo código normalizado e regra
+de cabeçalho que o montador já valida. Uma linha citada por um teste
+reprovado não se torna automaticamente elegível para guarda.
+O modelo pode substituir uma linha não-`if` com `{anchor,new}` ou
+selecionar um cabeçalho `if` permitido para guarda tipada; não há
+reancoragem automática ou fallback. O catálogo geral e o limite de
+seis edições permanecem, assim como fingerprint, AST, 42 casos, custo
+e isolamento. Testes unitários verificam equivalência do catálogo com
+a regra do assembler, casos válidos e inválidos e determinismo.
+
+A eficiência do prompt é hipótese a testar, não homologação. Exigir
+E2E real do SHA atualizado, cápsula íntegra, 42/42, patch, replay
+e regressão independente antes de qualquer merge.

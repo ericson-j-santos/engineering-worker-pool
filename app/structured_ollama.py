@@ -59,6 +59,11 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
         anchors = line_catalog(source)  # Reject unanchorable candidates BEFORE another model call.
         lines = source.splitlines()
         catalog = "\n".join(f"{anchor}: {lines[index]}" for anchor, index in anchors.items())
+        # The allowed typed-guard IDs mirror the exact existing assembler rule.
+        # Failed-case line numbers are NOT necessarily eligible if-headers.
+        guardable = [anchor for anchor, index in anchors.items()
+                     if lines[index].lstrip().startswith("if ")
+                     and lines[index].rstrip().endswith(":")]
         # Focus only source-bound exception locations. All value mismatches
         # remain mandatory and the trusted validator decides acceptance.
         affected = {}
@@ -91,6 +96,12 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
             "the condition and return expression, not if/return syntax, indentation "
             "or a colon. The assembler adds the complete two-line guard while "
             "preserving the existing if and its body. "
+            "For typed guard edits, anchor MUST be an ID from GUARDABLE_IF_ANCHORS_V1; "
+            "all other IDs are allowed only for single-line replacements. "
+            "A focused failed-case anchor may refer to a return or assignment, not an if. "
+            "For those lines, use {anchor,new} or choose an allowed preceding if header "
+            "from GUARDABLE_IF_ANCHORS_V1 for a guard. Never use a typed guard at "
+            "an assignment or return line. "
             "No imports, subscripts, list literals, try, while, break, comprehensions "
             "or untrusted calls. Use dict.get, list(), append/join, isinstance. "
             "VALIDATION REQUIREMENTS: Call dict.get only after verifying dict, and str.strip "
@@ -104,7 +115,9 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
             "mismatch too. A new if/elif/else needs a nonempty suite with four spaces "
             "of relative indentation; do not orphan the existing header's suite. "
             "Do not emit cosmetic changes or an unchanged AST.\n"
-            "IMMUTABLE_SOURCE_ANCHORS_V1\n" + catalog)
+            "IMMUTABLE_SOURCE_ANCHORS_V1\n" + catalog
+            + "\nGUARDABLE_IF_ANCHORS_V1\n"
+            + json.dumps(guardable, ensure_ascii=False, separators=(",", ":")))
         # The failed candidate is still available as source-bound line data above.
         # Do not demonstrate it as a prior assistant answer: that reinforced copying
         # the incorrect implementation in real model attempts.
@@ -116,6 +129,8 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
             "Return ONLY JSON edits in the exact anchor/new or "
             "anchor/guard/return_expression shapes, at most six. "
             "Do not emit multiline new values or incomplete if blocks. "
+            "Never use {anchor,guard,return_expression} at an ID missing from "
+            "GUARDABLE_IF_ANCHORS_V1, even if it appears in FOCUSED_EXCEPTION_ANCHORS_V1. "
             "Make guards reject invalid JSON types before any .get or .strip. "
             "A single invalid fragment must return empty for the whole field. "
             "Join raw fragments with an empty separator then strip the result once. "
