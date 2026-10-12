@@ -7,7 +7,7 @@ import httpx
 
 from app.local_code_worker import LocalOllama, OLLAMA_URL, DIGEST
 from app.structured_code_worker import proposal_spec, candidate_fingerprint, extracted, need
-from app.structured_revision import apply_full_function_revision
+from app.structured_anchors import apply_anchored_edits, line_catalog
 
 
 MODEL = "qwen2.5-coder:7b"
@@ -51,38 +51,47 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
     ]
     if "feedback" in proposal:
         feedback = proposal["feedback"]
+        # All failure observations and the candidate fingerprint are validated
+        # before inference; original task/cases remain immutable.
         need(candidate_fingerprint(before, task) == feedback["candidate_sha256"],
              "feedback_candidate_mismatch")
+        source = extracted(before, task)
+        anchors = line_catalog(source)  # Reject unanchorable candidates BEFORE another model call.
+        lines = source.splitlines()
+        catalog = "\n".join(f"{anchor}: {lines[index]}" for anchor, index in anchors.items())
         messages[0]["content"] = (
-            "Repair the previous complete Python function from REAL test failures. "
-            "Return ONLY one JSON object with key function and a complete corrected "
-            "function definition. No edits, explanation or Markdown.")
+            "Repair ONLY the failing lines of the previous Python function. "
+            "Return exactly one JSON object with key edits: an array of 1 to 6 "
+            "objects containing ONLY anchor and new. "
+            "Never output a full function, a replacement implementation, Markdown or tests.")
         messages[1]["content"] = (
             task["instruction"] + "\n"
-            "Preserve the exact function name and parameters. Allowed constructs: "
-            "local assignments, if/elif/else, return, and at most one for loop. "
-            "Allowed builtins: isinstance, str, dict, list, len, bool, int, float; "
-            "methods: get, strip, join, append. No imports, indexing, try, while, "
-            "break, continue, comprehensions, recursion, addition or augmented assignment. "
-            "VALIDATION REQUIREMENTS: Call dict.get only after verifying dict, and str.strip only after verifying str. "
-            "For select.name reject any value that is not a string. "
-            "For rich_text reject the entire field if a fragment is not a dict, or if a needed text fallback lacks a dict with string content; "
-            "never skip invalid fragments or return partial text. "
-            "Use plain_text whenever it is a string, including empty; otherwise use the fallback only if plain_text is absent or None. "
-            "Collect fragments without trimming each separately; join with an empty separator and strip the final concatenation exactly once. "
-            "Treat every failed test as mandatory to fix while preserving the previously passing cases.")
+            "Preserve the exact signature and all unmentioned lines. Each anchor L<number> "
+            "identifies one existing, immutable source line; use only the listed IDs, "
+            "at most once each. The new field replaces that line using its existing "
+            "indentation: start the first replacement line without leading spaces; "
+            "subsequent lines use relative four-space indentation. "
+            "If the old line ends in a colon, keep a block-opening colon on the "
+            "last new line so its existing suite stays attached. "
+            "No imports, subscripts, list literals, try, while, break, comprehensions "
+            "or untrusted calls. Use dict.get, list(), append/join, isinstance. "
+            "VALIDATION REQUIREMENTS: Call dict.get only after verifying dict, and str.strip "
+            "only after verifying str. Reject invalid fragments instead of ignoring them "
+            "or returning partial strings. Preserve valid empty plain_text; join all "
+            "fragments before the final strip, not one strip per fragment. "
+            "Every failure must be corrected; preserve all previously passing cases.\n"
+            "IMMUTABLE_SOURCE_ANCHORS_V1\n" + catalog)
         messages.extend([
             {"role": "assistant", "content": json.dumps(
-                {"function": extracted(before, task)}, ensure_ascii=False)},
+                {"function": source}, ensure_ascii=False)},
             {"role": "user", "content":
-             "PREVIOUS PROPOSAL FAILED REAL TESTS. Return a COMPLETE CORRECTED FUNCTION. "
-             "Fix each observed failure without changing previously passing behavior. "
-             "Compare expected and observed values or exceptions; correct relevant branches. "
-             "Keep valid JSON semantics, including valid empty strings. "
-             "Never add unconditional early returns for valid inputs. "
-             "Use dict.get and list(), append/join for accumulation; no square brackets. "
-             "Do not copy the previous function unchanged. "
-             "Reply exactly as JSON with one key function containing the entire definition.\n"
+             "PATCH THE PREVIOUS CODE AT THE EXACT LISTED LINES ONLY. "
+             "Return ONLY JSON edits with anchor/new, at most six. "
+             "Make guards reject invalid JSON types before any .get or .strip. "
+             "A single invalid fragment must return empty for the whole field. "
+             "Join raw fragments with an empty separator then strip the result once. "
+             "Retain source branches for valid inputs. "
+             "Do not return the original function unchanged.\n"
              "VALIDATOR_OBSERVATIONS_V1\n"
              + json.dumps(feedback, ensure_ascii=False, separators=(",", ":"))},
         ])
@@ -137,13 +146,13 @@ class StructuredOllama(LocalOllama):
             need(type(message) is dict and type(message.get("content")) is str,
                  "provider_content")
             reply = message["content"]
-            # The model returns a complete candidate; the same executor guards, tests,
-            # commit scope and replay rules remain authoritative.
+            # Initial reply is a whole function. Revision reply contains model-selected
+            # immutable line edits; the trusted assembler enforces AST and signature.
             import hashlib
             self.last_model_reply_sha256 = hashlib.sha256(reply.encode()).hexdigest()
             if is_revision:
-                verified = apply_full_function_revision(
+                verified, _edits = apply_anchored_edits(
                     reply, before, task, observer=self.revision_observer)
-                self.last_revision = "whole_function"
+                self.last_revision = "anchored_edits"
                 return verified
             return reply

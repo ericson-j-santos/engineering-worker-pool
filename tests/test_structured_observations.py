@@ -26,8 +26,10 @@ def message_builder():
     node = next(n for n in ast.parse(source).body
                 if isinstance(n, ast.FunctionDef) and n.name == "proposal_messages")
     module = ast.Module(body=[node], type_ignores=[])
+    from app.structured_anchors import line_catalog
     scope = {"json": json, "proposal_spec": worker.proposal_spec, "need": worker.need,
-             "candidate_fingerprint": worker.candidate_fingerprint, "extracted": worker.extracted}
+             "candidate_fingerprint": worker.candidate_fingerprint, "extracted": worker.extracted,
+             "line_catalog": line_catalog}
     exec(compile(module, "<production-message-builder>", "exec"), scope)
     return scope["proposal_messages"]
 
@@ -52,17 +54,22 @@ def test_revision_is_actual_assistant_user_turn_and_binds_candidate():
     proposal = {**contract, "feedback": feedback}
     messages = message_builder()(proposal, candidate())
     assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
-    assert "COMPLETE CORRECTED FUNCTION" in messages[-1]["content"]
+    assert "PATCH THE PREVIOUS CODE AT THE EXACT LISTED LINES" in messages[-1]["content"]
+    assert "IMMUTABLE_SOURCE_ANCHORS_V1" in messages[1]["content"]
+    assert "L1:" not in messages[1]["content"]
+    assert "L2:" in messages[1]["content"]
+    assert "Return ONLY JSON edits" in messages[-1]["content"]
+    assert "full function" in messages[0]["content"]
     actual = json.loads(messages[-1]["content"].split("VALIDATOR_OBSERVATIONS_V1\n", 1)[1])
     assert actual == feedback
     revision_rules = messages[1]["content"]
     for requirement in (
         "dict.get only after verifying dict",
         "str.strip only after verifying str",
-        "For select.name reject any value that is not a string",
-        "never skip invalid fragments or return partial text",
-        "plain_text whenever it is a string, including empty",
-        "strip the final concatenation exactly once",
+        "Reject invalid fragments instead of ignoring them",
+        "Preserve valid empty plain_text",
+        "not one strip per fragment",
+        "all previously passing cases",
     ):
         assert requirement in revision_rules
     assert json.loads(messages[-2]["content"])["function"] == worker.extracted(candidate(), contract)

@@ -72,6 +72,7 @@ def test_provider_supplies_same_revision_schema_and_no_extra_attempt():
     assert '"num_predict": 1024 if is_revision else 1400' in text
     assert '"num_ctx": 4096 if is_revision else 8192' in text
     assert '"seed": 7' in text and '"temperature": 0' in text
-    assert "COMPLETE CORRECTED FUNCTION" in text
-    assert "No edits, explanation or Markdown" in text
+    assert "IMMUTABLE_SOURCE_ANCHORS_V1" in text
+    assert "PATCH THE PREVIOUS CODE AT THE EXACT LISTED LINES" in text
+    assert "apply_anchored_edits" in text
     assert "observer=self.revision_observer" in text

@@ -64,22 +64,23 @@ def test_feedback_not_applied_to_different_candidate():
     with pytest.raises(worker.StructuredBlocked,match="feedback_candidate_mismatch"):
         apply_local_edits(edit("x","y"),source.replace("return ''","return 'different'"),spec)
 
-def test_revision_asks_for_complete_function_and_same_cases():
+def test_revision_asks_for_source_bound_line_edits_and_same_cases():
     source, spec = proposal()
     messages = message_builder()(spec, source)
-    assert "one JSON object with key function" in messages[0]["content"]
-    assert "COMPLETE CORRECTED FUNCTION" in messages[-1]["content"]
+    assert "one JSON object with key edits" in messages[0]["content"]
+    assert "PATCH THE PREVIOUS CODE AT THE EXACT LISTED LINES" in messages[-1]["content"]
     assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
     assert spec["instruction"] in messages[1]["content"]
     assert spec["cases"] == task()["cases"]
     assert "Trusted input/output examples:" not in messages[1]["content"]
+    assert "IMMUTABLE_SOURCE_ANCHORS_V1" in messages[1]["content"]
     assert "VALIDATOR_OBSERVATIONS_V1" in messages[-1]["content"]
 
 
 def assert_revision_call_contract(text):
     calls = [node for node in ast.walk(ast.parse(text))
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-             and node.func.id == "apply_full_function_revision"]
+             and node.func.id == "apply_anchored_edits"]
     assert len(calls) == 1
     call = calls[0]
     assert len(call.args) == 3
@@ -97,7 +98,7 @@ def test_provider_limits_revision_output_and_preserves_initial_contract():
     assert '"num_predict": 1024 if is_revision else 1400' in text
     assert '"num_ctx": 4096 if is_revision else 8192' in text
     assert_revision_call_contract(text)
-    assert 'self.last_revision = "whole_function"' in text
+    assert 'self.last_revision = "anchored_edits"' in text
     ast.parse(text)
 
 def test_six_localized_edits_fix_all_original_cases_synthetic_control():
@@ -162,3 +163,68 @@ def test_whole_revision_rejects_wrong_schema_replay_and_unchanged_ast():
     same = json.dumps({"function": worker.extracted(source, task())})
     with pytest.raises(worker.StructuredBlocked, match="candidate_repeated"):
         apply_full_function_revision(same, source, spec)
+
+
+@pytest.mark.parametrize("unsafe", [False, True])
+def test_live_provider_anchored_dispatch_is_source_bound_and_guarded(unsafe):
+    """Scripted transport tests the actual provider path; no model or host is used."""
+    from app.structured_ollama import MODEL, StructuredOllama
+    from app.structured_anchors import line_catalog
+
+    source, spec = proposal()
+    original = json.dumps(spec, sort_keys=True)
+    target = next(anchor for anchor, pos in line_catalog(source).items()
+                  if source.splitlines()[pos].strip() ==
+                  "return select_value.get('name').strip()")
+    replacement = ("return properties[name]" if unsafe else
+                   "return select_value.get('name').strip() if "
+                   "isinstance(select_value.get('name'), str) else ''")
+    selected = json.dumps({"edits": [{"anchor": target, "new": replacement}]})
+    digest = "a" * 64
+
+    class ScriptedProvider(StructuredOllama):
+        def __init__(self):
+            super().__init__()
+            self.chat_requests = []
+
+        @staticmethod
+        def no_cloud():
+            # The real call contract still checks no_cloud on the production path.
+            # This independent fixture has no Docker, credentials or network.
+            pass
+
+        def request(self, _client, method, path, **kwargs):
+            if (method, path) == ("GET", "/api/tags"):
+                return {"models": [{"name": MODEL, "digest": digest}]}
+            if (method, path) == ("POST", "/api/show"):
+                return {"details": {"format": "gguf"}}
+            if (method, path) == ("GET", "/api/ps"):
+                return {"models": [{"name": MODEL, "digest": digest, "size": 1}]}
+            if (method, path) == ("POST", "/api/chat"):
+                self.chat_requests.append(kwargs["json"])
+                return {"done": True, "model": MODEL, "eval_count": 1,
+                        "message": {"content": selected}}
+            raise AssertionError("unexpected provider endpoint")
+
+    provider = ScriptedProvider()
+    diagnostics = []
+    provider.revision_observer = diagnostics.append
+    if unsafe:
+        with pytest.raises(worker.StructuredBlocked, match="^candidate_grammar$"):
+            provider(spec, source)
+        assert diagnostics[-1]["stage"] == "rejected"
+        assert provider.last_revision is None
+    else:
+        verified = provider(spec, source)
+        assembled = worker.render(source, task(), verified)
+        assert worker.validate(assembled, task())["passed"] == 39
+        assert provider.last_revision == "anchored_edits"
+        assert diagnostics[-1]["stage"] == "accepted"
+    assert len(provider.chat_requests) == 1
+    request = provider.chat_requests[0]
+    assert request["format"] == "json"
+    assert request["model"] == MODEL
+    assert request["options"]["seed"] == 7
+    assert "IMMUTABLE_SOURCE_ANCHORS_V1" in request["messages"][1]["content"]
+    assert json.dumps(spec, sort_keys=True) == original
+    assert source == candidate()

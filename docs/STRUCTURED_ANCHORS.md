@@ -208,3 +208,26 @@ reprovada. Não se promete melhora sem novo E2E no SHA atual.
 Este ajuste evita repetir a hipótese comprovadamente insuficiente de
 esquema dinâmico, sem mexer em timeout, quantidade de propostas, modelo,
 casos de aceite, isolamento ou política de merge.
+
+
+## Retomada 12/10/2026 — revisão por diferenças, não regeneração integral
+
+O run [38266103592](https://github.com/ericson-j-santos/engineering-worker-pool/actions/runs/38266103592)
+no HEAD 0cb389dd teve compilação, testes e E2E numérico aprovados, mas
+as duas funções completas do modelo ficaram em 37/42. A segunda resposta
+alterou apenas a inicialização de lista, sem tratar os cinco erros.
+
+O transporte da **segunda inferência** agora volta ao montador já coberto por
+controle sintético de seis âncoras. Antes da chamada, valida a identidade do
+candidato contra os casos e as observações reais e exige uma lista determinística
+de linhas existentes. O modelo escolhe até seis substituições `{anchor,new}`.
+Cada âncora corresponde a uma linha original, sem buscas por texto e sem alterar
+a assinatura. O montador independente `apply_anchored_edits` bloqueia ID ausente,
+ID repetido, edição de assinatura, cabeçalho órfão, código inseguro, AST repetida,
+fonte divergente e resposta malformada. O executor mantém os 42 casos, duas
+chamadas, orçamento e isolamento anteriores. Não há função correta codificada
+como fallback e a execução continua local.
+
+A passagem dos testes sintéticos não comprova êxito do modelo real. A aceitação
+exige novo E2E do HEAD publicado, 42/42, patch, replay, regressão independente
+na cópia governada e validação dos dados externos de integridade.
