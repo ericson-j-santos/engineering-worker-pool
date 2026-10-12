@@ -7,7 +7,7 @@ import httpx
 
 from app.local_code_worker import LocalOllama, OLLAMA_URL, DIGEST
 from app.structured_code_worker import proposal_spec, candidate_fingerprint, extracted, need
-from app.structured_anchors import apply_anchored_edits, line_catalog
+from app.structured_anchors import apply_anchored_edits, line_catalog, model_split_schema
 
 
 MODEL = "qwen2.5-coder:7b"
@@ -78,10 +78,10 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
                  for anchor in sorted(affected, key=lambda item: int(item[1:]))]
         messages[0]["content"] = (
             "Repair ONLY the failing lines of the previous Python function. "
-            "Return exactly one JSON object with key edits: an array of 1 to 6 "
-            "objects using EXACTLY ONE of: {anchor,new} to replace one line, "
-            "or {anchor,guard,return_expression} to add a typed early-return guard "
-            "before an existing if header. "
+            "Return exactly one JSON object with key edits and guards. "
+            "edits contains {anchor,new} replacements and guards contains "
+            "{anchor,guard,return_expression} typed guards only on original if-headers. "
+            "Include BOTH arrays, even if one is empty; 1 to 6 total changes. "
             "Never output a full function, a replacement implementation, Markdown or tests.")
         messages[1]["content"] = (
             task["instruction"] + "\n"
@@ -126,8 +126,9 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
             "The anchored lines above represent a rejected candidate, never an approved output. "
             "Use them only to locate minimal edits; all nonedited lines stay unchanged.\n"
             "PATCH THE PREVIOUS CODE AT THE EXACT LISTED LINES ONLY. "
-            "Return ONLY JSON edits in the exact anchor/new or "
-            "anchor/guard/return_expression shapes, at most six. "
+            "Return ONLY JSON edits and guards arrays; edits entries contain only "
+            "anchor/new, guards entries only anchor/guard/return_expression. "
+            "At most six changes combined. "
             "Do not emit multiline new values or incomplete if blocks. "
             "Never use {anchor,guard,return_expression} at an ID missing from "
             "GUARDABLE_IF_ANCHORS_V1, even if it appears in FOCUSED_EXCEPTION_ANCHORS_V1. "
@@ -171,7 +172,7 @@ class StructuredOllama(LocalOllama):
                 "model": MODEL,
                 "messages": messages,
                 "stream": False, "keep_alive": "5m",
-                "format": "json" if is_revision else {"type": "object", "properties": {"function": {"type": "string",
+                "format": model_split_schema(extracted(before, proposal_spec(task))) if is_revision else {"type": "object", "properties": {"function": {"type": "string",
                                                                     "pattern": FUNCTION_PATTERN}},
                            "required": ["function"], "additionalProperties": False},
                 "options": {"temperature": 0, "seed": 7, "num_predict": 1024 if is_revision else 1400,
@@ -199,7 +200,7 @@ class StructuredOllama(LocalOllama):
             if is_revision:
                 verified, _edits = apply_anchored_edits(
                     reply, before, task, observer=self.revision_observer,
-                    model_strict=True)
+                    model_strict=True, model_split=True)
                 self.last_revision = "anchored_edits"
                 return verified
             return reply

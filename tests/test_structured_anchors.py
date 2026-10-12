@@ -275,3 +275,53 @@ def test_valid_guard_retains_legacy_structured_assembly():
                                 "        return None\n"
                                 "    if x is None:\n")
     assert before == SOURCE
+
+def test_model_split_schema_is_source_bound_and_has_disjoint_variants():
+    from app.structured_anchors import model_split_schema
+    schema = model_split_schema(SOURCE)
+    assert schema["required"] == ["edits", "guards"]
+    assert schema["additionalProperties"] is False
+    assert "oneOf" not in json.dumps(schema) and "anyOf" not in json.dumps(schema)
+    guards = schema["properties"]["guards"]["items"]["properties"]["anchor"]["enum"]
+    assert guards == ["L2", "L4"]
+    assert schema["properties"]["edits"]["items"]["properties"]["anchor"]["enum"] == list(line_catalog(SOURCE))
+
+
+@pytest.mark.parametrize("raw,reason", [
+    (json.dumps({"edits": []}), "revision_schema"),
+    (json.dumps({"edits": [], "guards": []}), "revision_schema"),
+    (json.dumps({"edits": [{"anchor": "L2", "guard": "not x", "return_expression": "None"}], "guards": []}), "revision_edit_schema"),
+    (json.dumps({"edits": [], "guards": [{"anchor": "L6", "guard": "not x", "return_expression": "None"}]}), "revision_anchor_invalid"),
+    (json.dumps({"edits": [], "guards": [{"anchor": "L999", "guard": "not x", "return_expression": "None"}]}), "revision_anchor_invalid"),
+    (json.dumps({"edits": [{"anchor": "L6", "new": "return None"}] * 7, "guards": []}), "revision_schema"),
+])
+def test_model_split_negative_boundaries_fail_closed(raw, reason):
+    with pytest.raises(AnchorRejected, match="^" + reason + "$"):
+        assemble_anchors(raw, SOURCE, model_split=True)
+
+
+def test_model_split_guard_and_replacement_are_deterministic():
+    raw = json.dumps({"edits": [{"anchor": "L6", "new": "return None"}],
+                      "guards": [{"anchor": "L2", "guard": "not isinstance(x, dict)",
+                                  "return_expression": "None"}]})
+    first, changes = assemble_anchors(raw, SOURCE, model_split=True)
+    assert first == assemble_anchors(raw, SOURCE, model_split=True)[0]
+    assert len(changes) == 2
+    assert "    if not isinstance(x, dict):\\n        return None\\n    if x is None:" in first
+    assert [edit["anchor"] for edit in changes] == ["L6", "L2"]
+    assert SOURCE == "def f(x):\\n    if x is None:\\n        return ''\\n    if x:\\n        return ''\\n    return x\\n"
+
+
+def test_model_split_keeps_legacy_parser_available():
+    legacy = json.dumps({"edits": [{"anchor": "L6", "new": "return None"}]})
+    assert assemble_anchors(legacy, SOURCE)[1][0]["anchor"] == "L6"
+    with pytest.raises(AnchorRejected, match="^revision_schema$"):
+        assemble_anchors(legacy, SOURCE, model_split=True)
+
+def test_model_split_duplicate_anchor_across_edit_kinds_fails():
+    raw = json.dumps({
+        "edits": [{"anchor": "L2", "new": "if x is None:"}],
+        "guards": [{"anchor": "L2", "guard": "not x", "return_expression": "None"}],
+    })
+    with pytest.raises(AnchorRejected, match="^revision_anchor_duplicate$"):
+        assemble_anchors(raw, SOURCE, model_split=True)

@@ -147,17 +147,65 @@ def replacement_only_schema(source: str) -> dict:
     return schema
 
 
-def assemble_anchors(reply: str, source: str) -> tuple[str, list[dict]]:
+def model_split_schema(source: str) -> dict:
+    """Constrained revision envelope: existing if-header IDs only for typed guards."""
+    anchors = line_catalog(source)
+    require(bool(anchors), "revision_anchor_source")
+    lines = source.splitlines(keepends=True)
+    guardable = [anchor for anchor, index in anchors.items()
+                 if lines[index].lstrip().startswith("if ")
+                 and lines[index].rstrip().endswith(":")]
+    return {
+        "type": "object",
+        "properties": {
+            "edits": {"type": "array", "minItems": 0, "maxItems": 6,
+                      "items": {"type": "object",
+                                "properties": {
+                                    "anchor": {"type": "string", "enum": list(anchors)},
+                                    "new": {"type": "string"}},
+                                "required": ["anchor", "new"],
+                                "additionalProperties": False}},
+            "guards": {"type": "array", "minItems": 0,
+                       "maxItems": min(6, len(guardable)),
+                       "items": {"type": "object",
+                                 "properties": {
+                                     "anchor": ({"type": "string", "enum": guardable}
+                                                if guardable else {"type": "string"}),
+                                     "guard": {"type": "string"},
+                                     "return_expression": {"type": "string"}},
+                                 "required": ["anchor", "guard", "return_expression"],
+                                 "additionalProperties": False}},
+        },
+        "required": ["edits", "guards"],
+        "additionalProperties": False,
+    }
+
+
+def assemble_anchors(reply: str, source: str, *, model_split: bool = False) -> tuple[str, list[dict]]:
     anchors = line_catalog(source)
     require(type(reply) is str and len(reply.encode()) <= 16384, "revision_size")
     try:
         value = json.loads(reply)
     except ValueError:
         raise AnchorRejected("revision_json") from None
-    require(type(value) is dict and set(value) == {"edits"}
-            and type(value["edits"]) is list and 1 <= len(value["edits"]) <= 6,
-            "revision_schema")
-    edits = value["edits"]
+    require(type(model_split) is bool and type(value) is dict, "revision_schema")
+    if model_split:
+        require(set(value) == {"edits", "guards"}
+                and type(value["edits"]) is list and type(value["guards"]) is list
+                and 1 <= len(value["edits"]) + len(value["guards"]) <= 6,
+                "revision_schema")
+        for edit in value["edits"]:
+            require(type(edit) is dict and set(edit) == {"anchor", "new"},
+                    "revision_edit_schema")
+        for guard in value["guards"]:
+            require(type(guard) is dict and
+                    set(guard) == {"anchor", "guard", "return_expression"},
+                    "revision_edit_schema")
+        edits = value["edits"] + value["guards"]
+    else:
+        require(set(value) == {"edits"} and type(value["edits"]) is list
+                and 1 <= len(value["edits"]) <= 6, "revision_schema")
+        edits = value["edits"]
     lines = source.splitlines(keepends=True)
     replacements = {}
     for edit in edits:
@@ -220,7 +268,8 @@ def assemble_anchors(reply: str, source: str) -> tuple[str, list[dict]]:
 
 
 def apply_anchored_edits(reply: str, before: str, proposal: dict, *, observer=None,
-                         model_strict: bool = False) -> tuple[str, list[dict]]:
+                         model_strict: bool = False,
+                         model_split: bool = False) -> tuple[str, list[dict]]:
     from app.structured_code_worker import (
         proposal_spec, candidate_fingerprint, extracted, render, need, NODES, StructuredBlocked,
     )
@@ -231,8 +280,11 @@ def apply_anchored_edits(reply: str, before: str, proposal: dict, *, observer=No
         need(candidate_fingerprint(before, task) == proposal["feedback"]["candidate_sha256"],
              "feedback_candidate_mismatch")
         source = extracted(before, task)
-        assembled, edits = assemble_anchors(reply, source)
-        need(type(model_strict) is bool, "revision_edit_schema")
+        assembled, edits = assemble_anchors(reply, source, model_split=model_split)
+        need(type(model_strict) is bool and type(model_split) is bool,
+             "revision_edit_schema")
+        if model_split:
+            need(model_strict, "revision_edit_schema")
         if model_strict:
             # Model-generated replacements cannot create or orphan suites:
             # one original line becomes one complete line. New conditional

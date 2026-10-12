@@ -92,16 +92,18 @@ def assert_revision_call_contract(text):
     assert [ast.dump(arg, include_attributes=False) for arg in call.args] == [
         ast.dump(ast.Name(id=name, ctx=ast.Load()), include_attributes=False)
         for name in ("reply", "before", "task")]
-    assert [keyword.arg for keyword in call.keywords] == ["observer", "model_strict"]
+    assert [keyword.arg for keyword in call.keywords] == ["observer", "model_strict", "model_split"]
     expected = ast.parse("self.revision_observer", mode="eval").body
     assert ast.dump(call.keywords[0].value, include_attributes=False) == ast.dump(
         expected, include_attributes=False)
     assert isinstance(call.keywords[1].value, ast.Constant)
     assert call.keywords[1].value.value is True
+    assert isinstance(call.keywords[2].value, ast.Constant)
+    assert call.keywords[2].value.value is True
 
 def test_provider_limits_revision_output_and_preserves_initial_contract():
     text=(Path(__file__).resolve().parents[1]/"app/structured_ollama.py").read_text()
-    assert '"format": "json" if is_revision else' in text
+    assert '"format": model_split_schema(extracted(before, proposal_spec(task))) if is_revision else' in text
     assert '"num_predict": 1024 if is_revision else 1400' in text
     assert '"num_ctx": 4096 if is_revision else 8192' in text
     assert_revision_call_contract(text)
@@ -186,7 +188,7 @@ def test_live_provider_anchored_dispatch_is_source_bound_and_guarded(unsafe):
     replacement = ("return properties[name]" if unsafe else
                    "return select_value.get('name').strip() if "
                    "isinstance(select_value.get('name'), str) else ''")
-    selected = json.dumps({"edits": [{"anchor": target, "new": replacement}]})
+    selected = json.dumps({"edits": [{"anchor": target, "new": replacement}], "guards": []})
     digest = "a" * 64
 
     class ScriptedProvider(StructuredOllama):
@@ -229,7 +231,8 @@ def test_live_provider_anchored_dispatch_is_source_bound_and_guarded(unsafe):
         assert diagnostics[-1]["stage"] == "accepted"
     assert len(provider.chat_requests) == 1
     request = provider.chat_requests[0]
-    assert request["format"] == "json"
+    assert request["format"]["required"] == ["edits", "guards"]
+    assert request["format"]["properties"]["guards"]["items"]["properties"]["anchor"]["enum"]
     assert request["model"] == MODEL
     assert request["options"]["seed"] == 7
     assert "IMMUTABLE_SOURCE_ANCHORS_V1" in request["messages"][1]["content"]
