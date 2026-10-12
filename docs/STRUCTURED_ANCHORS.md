@@ -135,3 +135,29 @@ A execução [38184529245](https://github.com/ericson-j-santos/engineering-worke
 Hipótese reversível: a gramática JSON Schema dinâmica tem custo elevado para a revisão do modelo 7B em CPU. Apenas a segunda proposta passa a usar o modo oficial `format: "json"` do Ollama, sem passar esquema dinâmico ao decodificador. Isso **não confere confiança** ao JSON gerado: `apply_anchored_edits` continua executando as mesmas validações estritas de formato de edição, IDs imutáveis, fingerprint, limite de seis edições, cabeçalhos, sintaxe, AST e assinatura. Os 42 casos, replay, patch reaplicável e regressão independente continuam obrigatórios. Modelo, seed, parâmetros de tempo, limite de tokens e modo da proposta inicial não mudam.
 
 A otimização só será aprovada após E2E real no SHA corrigido. Respostas incompletas, JSON fora do contrato ou propostas não autorizadas continuam bloqueadas, sem fallback sintético e sem merge automático.
+
+## Âncoras tipadas sem regex no decodificador — 11/10/2026
+
+No SHA `5231b98ae8fa56c3bd4743e0408e8765a3a8b90d`, o E2E real
+[38187336402](https://github.com/ericson-j-santos/engineering-worker-pool/actions/runs/38187336402)
+com `format: "json"` concluiu a geração da revisão e foi rejeitado por
+`revision_anchor_invalid`, antes de aplicar código. O artefato
+`11719578972` foi conferido (SHA-256 do ZIP:
+`cd0e7a0fe5782607f03d7e8d9ae91781527fa5f4543aab14c01e09a14ae65505`).
+O registro não distingue identificador desconhecido de guarda usada fora
+de cabeçalho `if`; não presumir qual ocorreu.
+
+A saída da revisão passa a usar um *schema leve*: somente os IDs de linhas
+exatas são enumerados; expressões e substituições são strings sem regex ou
+limites caros na gramática do modelo. A instrução também fornece a lista
+`GUARDABLE_IF_ANCHORS_JSON`, montada exclusivamente das linhas `if`
+existentes na proposta vinculada ao SHA. Essas listas são dicas à geração,
+não permissões adicionais. O montador `assemble_anchors` e
+`apply_anchored_edits` continuam a rejeitar IDs ausentes/duplicados,
+guarda em cabeçalho incompatível, formato não tipado, comprimentos
+excessivos, alterações da assinatura, sintaxe/AST proibida e repetição da
+mesma AST. Não existem reancoragem por aproximação, fallback de solução
+pronta, novas tentativas ou relaxamento de 42 casos.
+
+A eficácia depende do E2E real no novo HEAD, incluindo patch, replay e
+regressões independentes. Esta mudança não autoriza merge.

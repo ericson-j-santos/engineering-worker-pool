@@ -6,7 +6,7 @@ import re
 import pytest
 
 from app.structured_anchors import (
-    inference_schema, anchored_schema, assemble_anchors, AnchorRejected,
+    inference_schema, lightweight_anchor_schema, anchored_schema, assemble_anchors, AnchorRejected,
 )
 
 SOURCE = ("def f(x):\n"
@@ -40,6 +40,25 @@ def test_compact_generation_still_rejects_subscript_characters():
     assert not re.fullmatch(item["properties"]["new"]["pattern"], "return x[0]")
     assert not re.fullmatch(item["properties"]["guard"]["pattern"], "x[0]")
     assert not re.fullmatch(item["properties"]["guard"]["pattern"], "x\nreturn None")
+
+
+
+def test_lightweight_schema_enumerates_source_anchors_without_regex_cost():
+    strict = inference_schema(SOURCE)
+    lite = lightweight_anchor_schema(SOURCE)
+    assert lite is not strict
+    assert lite["properties"]["edits"]["minItems"] == 1
+    assert lite["properties"]["edits"]["maxItems"] == 6
+    items = lite["properties"]["edits"]["items"]
+    assert items["properties"]["anchor"]["enum"] == ["L2", "L3", "L4"]
+    assert items["required"] == ["anchor"]
+    assert items["additionalProperties"] is False
+    assert "oneOf" not in items and "anyOf" not in items
+    for name in ("new", "guard", "return_expression"):
+        assert items["properties"][name] == {"type": "string"}
+        assert "pattern" in strict["properties"]["edits"]["items"]["properties"][name]
+    assert lightweight_anchor_schema(SOURCE) == lite
+    assert "L1" not in items["properties"]["anchor"]["enum"]
 
 
 def test_valid_literal_and_typed_guard_edits_remain_pure_and_replayable():

@@ -114,6 +114,21 @@ def inference_schema(source: str) -> dict:
     }
 
 
+
+def lightweight_anchor_schema(source: str) -> dict:
+    """Bind line IDs in generation; leave source validation to the strict assembler.
+
+    Regexes and string-length restrictions in the previous generation schema
+    imposed excessive decoding cost on CPU-only 7B inference. The assembled
+    response is still checked against the complete immutable contract.
+    """
+    schema = inference_schema(source)
+    props = schema["properties"]["edits"]["items"]["properties"]
+    for name in ("new", "guard", "return_expression"):
+        props[name] = {"type": "string"}
+    return schema
+
+
 def assemble_anchors(reply: str, source: str) -> tuple[str, list[dict]]:
     anchors = line_catalog(source)
     require(type(reply) is str and len(reply.encode()) <= 16384, "revision_size")

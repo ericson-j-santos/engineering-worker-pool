@@ -7,7 +7,7 @@ import httpx
 
 from app.local_code_worker import LocalOllama, OLLAMA_URL, DIGEST
 from app.structured_code_worker import proposal_spec, candidate_fingerprint, extracted, need
-from app.structured_anchors import apply_anchored_edits
+from app.structured_anchors import lightweight_anchor_schema, apply_anchored_edits
 
 
 MODEL = "qwen2.5-coder:7b"
@@ -89,7 +89,7 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
              "IMMUTABLE_SOURCE_LINE_ANCHORS\n"
              + "\n".join(f"L{number}: {line}" for number, line in
                          enumerate(extracted(before, task).splitlines(), 1) if number > 1)
-             + "\nVALIDATOR_OBSERVATIONS_V1\n" + json.dumps(feedback, ensure_ascii=False,
+             + "\nGUARDABLE_IF_ANCHORS_JSON\n"\n             + json.dumps([f"L{number}" for number, line in\n                           enumerate(extracted(before, task).splitlines(), 1)\n                           if number > 1 and line.lstrip().startswith("if ")\n                           and line.rstrip().endswith(":")], separators=(",", ":"))\n             + "\nVALIDATOR_OBSERVATIONS_V1\n" + json.dumps(feedback, ensure_ascii=False,
                                                        separators=(",", ":"))},
         ])
     return messages
@@ -122,7 +122,7 @@ class StructuredOllama(LocalOllama):
                 "model": MODEL,
                 "messages": messages,
                 "stream": False, "keep_alive": "5m",
-                "format": "json" if is_revision else {"type": "object", "properties": {"function": {"type": "string",
+                "format": lightweight_anchor_schema(before) if is_revision else {"type": "object", "properties": {"function": {"type": "string",
                                                                     "pattern": FUNCTION_PATTERN}},
                            "required": ["function"], "additionalProperties": False},
                 "options": {"temperature": 0, "seed": 7, "num_predict": 384 if is_revision else 1400,
