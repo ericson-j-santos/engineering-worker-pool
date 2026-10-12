@@ -7,7 +7,7 @@ import httpx
 
 from app.local_code_worker import LocalOllama, OLLAMA_URL, DIGEST
 from app.structured_code_worker import proposal_spec, candidate_fingerprint, extracted, need
-from app.structured_anchors import replacement_only_schema, apply_anchored_edits
+from app.structured_anchors import apply_anchored_edits
 
 
 MODEL = "qwen2.5-coder:7b"
@@ -126,7 +126,7 @@ class StructuredOllama(LocalOllama):
                 "model": MODEL,
                 "messages": messages,
                 "stream": False, "keep_alive": "5m",
-                "format": replacement_only_schema(before) if is_revision else {"type": "object", "properties": {"function": {"type": "string",
+                "format": "json" if is_revision else {"type": "object", "properties": {"function": {"type": "string",
                                                                     "pattern": FUNCTION_PATTERN}},
                            "required": ["function"], "additionalProperties": False},
                 "options": {"temperature": 0, "seed": 7, "num_predict": 384 if is_revision else 1400,

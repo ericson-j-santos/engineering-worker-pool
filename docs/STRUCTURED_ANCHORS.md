@@ -186,3 +186,25 @@ sintética substitui a inferência.
 
 A efetividade desta redução de ambiguidade depende do E2E no novo HEAD;
 não declarar mergeável com base apenas em testes unitários.
+
+## Retirada do esquema dinâmico da geração — 11/10/2026
+
+No E2E [38188624910](https://github.com/ericson-j-santos/engineering-worker-pool/actions/runs/38188624910),
+com o SHA `666790c596b591d81234c03f13eedc838e69e286`, o
+artefato `11720840600` (ZIP SHA-256
+`019c5b03066edea246aae3b68f7bf4939646a79bb3899eead6bfee4fa6626d7c`)
+mostrou a geração da revisão iniciada, mas não concluída antes do limite.
+Mesmo o esquema restrito a `anchor/new` continuou lento no modelo 7B em CPU.
+
+A correção mantém o prompt de substituições `{anchor,new}` e as linhas
+imutáveis, mas usa `format: "json"` para a segunda geração, como na
+execução `38187336402`, em que a inferência foi completada. A restrição
+a apenas `anchor/new` é agora uma instrução ao modelo; o contrato
+independente de montagem continua aceitando os dois formatos previamente
+validados, sempre com limites, âncoras vinculadas ao fingerprint,
+sintaxe/AST e testes. Nenhuma alteração ou fallback é aplicada à resposta
+reprovada. Não se promete melhora sem novo E2E no SHA atual.
+
+Este ajuste evita repetir a hipótese comprovadamente insuficiente de
+esquema dinâmico, sem mexer em timeout, quantidade de propostas, modelo,
+casos de aceite, isolamento ou política de merge.

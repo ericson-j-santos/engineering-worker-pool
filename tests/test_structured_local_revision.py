@@ -93,7 +93,7 @@ def assert_revision_call_contract(text):
 
 def test_provider_limits_revision_output_and_preserves_initial_contract():
     text=(Path(__file__).resolve().parents[1]/"app/structured_ollama.py").read_text()
-    assert '"format": replacement_only_schema(before) if is_revision else' in text
+    assert '"format": "json" if is_revision else' in text
     assert '"num_predict": 384 if is_revision else 1400' in text
     assert '"num_ctx": 4096 if is_revision else 8192' in text
     assert_revision_call_contract(text)
