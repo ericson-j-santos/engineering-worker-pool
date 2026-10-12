@@ -207,6 +207,18 @@ EXCEPTION_TYPES = {"AttributeError", "TypeError", "ValueError", "KeyError", "Ind
 FEEDBACK_LIMIT = 12000
 
 
+def candidate_exception_line(error: Exception) -> int | None:
+    """One-based line only from the trusted compiled candidate, never traceback text."""
+    frame = error.__traceback__
+    line = None
+    while frame is not None:
+        if (frame.tb_frame.f_code.co_filename == "<guarded-json-function>"
+                and type(frame.tb_lineno) is int and 1 <= frame.tb_lineno <= 400):
+            line = frame.tb_lineno
+        frame = frame.tb_next
+    return line
+
+
 def observation(value) -> dict:
     """Bounded JSON observation; never a repr of an arbitrary Python object."""
     json_value(value)
@@ -220,8 +232,12 @@ def observation(value) -> dict:
 def validate_observation(value: dict) -> None:
     need(type(value) is dict, "observation_schema")
     if value.get("kind") == "exception":
-        need(set(value) == {"kind", "type"} and type(value["type"]) is str
-             and value["type"] in EXCEPTION_TYPES,
+        has_line = "candidate_line" in value
+        expected = {"kind", "type", "candidate_line"} if has_line else {"kind", "type"}
+        need(set(value) == expected and type(value["type"]) is str
+             and value["type"] in EXCEPTION_TYPES
+             and (not has_line or (type(value["candidate_line"]) is int
+                                   and 1 <= value["candidate_line"] <= 400)),
              "observation_exception")
         return
     need(value.get("kind") == "value" and type(value.get("type")) is str
@@ -383,6 +399,9 @@ def _validate_child() -> None:
             category = "InvalidResult" if isinstance(error, StructuredBlocked) else type(error).__name__
             observed = {"kind": "exception",
                         "type": category if category in EXCEPTION_TYPES else "Exception"}
+            candidate_line = candidate_exception_line(error)
+            if candidate_line is not None:
+                observed["candidate_line"] = candidate_line
         failures.append({"case_index": index, "observed": observed})
     print(json.dumps({"passed": passed, "total": len(task["cases"]), "errors": errors,
                       "failures": failures}, ensure_ascii=True))

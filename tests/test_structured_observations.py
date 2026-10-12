@@ -40,7 +40,15 @@ def test_recorded_five_failures_have_actual_values_and_exception_categories():
     assert (report["passed"], report["total"], report["errors"]) == (37, 42, 3)
     assert [f["case_index"] for f in report["failures"]] == [7, 20, 21, 36, 41]
     observed = [f["observed"] for f in report["failures"]]
-    assert observed[:3] == [{"kind": "exception", "type": "AttributeError"}] * 3
+    assert [{k: v for k, v in item.items() if k != "candidate_line"} for item in observed[:3]] == [
+        {"kind": "exception", "type": "AttributeError"}] * 3
+    numbered = worker.extracted(candidate(), task()).splitlines()
+    assert all(type(item.get("candidate_line")) is int
+               and 1 <= item["candidate_line"] <= len(numbered)
+               for item in observed[:3])
+    assert ".get(" in numbered[observed[0]["candidate_line"] - 1]
+    assert all(".strip()" in numbered[item["candidate_line"] - 1]
+               for item in observed[1:3])
     assert [item["value"] for item in observed[3:]] == ["safe", "açãoválida"]
     feedback = worker.semantic_feedback(task(), candidate(), report)
     assert [f["expected"] for f in feedback["failures"]] == ["", "", "", "", "ação válida"]
@@ -72,6 +80,8 @@ def test_revision_is_actual_assistant_user_turn_and_binds_candidate():
         "all previously passing cases",
     ):
         assert requirement in revision_rules
+    assert "candidate_line" in revision_rules
+    assert "one-based" in revision_rules
     assert json.loads(messages[-2]["content"])["function"] == worker.extracted(candidate(), contract)
     assert original == contract
     assert "feedback" not in contract
@@ -157,6 +167,43 @@ def test_exception_messages_never_leave_validator():
     assert report["errors"] == 42
     assert "PRIVATE_VALUE" not in json.dumps(report)
     assert {f["observed"]["type"] for f in report["failures"]} == {"ValueError"}
+    assert {f["observed"]["candidate_line"] for f in report["failures"]} == {2}
+    assert "guarded-json-function" not in json.dumps(report)
+
+
+def test_candidate_line_is_source_bound_and_present_in_feedback():
+    contract = task()
+    source = candidate()
+    observed = worker.validate(source, contract)
+    feedback = worker.semantic_feedback(contract, source, observed)
+    assert feedback["failed_count"] == 5
+    assert [f["observed"].get("candidate_line") for f in feedback["failures"][:3]] == [
+        f["observed"]["candidate_line"] for f in observed["failures"][:3]]
+    assert "guarded-json-function" not in json.dumps(feedback)
+    assert "PRIVATE_TOKEN" not in json.dumps(feedback)
+
+
+@pytest.mark.parametrize("value", [None, True, False, 0, -1, 401, "12", 1.5, [], {}])
+def test_candidate_line_invalid_or_spoofed_types_fail_closed(value):
+    report = worker.validate(candidate(), task())
+    report["failures"][0]["observed"]["candidate_line"] = value
+    with pytest.raises(worker.StructuredBlocked, match="^observation_exception$"):
+        worker.validate_report(report, task())
+
+
+def test_candidate_line_never_appears_for_validator_internal_exception():
+    source = "def _property(properties, name):\\n    return float('nan')\\n".replace("\\n", "\n")
+    report = worker.validate(source, task())
+    assert report["errors"] == 42
+    assert all(item["observed"] == {"kind": "exception", "type": "InvalidResult"}
+               for item in report["failures"])
+    assert "candidate_line" not in json.dumps(report)
+
+
+def test_candidate_line_is_forbidden_on_value_observations():
+    with pytest.raises(worker.StructuredBlocked, match="^observation_type$|^observation_value$"):
+        worker.validate_observation(
+            {"kind": "value", "type": "str", "value": "x", "candidate_line": 2})
 
 
 def test_large_observed_values_are_bounded_not_silently_changed():

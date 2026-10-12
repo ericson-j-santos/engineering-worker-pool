@@ -79,7 +79,10 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
             "only after verifying str. Reject invalid fragments instead of ignoring them "
             "or returning partial strings. Preserve valid empty plain_text; join all "
             "fragments before the final strip, not one strip per fragment. "
-            "Every failure must be corrected; preserve all previously passing cases.\n"
+            "Every failure must be corrected; preserve all previously passing cases. "
+            "When an exception observation has candidate_line, that is the one-based "
+            "line in the preceding normalized candidate function, not a suggestion "
+            "to change a different anchor. Check the type guards there.\n"
             "IMMUTABLE_SOURCE_ANCHORS_V1\n" + catalog)
         messages.extend([
             {"role": "assistant", "content": json.dumps(

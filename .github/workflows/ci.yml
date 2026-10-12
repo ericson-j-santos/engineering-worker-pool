@@ -44,7 +44,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: pip
       - name: Confirm immutable checkout
         shell: bash
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
@@ -94,15 +93,6 @@ jobs:
         timeout-minutes: 5
         run: python scripts/local_worker_e2e.py
 
-      - name: Upload local-code evidence and patch
-        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/upload-artifact@v7
-        with:
-          name: local-code-e2e-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/local-code-e2e/
-          if-no-files-found: error
-          retention-days: 7
-
       - name: Select local model for structured repair
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         timeout-minutes: 3
@@ -119,21 +109,17 @@ jobs:
         timeout-minutes: 8
         run: python scripts/structured_worker_e2e.py
 
-      - name: Upload structured-function evidence and patch
-        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/upload-artifact@v7
-        with:
-          name: structured-code-e2e-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/structured-code-e2e/
-          if-no-files-found: error
-          retention-days: 7
-
       - name: Remove disposable local model
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         shell: bash
         run: |
           docker rm -f worker-pool-local-code >/dev/null 2>&1 || true
           test -z "$(docker ps -aq --filter name=^/worker-pool-local-code$)"
+
+      - name: Preserve SHA-bound E2E evidence in job logs (no artifact storage)
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        run: python scripts/ci_evidence_log.py
 
       - name: Record native validation receipt
         if: always()
@@ -155,4 +141,5 @@ jobs:
             echo "Product tasks dispatched: false"
             echo "Local-code E2E: $LOCAL_CODE_E2E"
             echo "Structured-code E2E: $STRUCTURED_E2E"
+            echo "Evidence: lossless SHA-bound capsules in job logs; no artifact uploads or pip cache"
           } >> "$GITHUB_STEP_SUMMARY"
