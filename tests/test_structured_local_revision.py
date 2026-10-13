@@ -70,7 +70,7 @@ def test_revision_asks_for_source_bound_line_edits_and_same_cases():
     assert "one JSON object with key edits" in messages[0]["content"]
     assert "{anchor,guard,return_expression}" in messages[0]["content"]
     assert "NO newline" in messages[1]["content"]
-    assert "existing if header" in messages[1]["content"]
+    assert "GUARDABLE_STATEMENT_ANCHORS_V2" in messages[1]["content"]
     assert "PATCH THE PREVIOUS CODE AT THE EXACT LISTED LINES" in messages[-1]["content"]
     assert [m["role"] for m in messages] == ["system", "user"]
     assert "REJECTED_SOURCE_IS_NOT_AN_ANSWER_V1" in messages[1]["content"]
