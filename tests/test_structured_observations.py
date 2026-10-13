@@ -80,6 +80,11 @@ def test_revision_uses_failing_source_as_data_and_binds_candidate():
         "Reject invalid fragments instead of ignoring them",
         "Preserve valid empty plain_text",
         "not one strip per fragment",
+        "non-string select.name must return empty",
+        "NEVER use str(), repr()",
+        "not None and not str invalidates the WHOLE field",
+        "Only None or missing plain_text permits fallback",
+        "Fix each independent failure group",
         "all previously passing cases",
     ):
         assert requirement in revision_rules
