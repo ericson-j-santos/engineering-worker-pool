@@ -1,0 +1,140 @@
+name: Worker Pool Candidate Image Canary
+run-name: Candidate canary · ${{ github.event_name }} · ${{ github.run_id }}
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - requirements.txt
+      - app/**
+      - scripts/candidate_canary_probe.py
+      - tests/test_candidate_canary_probe.py
+      - .github/workflows/candidate-canary.yml
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - requirements.txt
+      - app/**
+      - scripts/candidate_canary_probe.py
+      - tests/test_candidate_canary_probe.py
+      - .github/workflows/candidate-canary.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workerpool-candidate-canary-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  candidate-canary:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      REQSYS_SHA: a85e6cd621a328a1bbedc5dab3b30ff1307e12b0
+      CANARY_CONTAINER: wp-canary-${{ github.run_id }}-${{ github.run_attempt }}
+      CANARY_VOLUME: wp-canary-${{ github.run_id }}-${{ github.run_attempt }}
+      CANARY_IMAGE_TAG: wp-candidate:${{ github.event.pull_request.head.sha || github.sha }}
+      CANARY_TOKEN_FILE: ${{ runner.temp }}/wp-canary-${{ github.run_id }}-${{ github.run_attempt }}/token
+    steps:
+      - name: Checkout immutable candidate SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.EXPECTED_SHA }}
+          persist-credentials: false
+
+      - name: Checkout fixed ReqSys consumer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ericson-j-santos/reqsys-v2-enterprise-real
+          ref: a85e6cd621a328a1bbedc5dab3b30ff1307e12b0
+          path: .reqsys-consumer
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Preflight exact source identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$REQSYS_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$(git -C .reqsys-consumer rev-parse HEAD)" = "$REQSYS_SHA"
+          test -z "$(git diff --name-only)"
+          umask 077
+          mkdir -p "$(dirname "$CANARY_TOKEN_FILE")"
+          openssl rand -hex 32 > "$CANARY_TOKEN_FILE"
+          chmod 0444 "$CANARY_TOKEN_FILE"
+
+      - name: Install test dependencies and validate source
+        run: |
+          python -m pip install -r requirements.txt
+          python -m compileall -q app scripts/candidate_canary_probe.py tests/test_candidate_canary_probe.py
+          python -m pytest -q tests/test_candidate_canary_probe.py
+
+      - name: Build SHA-labelled candidate and start isolated container
+        shell: bash
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          if docker container inspect "$CANARY_CONTAINER" >/dev/null 2>&1; then
+            echo 'Candidate name collision' >&2
+            exit 2
+          fi
+          if docker volume inspect "$CANARY_VOLUME" >/dev/null 2>&1; then
+            echo 'Candidate volume collision' >&2
+            exit 2
+          fi
+          docker build --pull --label "org.opencontainers.image.revision=$EXPECTED_SHA" -t "$CANARY_IMAGE_TAG" .
+          IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$CANARY_IMAGE_TAG")"
+          [[ "$IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "CANARY_IMAGE_ID=$IMAGE_ID" >> "$GITHUB_ENV"
+          docker volume create "$CANARY_VOLUME" >/dev/null
+          docker run --detach --name "$CANARY_CONTAINER" \
+            --network bridge --publish 127.0.0.1:18098:8097 \
+            --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --pids-limit 128 --memory 512m \
+            --mount "type=volume,src=$CANARY_VOLUME,dst=/data" \
+            --mount "type=bind,src=$CANARY_TOKEN_FILE,dst=/run/secrets/canary-token,readonly" \
+            --env CODEX_WORKER_POOL_DB=/data/canary.db \
+            --env CODEX_WORKER_POOL_API_TOKEN_FILE=/run/secrets/canary-token \
+            --env CODEX_WORKER_POOL_EXPECTED_RULES_SHA=f6ccb143a581e28650e9b640226f9ef671d469f2 \
+            --env CODEX_WORKER_POOL_PROGRESS_STALL_SECONDS=300 \
+            "$CANARY_IMAGE_TAG" >/dev/null
+
+      - name: Real isolated image E2E with ReqSys consumer
+        shell: bash
+        timeout-minutes: 3
+        run: python scripts/candidate_canary_probe.py
+
+      - name: Remove isolated canary, volume, image and synthetic token
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker rm -f "$CANARY_CONTAINER" >/dev/null 2>&1 || true
+          docker volume rm "$CANARY_VOLUME" >/dev/null 2>&1 || true
+          docker image rm "$CANARY_IMAGE_TAG" >/dev/null 2>&1 || true
+          rm -f "$CANARY_TOKEN_FILE"
+          test -z "$(docker ps -aq --filter "name=^/$CANARY_CONTAINER$")"
+          if docker volume inspect "$CANARY_VOLUME" >/dev/null 2>&1; then
+            echo 'Disposable canary volume not removed' >&2
+            exit 2
+          fi
+
+      - name: Publish sanitized canary evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: workerpool-candidate-canary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/candidate-canary/evidence.json
+          if-no-files-found: warn
+          retention-days: 7
