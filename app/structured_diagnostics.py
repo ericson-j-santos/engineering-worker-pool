@@ -15,7 +15,7 @@ REASONS = frozenset({
     "revision_json", "revision_schema", "revision_edit_schema",
     "revision_edit_not_unique", "revision_signature_edit", "revision_edits_overlap",
     "revision_anchor_source", "revision_anchor_invalid", "revision_anchor_duplicate",
-    "revision_indentation", "revision_block_header",
+    "revision_indentation", "revision_block_header", "revision_guard_expression",
     "candidate_repeated", "candidate_grammar", "candidate_function_only",
     "candidate_syntax", "candidate_loops", "candidate_depth", "candidate_name",
     "candidate_call", "candidate_attribute", "nested_function", "reserved_assignment",
@@ -57,7 +57,7 @@ def syntax_kind(error: SyntaxError) -> str:
 
 
 # Sanitized enum for source-bound rejects; never model text or raw anchor IDs.
-ANCHOR_FAILURE_KINDS = frozenset({"unknown_anchor", "guard_not_if_header"})
+ANCHOR_FAILURE_KINDS = frozenset({"unknown_anchor", "guard_not_if_header", "guard_not_statement"})
 
 
 class DiagnosticWriteError(RuntimeError):

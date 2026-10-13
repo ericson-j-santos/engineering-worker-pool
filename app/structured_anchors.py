@@ -174,14 +174,80 @@ def guard_return_literals(source: str) -> list[str]:
     return literals[:16]
 
 
+
+def statement_anchors(source: str) -> list[str]:
+    """Enumerate AST statement starts, never guessed text or continuation lines."""
+    anchors = line_catalog(source)
+    lines = source.splitlines()
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError):
+        raise AnchorRejected("revision_anchor_source") from None
+    require(len(tree.body) == 1 and type(tree.body[0]) is ast.FunctionDef,
+            "revision_anchor_source")
+    locations = set()
+    for node in ast.walk(tree.body[0]):
+        if type(node) not in (ast.If, ast.For, ast.Assign, ast.Return, ast.Expr):
+            continue
+        number = node.lineno
+        anchor = f"L{number}"
+        if anchor in anchors:
+            line = lines[number - 1]
+            if node.col_offset == len(line) - len(line.lstrip(" ")):
+                locations.add(anchor)
+    return [anchor for anchor in anchors if anchor in locations]
+
+
+def validated_type_guard(node: ast.expr) -> str:
+    """Restrict model-split guards to bounded, side-effect-free isinstance checks."""
+    def subject(value: ast.expr) -> bool:
+        if type(value) is ast.Name:
+            return not value.id.startswith("__")
+        if type(value) is not ast.Call:
+            return False
+        call = value.func
+        return (type(call) is ast.Attribute and call.attr == "get"
+                and type(call.value) is ast.Name
+                and not call.value.id.startswith("__")
+                and len(value.args) == 1 and not value.keywords
+                and type(value.args[0]) is ast.Constant
+                and type(value.args[0].value) is str
+                and len(value.args[0].value) <= 128)
+
+    def negative_isinstance(value: ast.expr) -> ast.expr | None:
+        if type(value) is not ast.UnaryOp or type(value.op) is not ast.Not:
+            return None
+        call = value.operand
+        if (type(call) is not ast.Call or type(call.func) is not ast.Name
+                or call.func.id != "isinstance" or len(call.args) != 2
+                or call.keywords or type(call.args[1]) is not ast.Name
+                or call.args[1].id not in {"str", "dict", "list", "bool", "int", "float"}
+                or not subject(call.args[0])):
+            return None
+        return call.args[0]
+
+    if type(node) is ast.BoolOp and type(node.op) is ast.And and len(node.values) == 2:
+        check, guard = node.values
+        checked = negative_isinstance(guard)
+        require(type(check) is ast.Compare and len(check.ops) == 1
+                and type(check.ops[0]) is ast.IsNot
+                and len(check.comparators) == 1
+                and type(check.comparators[0]) is ast.Constant
+                and check.comparators[0].value is None
+                and checked is not None and subject(check.left)
+                and ast.dump(check.left, include_attributes=False)
+                    == ast.dump(checked, include_attributes=False),
+                "revision_guard_expression")
+    else:
+        require(negative_isinstance(node) is not None, "revision_guard_expression")
+    return ast.unparse(node)
+
+
 def model_split_schema(source: str) -> dict:
-    """Constrained revision envelope: existing if-header IDs only for typed guards."""
+    """Constrained model revision: guards bind to exact AST statement anchors."""
     anchors = line_catalog(source)
     require(bool(anchors), "revision_anchor_source")
-    lines = source.splitlines(keepends=True)
-    guardable = [anchor for anchor, index in anchors.items()
-                 if lines[index].lstrip().startswith("if ")
-                 and lines[index].rstrip().endswith(":")]
+    guardable = statement_anchors(source)
     return_literals = guard_return_literals(source)
     return {
         "type": "object",
@@ -255,10 +321,12 @@ def assemble_anchors(reply: str, source: str, *, model_split: bool = False) -> t
             index = anchors[anchor]
             require(index not in replacements, "revision_anchor_duplicate")
             original = lines[index]
-            if not (original.lstrip().startswith("if ")
-                    and original.rstrip().endswith(":")):
+            old_if_header = (original.lstrip().startswith("if ")
+                             and original.rstrip().endswith(":"))
+            if not old_if_header and not (model_split and anchor in statement_anchors(source)):
                 raise AnchorRejected("revision_anchor_invalid",
-                                     anchor_failure_kind="guard_not_if_header")
+                                     anchor_failure_kind=("guard_not_statement" if model_split
+                                                          else "guard_not_if_header"))
             require(all(char not in condition and char not in value
                         for char in "\r\n\t\0[]"), "revision_indentation")
             if model_split:
@@ -274,7 +342,7 @@ def assemble_anchors(reply: str, source: str, *, model_split: bool = False) -> t
                 require(type(return_ast.body) is ast.Constant
                         and literal in guard_return_literals(source),
                         "revision_edit_schema")
-                condition = ast.unparse(guard_ast.body)
+                condition = validated_type_guard(guard_ast.body)
                 value = literal
             indent = original[:len(original) - len(original.lstrip(" "))]
             replacements[index] = (indent + "if " + condition + ":\n"

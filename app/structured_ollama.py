@@ -7,7 +7,7 @@ import httpx
 
 from app.local_code_worker import LocalOllama, OLLAMA_URL, DIGEST
 from app.structured_code_worker import proposal_spec, candidate_fingerprint, extracted, need
-from app.structured_anchors import apply_anchored_edits, line_catalog, model_split_schema
+from app.structured_anchors import apply_anchored_edits, line_catalog, model_split_schema, statement_anchors
 
 
 MODEL = "qwen2.5-coder:7b"
@@ -72,11 +72,12 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
         anchors = line_catalog(source)  # Reject unanchorable candidates BEFORE another model call.
         lines = source.splitlines()
         catalog = "\n".join(f"{anchor}: {lines[index]}" for anchor, index in anchors.items())
-        # The allowed typed-guard IDs mirror the exact existing assembler rule.
-        # Failed-case line numbers are NOT necessarily eligible if-headers.
+        # The V1 if-header catalogue remains for legacy diagnostics. Model-split
+        # guards now bind to exact AST statement anchors, including assignments.
         guardable = [anchor for anchor, index in anchors.items()
                      if lines[index].lstrip().startswith("if ")
                      and lines[index].rstrip().endswith(":")]
+        statement_guards = statement_anchors(source)
         # Focus only source-bound exception locations. All value mismatches
         # remain mandatory and the trusted validator decides acceptance.
         affected = {}
@@ -93,7 +94,7 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
             "Repair ONLY the failing lines of the previous Python function. "
             "Return exactly one JSON object with key edits and guards. "
             "edits contains {anchor,new} replacements and guards contains "
-            "{anchor,guard,return_expression} typed guards only on original if-headers. "
+            "{anchor,guard,return_expression} typed guards on AST statements. "
             "Include BOTH arrays, even if one is empty; 1 to 6 total changes. "
             "Never output a full function, a replacement implementation, Markdown or tests.")
         messages[1]["content"] = (
@@ -104,17 +105,20 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
             "Python line, with NO newline or leading indentation; the assembler "
             "keeps the existing indentation. Preserve a trailing colon exactly "
             "when the original line ends with a colon, and NEVER introduce a new "
-            "block header on a non-header line. To add an early-return guard before "
-            "an existing if header, use {anchor,guard,return_expression}; give only "
-            "the condition and return expression, not if/return syntax, indentation "
-            "or a colon. The assembler adds the complete two-line guard while "
-            "preserving the existing if and its body. "
-            "For typed guard edits, anchor MUST be an ID from GUARDABLE_IF_ANCHORS_V1; "
-            "all other IDs are allowed only for single-line replacements. "
-            "A focused failed-case anchor may refer to a return or assignment, not an if. "
-            "For those lines, use {anchor,new} or choose an allowed preceding if header "
-            "from GUARDABLE_IF_ANCHORS_V1 for a guard. Never use a typed guard at "
-            "an assignment or return line. "
+            "block header on a non-header line. For a type check before an existing "
+            "statement, use {anchor,guard,return_expression} on an ID from "
+            "GUARDABLE_STATEMENT_ANCHORS_V2, including assignment or return lines. "
+            "The trusted assembler adds if/return syntax and preserves that statement. "
+            "The guard MUST have exactly one of these AST-checked shapes: "
+            "'not isinstance(value, str)' or "
+            "'value is not None and not isinstance(value, str)'. "
+            "Other allowed types are dict, list, bool, int, float. The same value "
+            "is mandatory in both clauses; value may be a local name or one "
+            "local.get('key') call, never a nested or arbitrary call. "
+            "Use an existing literal return expression (normally empty string). "
+            "Guard directly before the line that could throw on .strip or .get. "
+            "The nullable form rejects invalid non-None plain_text but preserves fallback. "
+            "Do not turn invalid JSON types into strings with str(). "
             "No imports, subscripts, list literals, try, while, break, comprehensions "
             "or untrusted calls. Use dict.get, list(), append/join, isinstance. "
             "P0 REPAIR CONTRACT: A non-string select.name must return empty; NEVER use str(), repr(), or any coercion to make it look valid. "
@@ -133,6 +137,8 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
             "of relative indentation; do not orphan the existing header's suite. "
             "Do not emit cosmetic changes or an unchanged AST.\n"
             "IMMUTABLE_SOURCE_ANCHORS_V1\n" + catalog
+            + "\nGUARDABLE_STATEMENT_ANCHORS_V2\n"
+            + json.dumps(statement_guards, ensure_ascii=False, separators=(",", ":"))
             + "\nGUARDABLE_IF_ANCHORS_V1\n"
             + json.dumps(guardable, ensure_ascii=False, separators=(",", ":")))
         # The failed candidate is still available as source-bound line data above.
@@ -148,7 +154,7 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
             "At most six changes combined. "
             "Do not emit multiline new values or incomplete if blocks. "
             "Never use {anchor,guard,return_expression} at an ID missing from "
-            "GUARDABLE_IF_ANCHORS_V1, even if it appears in FOCUSED_EXCEPTION_ANCHORS_V1. "
+            "GUARDABLE_STATEMENT_ANCHORS_V2, even if it appears in FOCUSED_EXCEPTION_ANCHORS_V1. "
             "Make guards reject invalid JSON types before any .get or .strip. "
             "A single invalid fragment must return empty for the whole field. "
             "Join raw fragments with an empty separator then strip the result once. "

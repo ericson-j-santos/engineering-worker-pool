@@ -405,7 +405,7 @@ def test_guard_still_rejects_unsafe_second_candidate(tmp_path):
 def test_guardable_ids_match_assembler_and_exclude_focused_non_if():
     """Real failed-case line IDs are not automatically legal guard anchors."""
     from app.structured_anchors import (
-        AnchorRejected, anchored_schema, assemble_anchors, line_catalog,
+        AnchorRejected, anchored_schema, assemble_anchors, line_catalog, statement_anchors,
     )
     contract = task()
     source = candidate()
@@ -429,6 +429,10 @@ def test_guardable_ids_match_assembler_and_exclude_focused_non_if():
     assert guardable and "L1" not in guardable
     assert "L10" not in guardable and "L22" not in guardable
     assert "GUARDABLE_IF_ANCHORS_V1" in messages[0]["content"] + body
+    statement_guards = json.loads(body.split("GUARDABLE_STATEMENT_ANCHORS_V2\n", 1)[1]
+                                  .split("\nGUARDABLE_IF_ANCHORS_V1\n", 1)[0])
+    assert statement_guards == statement_anchors(extracted)
+    assert "L10" in statement_guards and "L22" in statement_guards
     assert body == message_builder()(spec, source)[1]["content"]
     for invalid in ("L10", "L22"):
         with pytest.raises(AnchorRejected, match="^revision_anchor_invalid$"):
@@ -457,4 +461,4 @@ def test_guardable_catalog_has_no_false_eligibility_without_if():
                          .split("\nREJECTED_SOURCE_IS_NOT_AN_ANSWER_V1\n", 1)[0])
     assert allowed == []
     assert set(line_catalog(before)) == {"L2"}
-    assert "allowed only for single-line replacements" in body
+    assert "GUARDABLE_STATEMENT_ANCHORS_V2" in body
