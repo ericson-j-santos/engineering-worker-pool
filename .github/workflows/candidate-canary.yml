@@ -40,7 +40,7 @@ jobs:
       CANARY_CONTAINER: wp-canary-${{ github.run_id }}-${{ github.run_attempt }}
       CANARY_VOLUME: wp-canary-${{ github.run_id }}-${{ github.run_attempt }}
       CANARY_IMAGE_TAG: wp-candidate:${{ github.event.pull_request.head.sha || github.sha }}
-      CANARY_TOKEN_FILE: ${{ runner.temp }}/wp-canary-${{ github.run_id }}-${{ github.run_attempt }}/token
+      CANARY_TOKEN_FILE: ${{ github.workspace }}/.candidate-canary/${{ github.run_id }}-${{ github.run_attempt }}/token
     steps:
       - name: Checkout immutable candidate SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
