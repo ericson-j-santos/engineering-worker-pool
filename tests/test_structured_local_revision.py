@@ -1,0 +1,240 @@
+"""The successful replacements below are SYNTHETIC unit controls, never production fallback."""
+from __future__ import annotations
+import ast
+import json
+from pathlib import Path
+import pytest
+from app import structured_code_worker as worker
+from app.structured_revision import apply_local_edits, apply_full_function_revision
+from test_structured_observations import candidate, message_builder
+from test_structured_code_worker import task, BEFORE
+
+def proposal():
+    source = candidate()
+    contract = task()
+    return source, {**contract, "feedback": worker.semantic_feedback(
+        contract, source, worker.validate(source, contract))}
+
+def edit(old, new):
+    return json.dumps({"edits": [{"old":old, "new":new}]})
+
+def test_model_selected_local_edit_preserves_other_source_and_cases():
+    source, spec = proposal()
+    old = "return select_value.get('name').strip()"
+    new = "return select_value.get('name').strip() if isinstance(select_value.get('name'), str) else ''"
+    assembled, edits = apply_local_edits(edit(old,new), source, spec)
+    after = worker.render(BEFORE, task(), assembled)
+    assert worker.validate(after,task())["passed"] == 39
+    assert edits == [{"old":old,"new":new}]
+    assert task()["cases"] == spec["cases"]
+
+@pytest.mark.parametrize("old,new,reason",[
+    ("missing exact string","return ''","revision_edit_not_unique"),
+    ("return ''","return name","revision_edit_not_unique"),
+    ("return select_value.get('name').strip()","return select_value.get('name').strip()","candidate_repeated"),
+    ("def _property(properties, name):","def _property(properties, name): # unchanged","revision_signature_edit"),
+    ("return select_value.get('name').strip()","return open('PRIVATE_VALUE')","candidate_call"),
+    ("return select_value.get('name').strip()","return properties[name]","candidate_grammar"),
+    ("return select_value.get('name').strip()","not python at all!!!","candidate_syntax"),
+])
+def test_invalid_or_unsafe_edits_are_blocked(old,new,reason):
+    source,spec=proposal()
+    with pytest.raises(worker.StructuredBlocked,match="^"+reason+"$"):
+        apply_local_edits(edit(old,new),source,spec)
+
+def test_overlapping_edits_rejected():
+    source,spec=proposal()
+    reply=json.dumps({"edits":[
+      {"old":"return select_value.get('name').strip()","new":"return ''"},
+      {"old":"select_value.get('name').strip()","new":"name"},
+    ]})
+    with pytest.raises(worker.StructuredBlocked,match="revision_edits_overlap"):
+        apply_local_edits(reply,source,spec)
+
+@pytest.mark.parametrize("value",[{}, [], {"edits":[]},{"edits":[{"old":"x"}]},
+    {"edits":[{"old":True,"new":""}]},{"edits":[{"old":"x","new":""}]*7},
+    {"function":"not accepted"}])
+def test_exact_revision_schema(value):
+    source,spec=proposal()
+    with pytest.raises(worker.StructuredBlocked):
+        apply_local_edits(json.dumps(value),source,spec)
+
+def test_feedback_not_applied_to_different_candidate():
+    source,spec=proposal()
+    with pytest.raises(worker.StructuredBlocked,match="feedback_candidate_mismatch"):
+        apply_local_edits(edit("x","y"),source.replace("return ''","return 'different'"),spec)
+
+def test_revision_asks_for_source_bound_line_edits_and_same_cases():
+    source, spec = proposal()
+    messages = message_builder()(spec, source)
+    assert "one JSON object with key edits" in messages[0]["content"]
+    assert "{anchor,guard,return_expression}" in messages[0]["content"]
+    assert "NO newline" in messages[1]["content"]
+    assert "GUARDABLE_STATEMENT_ANCHORS_V2" in messages[1]["content"]
+    assert "PATCH THE PREVIOUS CODE AT THE EXACT LISTED LINES" in messages[-1]["content"]
+    assert [m["role"] for m in messages] == ["system", "user"]
+    assert "REJECTED_SOURCE_IS_NOT_AN_ANSWER_V1" in messages[1]["content"]
+    assert source.splitlines()[0] not in messages[1]["content"]
+    assert spec["instruction"] in messages[1]["content"]
+    assert spec["cases"] == task()["cases"]
+    assert "Trusted input/output examples:" not in messages[1]["content"]
+    assert "IMMUTABLE_SOURCE_ANCHORS_V1" in messages[1]["content"]
+    assert "VALIDATOR_OBSERVATIONS_V1" in messages[-1]["content"]
+
+
+def assert_revision_call_contract(text):
+    calls = [node for node in ast.walk(ast.parse(text))
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+             and node.func.id == "apply_anchored_edits"]
+    assert len(calls) == 1
+    call = calls[0]
+    assert len(call.args) == 3
+    assert [ast.dump(arg, include_attributes=False) for arg in call.args] == [
+        ast.dump(ast.Name(id=name, ctx=ast.Load()), include_attributes=False)
+        for name in ("reply", "before", "task")]
+    assert [keyword.arg for keyword in call.keywords] == ["observer", "model_strict", "model_split"]
+    expected = ast.parse("self.revision_observer", mode="eval").body
+    assert ast.dump(call.keywords[0].value, include_attributes=False) == ast.dump(
+        expected, include_attributes=False)
+    assert isinstance(call.keywords[1].value, ast.Constant)
+    assert call.keywords[1].value.value is True
+    assert isinstance(call.keywords[2].value, ast.Constant)
+    assert call.keywords[2].value.value is True
+
+def test_provider_limits_revision_output_and_preserves_initial_contract():
+    text=(Path(__file__).resolve().parents[1]/"app/structured_ollama.py").read_text()
+    assert '"format": model_split_schema(extracted(before, proposal_spec(task))) if is_revision else' in text
+    assert '"num_predict": 1024 if is_revision else 1400' in text
+    assert '"num_ctx": 4096 if is_revision else 8192' in text
+    assert_revision_call_contract(text)
+    assert 'self.last_revision = "anchored_edits"' in text
+    ast.parse(text)
+
+def test_six_localized_edits_fix_all_original_cases_synthetic_control():
+    source,spec=proposal()
+    edits=[{'old': "return select_value.get('name').strip()", 'new': "return select_value.get('name').strip() if isinstance(select_value.get('name'), str) else ''"}, {'old': "text_content = fragment.get('text', {}).get('content')", 'new': "text_value = fragment.get('text')\n                        text_content = text_value.get('content') if isinstance(text_value, dict) else None"}, {'old': 'for fragment in rich_text_value:\n                    if isinstance(fragment, dict):', 'new': "for fragment in rich_text_value:\n                    if not isinstance(fragment, dict):\n                        return ''\n                    if isinstance(fragment, dict):"}, {'old': 'result.append(plain_text.strip())', 'new': 'result.append(plain_text)'}, {'old': 'result.append(text_content.strip())', 'new': 'result.append(text_content)'}, {'old': "return ''.join(result)", 'new': "return ''.join(result).strip()"}]
+    assembled, observed_edits=apply_local_edits(json.dumps({"edits":edits}),source,spec)
+    after=worker.render(source,task(),assembled)
+    assert worker.validate(after,task())=={"passed":42,"total":42,"errors":0,"failures":[]}
+    assert observed_edits == edits
+    # Source-bound edits cannot be replayed against another function version.
+    with pytest.raises(worker.StructuredBlocked,match="feedback_candidate_mismatch"):
+        apply_local_edits(json.dumps({"edits":edits}),after,spec)
+
+@pytest.mark.parametrize("replacement", [
+    "observer=None", "observer=self.unknown_sink", "**self.options",
+])
+def test_provider_call_contract_detects_disconnected_observer(replacement):
+    text=(Path(__file__).resolve().parents[1]/"app/structured_ollama.py").read_text()
+    assert_revision_call_contract(text)
+    mutated = text.replace("observer=self.revision_observer", replacement)
+    assert mutated != text
+    with pytest.raises(AssertionError):
+        assert_revision_call_contract(mutated)
+    assert_revision_call_contract(text)
+
+
+def test_complete_model_revision_preserves_full_acceptance_and_observer():
+    from test_structured_code_worker import FIXED
+    source, spec = proposal()
+    original_cases = spec["cases"]
+    response = json.dumps({"function": FIXED})
+    stages = []
+    assert apply_full_function_revision(response, source, spec, observer=stages.append) == response
+    after = worker.render(source, task(), response)
+    assert worker.validate(after, task()) == {"passed": 42, "total": 42, "errors": 0, "failures": []}
+    assert [event["stage"] for event in stages] == ["received", "guard", "accepted"]
+    assert original_cases == spec["cases"]
+    with pytest.raises(worker.StructuredBlocked, match="feedback_candidate_mismatch"):
+        apply_full_function_revision(response, FIXED, spec)
+
+
+@pytest.mark.parametrize(("function", "expected"), [
+    ("def _property(properties, name):\n    return properties[name]\n", "candidate_grammar"),
+    ("def _property(properties, name):\n    import os\n    return ''\n", "candidate_grammar"),
+    ("def _property(properties, name):\n    return (\n", "candidate_syntax"),
+    ("def other(properties, name):\n    return ''\n", "function_identity"),
+])
+def test_whole_revision_guards_reject_unsafe_code_without_patch(function, expected):
+    source, spec = proposal()
+    events = []
+    with pytest.raises(worker.StructuredBlocked, match="^" + expected + "$"):
+        apply_full_function_revision(json.dumps({"function": function}), source, spec,
+                                     observer=events.append)
+    assert events[-1]["stage"] == "rejected"
+
+
+def test_whole_revision_rejects_wrong_schema_replay_and_unchanged_ast():
+    source, spec = proposal()
+    for reply in ('{"edits":[]}', "not json"):
+        with pytest.raises(worker.StructuredBlocked):
+            apply_full_function_revision(reply, source, spec)
+    same = json.dumps({"function": worker.extracted(source, task())})
+    with pytest.raises(worker.StructuredBlocked, match="candidate_repeated"):
+        apply_full_function_revision(same, source, spec)
+
+
+@pytest.mark.parametrize("unsafe", [False, True])
+def test_live_provider_anchored_dispatch_is_source_bound_and_guarded(unsafe):
+    """Scripted transport tests the actual provider path; no model or host is used."""
+    from app.structured_ollama import MODEL, StructuredOllama
+    from app.structured_anchors import line_catalog
+
+    source, spec = proposal()
+    original = json.dumps(spec, sort_keys=True)
+    target = next(anchor for anchor, pos in line_catalog(source).items()
+                  if source.splitlines()[pos].strip() ==
+                  "return select_value.get('name').strip()")
+    replacement = ("return properties[name]" if unsafe else
+                   "return select_value.get('name').strip() if "
+                   "isinstance(select_value.get('name'), str) else ''")
+    selected = json.dumps({"edits": [{"anchor": target, "new": replacement}], "guards": []})
+    digest = "a" * 64
+
+    class ScriptedProvider(StructuredOllama):
+        def __init__(self):
+            super().__init__()
+            self.chat_requests = []
+
+        @staticmethod
+        def no_cloud():
+            # The real call contract still checks no_cloud on the production path.
+            # This independent fixture has no Docker, credentials or network.
+            pass
+
+        def request(self, _client, method, path, **kwargs):
+            if (method, path) == ("GET", "/api/tags"):
+                return {"models": [{"name": MODEL, "digest": digest}]}
+            if (method, path) == ("POST", "/api/show"):
+                return {"details": {"format": "gguf"}}
+            if (method, path) == ("GET", "/api/ps"):
+                return {"models": [{"name": MODEL, "digest": digest, "size": 1}]}
+            if (method, path) == ("POST", "/api/chat"):
+                self.chat_requests.append(kwargs["json"])
+                return {"done": True, "model": MODEL, "eval_count": 1,
+                        "message": {"content": selected}}
+            raise AssertionError("unexpected provider endpoint")
+
+    provider = ScriptedProvider()
+    diagnostics = []
+    provider.revision_observer = diagnostics.append
+    if unsafe:
+        with pytest.raises(worker.StructuredBlocked, match="^candidate_grammar$"):
+            provider(spec, source)
+        assert diagnostics[-1]["stage"] == "rejected"
+        assert provider.last_revision is None
+    else:
+        verified = provider(spec, source)
+        assembled = worker.render(source, task(), verified)
+        assert worker.validate(assembled, task())["passed"] == 39
+        assert provider.last_revision == "anchored_edits"
+        assert diagnostics[-1]["stage"] == "accepted"
+    assert len(provider.chat_requests) == 1
+    request = provider.chat_requests[0]
+    assert request["format"]["required"] == ["edits", "guards"]
+    assert request["format"]["properties"]["guards"]["items"]["properties"]["anchor"]["enum"]
+    assert request["model"] == MODEL
+    assert request["options"]["seed"] == 7
+    assert "IMMUTABLE_SOURCE_ANCHORS_V1" in request["messages"][1]["content"]
+    assert json.dumps(spec, sort_keys=True) == original
+    assert source == candidate()

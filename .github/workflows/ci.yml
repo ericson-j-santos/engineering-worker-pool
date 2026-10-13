@@ -33,7 +33,7 @@ jobs:
         github.event.comment.body == '/worker validate'
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 14
     env:
       EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
@@ -44,7 +44,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: pip
       - name: Confirm immutable checkout
         shell: bash
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
@@ -54,7 +53,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Compile
-        run: python -m compileall -q app tests scripts/local_worker_e2e.py
+        run: python -m compileall -q app tests scripts/local_worker_e2e.py scripts/structured_worker_e2e.py scripts/structured_acceptance.py
       - name: Test
         run: python -m pytest -q
 
@@ -73,7 +72,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run -d --name worker-pool-local-code -p 127.0.0.1:11434:11434 \
+          python scripts/pull_local_model_image.py
+          docker run -d --pull=never --name worker-pool-local-code -p 127.0.0.1:11434:11434 \
             -e OLLAMA_NO_CLOUD=1 \
             ollama/ollama:0.34.3@sha256:7ab595e4ead391f6818c7215297781282babe0701f6d9a9f8862ac591360a58b
           ready=false
@@ -93,14 +93,21 @@ jobs:
         timeout-minutes: 5
         run: python scripts/local_worker_e2e.py
 
-      - name: Upload local-code evidence and patch
-        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/upload-artifact@v7
-        with:
-          name: local-code-e2e-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/local-code-e2e/
-          if-no-files-found: error
-          retention-days: 7
+      - name: Select local model for structured repair
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec worker-pool-local-code ollama stop qwen2.5-coder:1.5b
+          docker exec worker-pool-local-code ollama rm qwen2.5-coder:1.5b
+          docker exec worker-pool-local-code ollama pull qwen2.5-coder:7b
+
+      - name: Repair real structured function in governed copy
+        id: structured_e2e
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        timeout-minutes: 8
+        run: python scripts/structured_worker_e2e.py
 
       - name: Remove disposable local model
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
@@ -109,6 +116,11 @@ jobs:
           docker rm -f worker-pool-local-code >/dev/null 2>&1 || true
           test -z "$(docker ps -aq --filter name=^/worker-pool-local-code$)"
 
+      - name: Preserve SHA-bound E2E evidence in job logs (no artifact storage)
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        run: python scripts/ci_evidence_log.py
+
       - name: Record native validation receipt
         if: always()
         shell: bash
@@ -116,6 +128,7 @@ jobs:
           VALIDATION_RESULT: ${{ job.status }}
           COMMENT_ID: ${{ github.event.comment.id }}
           LOCAL_CODE_E2E: ${{ steps.code_e2e.outcome }}
+          STRUCTURED_E2E: ${{ steps.structured_e2e.outcome }}
         run: |
           {
             echo "## Worker Pool native CI"
@@ -127,4 +140,6 @@ jobs:
             echo "Physical hosts touched: false"
             echo "Product tasks dispatched: false"
             echo "Local-code E2E: $LOCAL_CODE_E2E"
+            echo "Structured-code E2E: $STRUCTURED_E2E"
+            echo "Evidence: lossless SHA-bound capsules in job logs; no artifact uploads or pip cache"
           } >> "$GITHUB_STEP_SUMMARY"
