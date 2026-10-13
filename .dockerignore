@@ -1,0 +1,7 @@
+# Candidate and production images only need runtime source and pinned requirements.
+# Keep Git history, consumer checkout, CI artifacts, tests and any local files out.
+**
+!Dockerfile
+!requirements.txt
+!app
+!app/**
