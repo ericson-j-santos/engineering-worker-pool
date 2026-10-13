@@ -44,7 +44,18 @@ def test_generation_request_does_not_retranscribe_defective_source():
     assert "\\n" not in request.split("Trusted input/output examples:", 1)[0]
     assert "\n" in request
     assert "must include def" in request and "no imports" in request
-    assert json.dumps(task()["cases"], ensure_ascii=False, separators=(",", ":")) in request
+    source_cases = task()["cases"]
+    assert len(source_cases) == 42
+    prompt_cases = source_cases[:8] + source_cases[-2:]
+    assert len(prompt_cases) == 10
+    assert json.dumps(prompt_cases, ensure_ascii=False, separators=(",", ":")) in request
+    assert json.dumps(source_cases, ensure_ascii=False, separators=(",", ":")) not in request
+    assert prompt_cases == [source_cases[i] for i in (*range(8), 40, 41)]
+    # Small tasks still include every trusted example without sampling.
+    small_task = {**task(), "cases": source_cases[:4]}
+    compact = eval(compile(expression, "<short-contract-test>", "eval"),
+                   {"task": small_task, "json": json})
+    assert json.dumps(small_task["cases"], ensure_ascii=False, separators=(",", ":")) in compact
     assert "return str(" not in request
     for mandatory in (
         "MANDATORY DECISION PROCEDURE",

@@ -17,6 +17,8 @@ FUNCTION_PATTERN = r"^def [^\[\]+]+$"
 def proposal_messages(proposal: dict, before: str) -> list[dict]:
     task = proposal_spec(proposal)
     # The first runs copied faulty source. Generate from the trusted behavioral
+    # Only representative source-bound examples enter the CPU-model prompt.
+    # The trusted validator still executes every supplied acceptance case.
     # contract instead; the executor still binds the patch to the exact source hash.
     prompt = (
         "Write a NEW implementation from the behavioral contract, not a transcription.\n"
@@ -24,7 +26,9 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
         + ", ".join(task["parameters"]) + "):\n"
         + "The JSON function string must include def, the full signature and its body.\n"
         + "Trusted input/output examples:\n"
-        + json.dumps(task["cases"], ensure_ascii=False, separators=(",", ":"))
+        + json.dumps(task["cases"] if len(task["cases"]) <= 10
+                     else task["cases"][:8] + task["cases"][-2:],
+                     ensure_ascii=False, separators=(",", ":"))
         + "\nExecution constraints: no imports, helpers, annotations, decorators, try/except, "
           "while, break, continue, comprehensions, indexing with brackets or recursion. "
           "Use only local assignments, if/elif/else, return and at most one for loop. "
