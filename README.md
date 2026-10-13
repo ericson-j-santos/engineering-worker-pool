@@ -95,3 +95,48 @@ publicar APIs ou novos serviços. Testes em tests/test_portfolio_bridge.py
 usam upstreams sintéticos e API Worker Pool real com SQLite isolado.
 A integração contínua por evento e o E2E com Notion/GitHub reais e PC24x7
 continuam pendentes.
+
+## Diagnóstico por tarefa sem reconciliação
+
+A rota autenticada `GET /v1/tasks/{task_id}/diagnostics` faz uma leitura
+transacional do SQLite em `mode=ro` e `PRAGMA query_only=ON`. Retorna o
+estado da tarefa, lease, progresso material, lane e pré-condições de elegibilidade
+de Builder/Validator, sem token de lease, caminho local ou credenciais.
+
+**Limite importante:** `eligibility_precheck=true` não equivale a claim, pickup,
+execução ou reserva da tarefa. O reconciliador em segundo plano pode modificar o
+banco independentemente da consulta; os valores são uma fotografia temporal.
+Ausência de banco, tarefa desconhecida ou ID inválido falham fechados.
+
+As rotas legadas `GET /v1/snapshot`, `GET /v1/workers` e
+`GET /v1/repositories` ainda podem executar recuperação de leases/watchdog;
+não devem ser usadas para investigação estritamente sem efeitos. O endpoint
+novo é aditivo ao contrato v1 e não ativa Builder, Validator ou deploy físico.
+
+## Claim exato por tarefa e capacidade
+
+Executores **com handler real e previamente validado** podem chamar
+`POST /v1/claims/exact` com `worker_id`, `correlation_id`,
+`lease_seconds` opcional e `task_id` completo `cwp-[0-9a-f]{24}`.
+A API aplica `task_id` na mesma transação e preserva as verificações de
+`NORMAL`, Gateway, `state_validated`, `rules_sha`, heartbeat, afinidade,
+capacidade, role distinto e lease exclusivo. Responde
+`claimed=false` se a tarefa específica não estiver disponível;
+um ID inválido falha com 422 e uma identidade sem autenticação com 401.
+
+Ao contrário do claim geral legado, essa rota **não inicia reconciliação
+de outras tasks** como efeito colateral do pedido. A reconciliação
+assíncrona do serviço permanece independente. O claim exato cria
+lease somente para a tarefa selecionada e não é por si um executor ou
+uma política de autorização por issue: o token de API continua exigido e
+o chamador precisa provar suporte efetivo ao trabalho **antes** de
+registrar worker `NORMAL`, fazer heartbeat ou pedir claim.
+
+Em particular, o reparador local de função numérica não pode consumir
+automaticamente as tarefas ReqSys #2546 e #2547. Nunca registrar um
+Builder/Validator apenas para fazer o inventário parecer elegível,
+nem usar o claim geral quando o handler suporta apenas uma tarefa.
+Os testes usam SQLite e tarefas sintéticas, não o banco DEV existente;
+merge, cutover 1.2→1.4 e instalação de executores persistentes exigem
+E2E físico e gates próprios. A rota legada `POST /v1/claims`
+permanece compatível para trabalhadores gerais já existentes.

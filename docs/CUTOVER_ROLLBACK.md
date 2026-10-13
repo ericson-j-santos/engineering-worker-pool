@@ -40,6 +40,49 @@ contiver:
 
 Evidência de outro SHA, versão ou ambiente não libera o cutover.
 
+## Pré-condições físicas adicionais (12/10/2026)
+
+O PC24x7 `DESKTOP-PDQK954` executa o Worker Pool legado 1.2.0, comprovado
+pela leitura governada ReqSys
+[`#38320303974`](https://github.com/ericson-j-santos/reqsys-v2-enterprise-real/actions/runs/38320303974).
+A implementação dedicada 1.4.0 está somente no GitHub em
+`engineering-worker-pool/main@d05ad0ce7c2945db1914a400127621bce4256a8b`.
+A leitura legada não comprova a elegibilidade de Builder/Validator.
+
+A política agora exige, **além dos gates anteriores**, as seguintes
+evidências independentes e vinculadas ao conjunto `reqsys_sha` /
+`worker_pool_sha`:
+
+- `live_sqlite_backup_verified`: cópia consistente de
+  `/data/codex-worker-pool.db` por SQLite Online Backup, com WAL,
+  hash e origem física atestada;
+- `isolated_restore_verified`: restauração real desse snapshot em
+  **outro** arquivo/volume privado, nunca sobre o banco ativo;
+- `restore_integrity_and_task_identity_verified`: `integrity_check`,
+  `foreign_key_check`, esquema, contagens e identidades das tasks
+  necessárias iguais no backup e no banco restaurado, sem expor linhas;
+- `candidate_image_digest_attested`: imagem do código dedicado fixada
+  por SHA e digest conferido no host;
+- `isolated_candidate_canary_passed`: canário 1.4 em loopback/volume
+  isolados, sem claim na fila viva, com contrato v1, diagnóstico read-only,
+  negativo de autenticação, replay e E2E consumidor adequados;
+- `rollback_rehearsal_passed`: retomada do legado validada sem apagar
+  volume nem perder tarefas; não restaurar um snapshot antigo sobre banco
+  que recebeu novas escritas sem reconciliação comprovada.
+
+O ensaio sintético feito em sandbox em 12/10/2026 validou WAL, backup,
+restauração isolada, controle negativo e idempotência, mas **não** valida
+nenhuma dessas seis condições físicas. Ausência ou valor `false`
+resulta em `CUTOVER_BLOCKED`. Um `true` informado por uma fonte sem
+proveniência não é comprovação: o produtor deve anexar testemunho do
+Session Launcher, Command Gateway, artefato/digest, ambiente e leitura
+independente; a política avalia o contrato, não autentica a origem.
+
+Antes da substituição, bloquear writers/claims, preservar a imagem e
+Compose anteriores e confirmar estado durável. A atualização e qualquer
+restart dependem de autorização explícita para o PC24x7 DEV e gates
+exigidos; HML/STG/PROD permanecem fora de escopo.
+
 ## Sequência de cutover
 
 1. Fixar os SHAs ReqSys e Worker Pool e a versão do contrato.

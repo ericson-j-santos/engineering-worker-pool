@@ -15,6 +15,11 @@ from pydantic import BaseModel, Field
 from app.contract import CONTRACT_VERSION, descriptor as contract_descriptor
 from app.reconcile import ReconciliationController
 from app.store import ConflictError, NotFoundError, WorkerPoolStore
+from app.task_diagnostics import (
+    TaskDiagnosticNotFound,
+    TaskDiagnosticUnavailable,
+    read_task_diagnostics,
+)
 from app.work import WorkOrchestrator
 
 
@@ -156,6 +161,10 @@ class ClaimRequest(BaseModel):
     worker_id: str = Field(min_length=1, max_length=128)
     correlation_id: str = Field(min_length=1, max_length=128)
     lease_seconds: int | None = Field(default=None, ge=1, le=3600)
+
+
+class ExactClaimRequest(ClaimRequest):
+    task_id: str = Field(min_length=28, max_length=28, pattern=r"^cwp-[0-9a-f]{24}$")
 
 
 class LeaseMutation(BaseModel):
@@ -321,6 +330,25 @@ def get_task(task_id: str) -> dict[str, Any]:
     return public_task(store.get_task(task_id))
 
 
+@app.get("/v1/tasks/{task_id}/diagnostics", dependencies=[Depends(require_auth)])
+def task_diagnostics(task_id: str) -> dict[str, Any]:
+    """Return a read-only per-task precheck; never claim or reconcile."""
+    try:
+        return read_task_diagnostics(
+            DB_PATH,
+            task_id,
+            expected_rules_sha=store.expected_rules_sha,
+            heartbeat_ttl_seconds=store.heartbeat_ttl_seconds,
+            progress_stall_seconds=store.progress_stall_seconds,
+        )
+    except ValueError:
+        raise HTTPException(status_code=422, detail="invalid_task_id") from None
+    except TaskDiagnosticNotFound:
+        raise HTTPException(status_code=404, detail="task_not_found") from None
+    except TaskDiagnosticUnavailable:
+        raise HTTPException(status_code=503, detail="task_diagnostics_unavailable") from None
+
+
 @app.post("/v1/work", dependencies=[Depends(require_auth)], status_code=201)
 def create_work(payload: WorkCreate, response: Response) -> dict[str, Any]:
     work, created = work_orchestrator.create_work(**payload.model_dump())
@@ -368,14 +396,14 @@ def record_merge_result(work_id: str, payload: MergeResult) -> dict[str, Any]:
     return work
 
 
-@app.post("/v1/claims", dependencies=[Depends(require_auth)])
-def claim(payload: ClaimRequest) -> dict[str, Any]:
+def _claim_impl(payload: ClaimRequest, *, only_task_id: str | None = None) -> dict[str, Any]:
     worker = store.get_worker(payload.worker_id)
     task, lease = store.claim_task(
         worker_id=payload.worker_id,
         role=worker["role"],
         correlation_id=payload.correlation_id,
         lease_seconds=payload.lease_seconds,
+        only_task_id=only_task_id,
     )
     if task is None or lease is None:
         _audit("claim.empty", payload.correlation_id, worker_id=payload.worker_id, role=worker["role"])
@@ -398,6 +426,18 @@ def claim(payload: ClaimRequest) -> dict[str, Any]:
             "lease_expires_at": lease.lease_expires_at,
         },
     }
+
+
+@app.post("/v1/claims", dependencies=[Depends(require_auth)])
+def claim(payload: ClaimRequest) -> dict[str, Any]:
+    """Legacy general-purpose claim for existing, fully capable workers."""
+    return _claim_impl(payload)
+
+
+@app.post("/v1/claims/exact", dependencies=[Depends(require_auth)])
+def claim_exact(payload: ExactClaimRequest) -> dict[str, Any]:
+    """Select one approved task ID rather than drain arbitrary queued work."""
+    return _claim_impl(payload, only_task_id=payload.task_id)
 
 
 @app.post("/v1/tasks/{task_id}/lease/renew", dependencies=[Depends(require_auth)])
