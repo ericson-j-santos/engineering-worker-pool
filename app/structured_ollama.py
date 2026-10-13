@@ -41,6 +41,15 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
           "If a fragment has non-null non-string plain_text, return empty for the WHOLE field. "
           "If fallback text/content is absent or not a string, return empty for the WHOLE field. "
           "Do not output tests or Markdown. Return only JSON with key function.\n"
+          "MANDATORY DECISION PROCEDURE. Implement EVERY step as real Python control flow:\n"
+          "1. Require properties to be dict; fetch properties.get(name), require selected property to be dict; otherwise return ''.\n"
+          "2. For select: fetch select, require dict; fetch its name, require str BEFORE .strip(); otherwise return ''.\n"
+          "3. For url: fetch url, require str BEFORE .strip(); otherwise return ''.\n"
+          "4. For rich_text: require list; create parts with list(). For EACH fragment require dict; otherwise return '' immediately.\n"
+          "5. For EACH fragment: if plain_text is str, append it even when empty. If it is None or missing, require text dict and string content, then append content. If plain_text has any other type, return ''.\n"
+          "6. Append raw untrimmed fragments. ONLY AFTER the entire loop succeeds, join parts with empty separator and strip the combined string once. Never return a partial result.\n"
+          "7. Unknown types return ''. Never chain two .get calls, invoke .get/.strip on unchecked types, skip a bad fragment, or substitute a non-string value.\n"
+          "These seven checks are mandatory. Do not bypass a type guard with a one-line shortcut.\n"
         + "AUTHORITATIVE BEHAVIORAL CONTRACT:\n" + task["instruction"]
     )
     messages = [

@@ -46,6 +46,15 @@ def test_generation_request_does_not_retranscribe_defective_source():
     assert "must include def" in request and "no imports" in request
     assert json.dumps(task()["cases"], ensure_ascii=False, separators=(",", ":")) in request
     assert "return str(" not in request
+    for mandatory in (
+        "MANDATORY DECISION PROCEDURE",
+        "For select: fetch select, require dict",
+        "If plain_text has any other type, return ''",
+        "ONLY AFTER the entire loop succeeds",
+        "Never chain two .get calls",
+    ):
+        assert mandatory in request
+    assert "    if not isinstance(properties, dict)" not in request
 
 
 def test_output_pattern_blocks_observed_subscripts_not_valid_get_code():
