@@ -94,3 +94,11 @@ def test_negative_ci_identity(tmp_path: Path, change) -> None:
     with patch("scripts.candidate_canary_probe.command", side_effect=[SHA, REQSYS, ""]):
         with pytest.raises(CanaryBlocked):
             context(tmp_path, consumer, env)
+
+
+def test_docker_build_context_whitelist() -> None:
+    root = Path(__file__).resolve().parents[1]
+    ignore = (root / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    assert [line for line in ignore if line and not line.startswith("#")] == [
+        "**", "!Dockerfile", "!requirements.txt", "!app", "!app/**"
+    ]
