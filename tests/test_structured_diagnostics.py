@@ -224,4 +224,6 @@ def test_legacy_rejections_have_no_added_anchor_kind():
 
 
 def test_anchor_failure_kind_allowlist_is_exact_and_stable():
-    assert ANCHOR_FAILURE_KINDS == frozenset({"unknown_anchor", "guard_not_if_header"})
+    assert ANCHOR_FAILURE_KINDS == frozenset({
+        "unknown_anchor", "guard_not_if_header", "guard_not_statement",
+    })

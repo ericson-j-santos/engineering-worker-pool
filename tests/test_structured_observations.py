@@ -26,10 +26,10 @@ def message_builder():
     node = next(n for n in ast.parse(source).body
                 if isinstance(n, ast.FunctionDef) and n.name == "proposal_messages")
     module = ast.Module(body=[node], type_ignores=[])
-    from app.structured_anchors import line_catalog
+    from app.structured_anchors import line_catalog, statement_anchors
     scope = {"json": json, "proposal_spec": worker.proposal_spec, "need": worker.need,
              "candidate_fingerprint": worker.candidate_fingerprint, "extracted": worker.extracted,
-             "line_catalog": line_catalog}
+             "line_catalog": line_catalog, "statement_anchors": statement_anchors}
     exec(compile(module, "<production-message-builder>", "exec"), scope)
     return scope["proposal_messages"]
 

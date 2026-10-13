@@ -304,7 +304,7 @@ def test_model_split_schema_is_source_bound_and_has_disjoint_variants():
     (json.dumps({"edits": []}), "revision_schema"),
     (json.dumps({"edits": [], "guards": []}), "revision_schema"),
     (json.dumps({"edits": [{"anchor": "L2", "guard": "not x", "return_expression": "None"}], "guards": []}), "revision_edit_schema"),
-    (json.dumps({"edits": [], "guards": [{"anchor": "L6", "guard": "not x", "return_expression": "None"}]}), "revision_guard_expression"),
+    (json.dumps({"edits": [], "guards": [{"anchor": "L6", "guard": "not x", "return_expression": "''"}]}), "revision_guard_expression"),
     (json.dumps({"edits": [], "guards": [{"anchor": "L999", "guard": "not x", "return_expression": "None"}]}), "revision_anchor_invalid"),
     (json.dumps({"edits": [{"anchor": "L6", "new": "return None"}] * 7, "guards": []}), "revision_schema"),
 ])
