@@ -36,7 +36,7 @@ jobs:
     timeout-minutes: 15
     env:
       EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      REQSYS_SHA: a85e6cd621a328a1bbedc5dab3b30ff1307e12b0
+      REQSYS_SHA: b5e0c7d2ca8fc46978562795f7a429d260f8ed9f
       CANARY_CONTAINER: wp-canary-${{ github.run_id }}-${{ github.run_attempt }}
       CANARY_VOLUME: wp-canary-${{ github.run_id }}-${{ github.run_attempt }}
       CANARY_IMAGE_TAG: wp-candidate:${{ github.event.pull_request.head.sha || github.sha }}
@@ -52,7 +52,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ericson-j-santos/reqsys-v2-enterprise-real
-          ref: a85e6cd621a328a1bbedc5dab3b30ff1307e12b0
+          ref: ${{ env.REQSYS_SHA }}
           path: .reqsys-consumer
           persist-credentials: false
 

@@ -102,3 +102,31 @@ def test_docker_build_context_whitelist() -> None:
     assert [line for line in ignore if line and not line.startswith("#")] == [
         "**", "!Dockerfile", "!requirements.txt", "!app", "!app/**"
     ]
+
+
+def test_workflow_uses_single_pinned_reqsys_consumer_sha():
+    """Pin one immutable ReqSys consumer SHA; reject duplicated/drifting checkout refs."""
+    import re
+
+    workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/candidate-canary.yml").read_text(
+        encoding="utf-8"
+    )
+
+    def assert_single_pin(config: str) -> None:
+        pins = re.findall(r"(?m)^      REQSYS_SHA: ([0-9a-f]{40})$", config)
+        assert len(pins) == 1
+        checkout = config.split("      - name: Checkout fixed ReqSys consumer\n", 1)
+        assert len(checkout) == 2
+        block = checkout[1].split("\n      - name:", 1)[0]
+        assert block.count("          ref: ${{ env.REQSYS_SHA }}") == 1
+        assert 'test "$(git -C .reqsys-consumer rev-parse HEAD)" = "$REQSYS_SHA"' in config
+        assert "persist-credentials: false" in block
+
+    assert_single_pin(workflow)
+    assert_single_pin(workflow)  # Idempotent check on immutable input.
+    drifted = workflow.replace("ref: ${{ env.REQSYS_SHA }}", "ref: " + "f" * 40, 1)
+    duplicate = workflow.replace("      REQSYS_SHA: ", "      REQSYS_SHA: " + "f" * 40 + "\n      REQSYS_SHA: ", 1)
+    for mutation in (drifted, duplicate):
+        assert mutation != workflow
+        with pytest.raises(AssertionError):
+            assert_single_pin(mutation)
