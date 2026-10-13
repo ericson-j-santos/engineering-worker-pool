@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from candidate_canary_probe import CanaryBlocked, context, inspect_container
+from scripts.candidate_canary_probe import CanaryBlocked, context, inspect_container
 
 
 SHA = "a" * 40
@@ -72,7 +72,7 @@ def test_positive_ci_identity(tmp_path: Path) -> None:
         "GITHUB_EVENT_NAME": "pull_request", "GITHUB_RUN_ID": "38390123456",
         "GITHUB_RUN_ATTEMPT": "1",
     }
-    with patch("candidate_canary_probe.command", side_effect=[SHA, REQSYS, ""]):
+    with patch("scripts.candidate_canary_probe.command", side_effect=[SHA, REQSYS, ""]):
         assert context(tmp_path, consumer, env) == (SHA, REQSYS, "canary-38390123456-1")
 
 
@@ -91,6 +91,6 @@ def test_negative_ci_identity(tmp_path: Path, change) -> None:
         "GITHUB_RUN_ATTEMPT": "1",
     }
     env[change[0]] = change[1]
-    with patch("candidate_canary_probe.command", side_effect=[SHA, REQSYS, ""]):
+    with patch("scripts.candidate_canary_probe.command", side_effect=[SHA, REQSYS, ""]):
         with pytest.raises(CanaryBlocked):
             context(tmp_path, consumer, env)
