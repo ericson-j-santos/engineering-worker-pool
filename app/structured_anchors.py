@@ -193,7 +193,9 @@ def statement_anchors(source: str) -> list[str]:
         anchor = f"L{number}"
         if anchor in anchors:
             line = lines[number - 1]
-            if node.col_offset == len(line) - len(line.lstrip(" ")):
+            # AST treats elif as If, but a new line before it breaks the clause.
+            if (node.col_offset == len(line) - len(line.lstrip(" "))
+                    and not line.lstrip().startswith(("elif ", "elif("))):
                 locations.add(anchor)
     return [anchor for anchor in anchors if anchor in locations]
 
@@ -304,6 +306,7 @@ def assemble_anchors(reply: str, source: str, *, model_split: bool = False) -> t
         edits = value["edits"]
     lines = source.splitlines(keepends=True)
     replacements = {}
+    guards = {}
     for edit in edits:
         require(type(edit) is dict, "revision_edit_schema")
         # A typed early-return guard cannot remove an existing block header.
@@ -319,7 +322,10 @@ def assemble_anchors(reply: str, source: str, *, model_split: bool = False) -> t
                 raise AnchorRejected("revision_anchor_invalid",
                                      anchor_failure_kind="unknown_anchor")
             index = anchors[anchor]
-            require(index not in replacements, "revision_anchor_duplicate")
+            # Only model-split may pair one guard with one replacement.
+            # Two of either kind remain ambiguous and are rejected.
+            require(index not in guards and (model_split or index not in replacements),
+                    "revision_anchor_duplicate")
             original = lines[index]
             old_if_header = (original.lstrip().startswith("if ")
                              and original.rstrip().endswith(":"))
@@ -345,9 +351,8 @@ def assemble_anchors(reply: str, source: str, *, model_split: bool = False) -> t
                 condition = validated_type_guard(guard_ast.body)
                 value = literal
             indent = original[:len(original) - len(original.lstrip(" "))]
-            replacements[index] = (indent + "if " + condition + ":\n"
-                                   + indent + "    return " + value + "\n"
-                                   + original)
+            guards[index] = (indent + "if " + condition + ":\n"
+                             + indent + "    return " + value + "\n")
             continue
         require(set(edit) == {"anchor", "new"}
                 and type(edit["anchor"]) is str and type(edit["new"]) is str
@@ -357,7 +362,8 @@ def assemble_anchors(reply: str, source: str, *, model_split: bool = False) -> t
             raise AnchorRejected("revision_anchor_invalid",
                                  anchor_failure_kind="unknown_anchor")
         index = anchors[anchor]
-        require(index not in replacements, "revision_anchor_duplicate")
+        require(index not in replacements and (model_split or index not in guards),
+                "revision_anchor_duplicate")
         require("\r" not in new and "\t" not in new and "\0" not in new,
                 "revision_indentation")
         added = new.splitlines()
@@ -374,6 +380,8 @@ def assemble_anchors(reply: str, source: str, *, model_split: bool = False) -> t
         replacements[index] = replacement
     for index, replacement in replacements.items():
         lines[index] = replacement
+    for index, prefix in guards.items():
+        lines[index] = prefix + lines[index]
     assembled = "".join(lines)
     require(assembled != source, "candidate_repeated")
     require(len(assembled.encode()) <= 20000, "revision_size")

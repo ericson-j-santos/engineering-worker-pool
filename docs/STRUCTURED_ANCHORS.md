@@ -306,3 +306,26 @@ a regra do assembler, casos válidos e inválidos e determinismo.
 A eficiência do prompt é hipótese a testar, não homologação. Exigir
 E2E real do SHA atualizado, cápsula íntegra, 42/42, patch, replay
 e regressão independente antes de qualquer merge.
+
+## Guardas estruturadas por instrução AST — 13/10/2026
+
+O contrato model_split expõe GUARDABLE_STATEMENT_ANCHORS_V2: IDs imutáveis
+de instruções Python obtidos da AST normalizada. Permite inserir uma guarda de
+tipo antes de if, atribuição e return, mantendo o cabeçalho original.
+Linhas elif/else, continuações e IDs desconhecidos não são locais elegíveis.
+O catálogo V1 e o parser legado mantêm a compatibilidade.
+
+Cada guarda aceita apenas not isinstance(valor, tipo) ou a forma anulável
+valor is not None and not isinstance(valor, tipo), com valor sendo um nome local
+ou uma única chamada get('chave'), tipo da lista fechada e expressão de retorno
+vinculada a constante já existente no candidato. O montador verifica a AST
+independentemente do LLM.
+
+Model-split pode compor uma substituição e uma guarda sobre a MESMA linha:
+primeiro atualiza a instrução, depois antepõe o retorno condicionado.
+Duplicatas do mesmo tipo ou combinações do contrato legado continuam reprovadas.
+Assinatura, AST, 42 casos, duas inferências, isolamento e replay são obrigatórios.
+
+A mudança aborda a rejeição revision_anchor_duplicate na execução
+#38406056061 somente para composições seguras e tipadas. A geração real e
+a aprovação 42/42 dependem do E2E do novo SHA; não existe fallback pronto.

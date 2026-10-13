@@ -338,13 +338,31 @@ def test_model_split_keeps_legacy_parser_available():
     with pytest.raises(AnchorRejected, match="^revision_schema$"):
         assemble_anchors(legacy, SOURCE, model_split=True)
 
-def test_model_split_duplicate_anchor_across_edit_kinds_fails():
+def test_model_split_can_compose_one_guard_and_one_replacement_at_same_anchor():
     raw = json.dumps({
         "edits": [{"anchor": "L2", "new": "if x is None:"}],
-        "guards": [{"anchor": "L2", "guard": "not x", "return_expression": "None"}],
+        "guards": [{"anchor": "L2", "guard": "not isinstance(x, dict)",
+                    "return_expression": "''"}],
     })
+    result, edits = assemble_anchors(raw, SOURCE, model_split=True)
+    assert len(edits) == 2 and result != SOURCE
+    assert result.startswith("def f(x):\n"
+                             "    if not isinstance(x, dict):\n"
+                             "        return ''\n"
+                             "    if x is None:\n")
+    assert result == assemble_anchors(raw, SOURCE, model_split=True)[0]
+    assert SOURCE.startswith("def f(x):\n    if x is None:")
+
+
+@pytest.mark.parametrize("edits, guards", [
+    ([{"anchor": "L2", "new": "if x is None:"}] * 2, []),
+    ([], [{"anchor": "L2", "guard": "not isinstance(x, dict)",
+           "return_expression": "''"}] * 2),
+])
+def test_model_split_still_rejects_same_kind_anchor_duplicates(edits, guards):
     with pytest.raises(AnchorRejected, match="^revision_anchor_duplicate$"):
-        assemble_anchors(raw, SOURCE, model_split=True)
+        assemble_anchors(json.dumps({"edits": edits, "guards": guards}),
+                         SOURCE, model_split=True)
 
 def test_guard_return_literals_are_source_bound_constants_not_codegen():
     from app.structured_anchors import guard_return_literals, model_split_schema

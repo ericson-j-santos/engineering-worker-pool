@@ -124,3 +124,45 @@ def test_safe_guard_expression_cannot_be_derived_from_code_execution():
     guard = ast.parse("not isinstance(x.get('name'), str)", mode="eval").body
     assert validated_type_guard(guard) == "not isinstance(x.get('name'), str)"
     assert "L5" in statement_anchors(SOURCE)
+
+
+def test_elif_is_not_a_statement_insertion_point():
+    code = ("def f(x):\n"
+            "    if x:\n"
+            "        return ''\n"
+            "    elif x is None:\n"
+            "        return ''\n"
+            "    return ''\n")
+    allowed = statement_anchors(code)
+    assert "L4" not in allowed
+    assert set(allowed) == {"L2", "L3", "L5", "L6"}
+    with pytest.raises(AnchorRejected, match="^revision_anchor_invalid$") as exc:
+        assemble_anchors(reply("L4", "not isinstance(x, str)"), code, model_split=True)
+    assert exc.value.anchor_failure_kind == "guard_not_statement"
+
+
+def test_one_guard_and_replacement_share_anchor_without_weakening_validation():
+    data = {"edits": [{"anchor": "L5", "new": "return name.strip() if name else ''"}],
+            "guards": [{"anchor": "L5", "guard": "not isinstance(name, str)",
+                        "return_expression": "''"}]}
+    proposal = json.dumps(data)
+    compiled, changes = assemble_anchors(proposal, SOURCE, model_split=True)
+    assert len(changes) == 2
+    assert compiled.endswith("    if not isinstance(name, str):\n"
+                             "        return ''\n"
+                             "    return name.strip() if name else ''\n")
+    assert assemble_anchors(proposal, SOURCE, model_split=True)[0] == compiled
+    scope = {}
+    exec(compile(ast.parse(compiled), "<combined-edits-test>", "exec"), scope)
+    assert scope["f"]({"name": 2}) == ""
+    assert scope["f"]({"name": " test "}) == "test"
+    assert scope["f"]({"name": ""}) == ""
+
+
+def test_legacy_cross_kind_duplicate_remains_rejected():
+    legacy = json.dumps({"edits": [
+        {"anchor": "L2", "guard": "not isinstance(x, dict)", "return_expression": "''"},
+        {"anchor": "L2", "new": "if not isinstance(x, dict):"},
+    ]})
+    with pytest.raises(AnchorRejected, match="^revision_anchor_duplicate$"):
+        assemble_anchors(legacy, SOURCE)
