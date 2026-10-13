@@ -100,6 +100,15 @@ def verify_evidence(folder: Path, sha: str, correlation: str) -> dict:
          and result["validation"]["errors"] == 0, "evidence_content")
     need(validate(before.decode(), task) == result["baseline"]
          and validate(after.decode(), task) == result["validation"], "evidence_tests")
+    if "ast_guard_completion" in result["attempts"][-1]:
+        proof = result["attempts"][-1]["ast_guard_completion"]
+        need(proof.get("result") == "AST_GUARD_COMPLETED"
+             and proof.get("strategy") == "bounded_source_derived_type_guard"
+             and proof.get("before_sha256") == result["attempts"][-1]["candidate_sha256"]
+             and proof.get("after_sha256") == result["after_sha256"]
+             and proof.get("validated_cases") == len(task["cases"])
+             and type(proof.get("trials")) is int and 1 <= proof["trials"] <= 12,
+             "evidence_ast_guard_completion")
     return data
 
 

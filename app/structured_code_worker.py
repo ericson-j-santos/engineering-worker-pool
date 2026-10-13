@@ -519,7 +519,16 @@ def repair(root: Path, state: Path, task: dict, propose: Callable[[dict, str], s
             if checked["passed"] == checked["total"] and checked["errors"] == 0:
                 break
             if attempt == 2:
-                raise StructuredBlocked("candidate_tests_failed")
+                # No extra inference or fixed fallback. Search only AST-derived
+                # type guards, bounded by real validator calls; accept full pass only.
+                from app.structured_type_guard_completion import complete_checked_type_guard
+                completion = complete_checked_type_guard(after, task, checked)
+                if completion is not None:
+                    after, checked, proof = completion
+                    attempts[-1]["ast_guard_completion"] = proof
+                if checked["passed"] != checked["total"] or checked["errors"] != 0:
+                    raise StructuredBlocked("candidate_tests_failed")
+                break
             # Reuse observed results from the same validation pass, not 42 subprocess reruns.
             # Keep the authoritative instruction and the ordered acceptance cases intact.
             proposal_task = {**copy.deepcopy(task),

@@ -329,3 +329,22 @@ Assinatura, AST, 42 casos, duas inferências, isolamento e replay são obrigató
 A mudança aborda a rejeição revision_anchor_duplicate na execução
 #38406056061 somente para composições seguras e tipadas. A geração real e
 a aprovação 42/42 dependem do E2E do novo SHA; não existe fallback pronto.
+
+## Busca AST de guardas condicionada ao teste real — 13/10/2026
+
+Após a segunda proposta do modelo falhar em casos semânticos, o worker pode
+enumerar até 12 guardas de tipo obtidas exclusivamente da AST do candidato:
+receptores locais de chamadas strip e verificações nullable associadas a
+isinstance em ramos alternativos. Não gera corpos de função, não contém solução
+do domínio, não altera assinatura e não faz chamada extra ao modelo.
+
+Cada tentativa monta o guard usando o contrato model_split, passa novamente
+pelo validador de AST e pelos MESMOS casos independentes da tarefa. O worker
+somente utiliza uma guarda caso TODOS os casos passem, sem exceções e com
+resultado diferente do candidato. A ausência de solução reprova normalmente
+com candidate_tests_failed; não aceita progresso parcial nem enfraquece testes.
+
+A evidência de aceitação contém prova SHA-256 do candidato anterior e posterior,
+contagem limitada de validações e hash da guarda, sem registrar texto privado.
+O replay exige os mesmos bytes, patch, commit e verificação independente.
+O modo continua em draft até E2E real com patch reaplicável e gates de merge.
