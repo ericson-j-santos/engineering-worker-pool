@@ -64,6 +64,9 @@ def exercise_isolated_native_chain(
         NativeOneShotExecutor, ReceiptStore,
     )
     from app.native_pool_http import LocalWorkerApi
+    from app.native_gateway_commands import (
+        GovernedCommand, NativeGatewayCommandRegistry,
+    )
 
     source_path = "src/calculator.py"
     repaired_source = "def add(a, b):\n    return a + b\n"
@@ -87,7 +90,7 @@ def exercise_isolated_native_chain(
     class FixtureAdapter:
         descriptor = AdapterDescriptor(
             "ci.native.patch.v1", (source_path,),
-            ("ci.build",), ("ci.validate",),
+            ("ci.commit", "ci.fix", "ci.stage"), ("ci.validate",),
         )
 
         def __init__(self) -> None:
@@ -95,18 +98,18 @@ def exercise_isolated_native_chain(
 
         def build(self, context):
             self.calls.append("build")
-            context.invoke("ci.build")
             target = context.root / source_path
             require(target.read_text(encoding="utf-8") == original_source,
                     "native_chain_baseline_drift")
             require(code_value(target, 2, 3) == -1,
                     "native_chain_not_reproduced")
-            target.write_text(repaired_source, encoding="utf-8")
-            git(context.root, "add", "--", source_path)
-            git(context.root, "-c", "user.name=CI Fixture",
-                "-c", "user.email=fixture@example.invalid",
-                "commit", "-m", "fix(ci-fixture): restore addition")
+            # All write/commit commands go through the installed Gateway.
+            context.invoke("ci.fix")
+            context.invoke("ci.stage")
+            context.invoke("ci.commit")
             produced = git(context.root, "rev-parse", "HEAD")
+            require(target.read_text(encoding="utf-8") == repaired_source,
+                    "native_chain_gateway_patch_not_applied")
             return AdapterResult(
                 produced, (source_path,), tuple(context.invoked),
                 hashlib.sha256(target.read_bytes()).hexdigest(),
@@ -194,8 +197,45 @@ def exercise_isolated_native_chain(
                     and repeated_enqueue["task"]["task_id"] == task_id,
                     "native_chain_enqueue_replay")
             adapter = FixtureAdapter()
-            registry = {"ci.build": lambda: None,
-                        "ci.validate": lambda: None}
+            specs = {
+                "ci.fix": GovernedCommand(
+                    "ci.fix", "builder", ("python", "scripts/ci_fix.py"), 2,
+                    script_sha256=hashlib.sha256(
+                        (builder_root / "scripts/ci_fix.py").read_bytes(),
+                    ).hexdigest(),
+                ),
+                "ci.stage": GovernedCommand(
+                    "ci.stage", "builder",
+                    ("git", "add", "--", source_path), 2, allow_dirty=True,
+                ),
+                "ci.commit": GovernedCommand(
+                    "ci.commit", "builder",
+                    ("git", "commit", "-m", "fix(ci-fixture): restore addition"),
+                    2, allow_dirty=True, allow_head_change=True,
+                ),
+                "ci.validate": GovernedCommand(
+                    "ci.validate", "validator",
+                    ("python", "scripts/ci_validate.py"), 1,
+                    script_sha256=hashlib.sha256(
+                        (builder_root / "scripts/ci_validate.py").read_bytes(),
+                    ).hexdigest(),
+                ),
+            }
+            fixed_gateway_args = {
+                "gateway": gateway, "policy_path": policy_path,
+                "session_id": builder_boundary.session_id,
+                "correlation_id": builder_boundary.correlation_id,
+                "expected_head": source_sha,
+                "trusted_gateway_sha256": authority["trusted_gateway_sha256"],
+                "trusted_policy_sha256": authority["trusted_policy_sha256"],
+                "specs": specs,
+            }
+            trusted = NativeGatewayCommandRegistry(
+                **fixed_gateway_args, workspace=builder_root,
+            )
+            require(trusted.boundary == builder_boundary,
+                    "native_chain_gateway_boundary_mismatch")
+            registry = trusted.for_role(adapter.descriptor, "builder")
             receipt_store = ReceiptStore(root / "native-receipts")
             manifest = {
                 "schema_version": 1,
@@ -278,6 +318,16 @@ def exercise_isolated_native_chain(
                             "--no-renames", source_sha, produced) == source_path
                     and code_value(validator_root / source_path, 2, 3) == 5,
                     "native_chain_validator_isolation")
+            validator_gateway = NativeGatewayCommandRegistry(
+                **{**fixed_gateway_args, "session_id": "native-fixture-validator",
+                   "expected_head": produced},
+                workspace=validator_root,
+            )
+            require(validator_gateway.boundary == v_boundary,
+                    "native_chain_validator_gateway_boundary")
+            validator_registry = validator_gateway.for_role(
+                adapter.descriptor, "validator",
+            )
             v_manifest = {
                 **manifest,
                 "workspace_sha": produced,
@@ -294,7 +344,9 @@ def exercise_isolated_native_chain(
                     api=api, workspace=LocalWorkspace(validator_root),
                     receipts=receipt_store,
                     adapters={adapter.descriptor.adapter_id: adapter},
-                    command_registries={adapter.descriptor.adapter_id: registry},
+                    command_registries={
+                        adapter.descriptor.adapter_id: validator_registry,
+                    },
                     boundary=v_boundary,
                 )
                 validation = validator.run(
@@ -332,6 +384,7 @@ def exercise_isolated_native_chain(
         "native_chain_asgi_http": True,
         "native_chain_sqlite": True,
         "native_chain_builder_validator": True,
+        "native_chain_gateway_commands_executed": True,
         "native_chain_queue_replay": True,
         "native_chain_independent_readback": True,
         "native_chain_real_product_issue": False,
@@ -361,7 +414,31 @@ def run(rules_scripts: Path) -> None:
         (repo / "src" / "calculator.py").write_text(
             "def add(a, b):\n    return a - b\n", encoding="utf-8",
         )
-        git(repo, "add", "src/calculator.py")
+        (repo / "scripts").mkdir()
+        fix_script = (
+            "from pathlib import Path\n"
+            "p = Path('src/calculator.py')\n"
+            "before = 'def add(a, b):\\n    return a - b\\n'\n"
+            "after = 'def add(a, b):\\n    return a + b\\n'\n"
+            "if p.read_text(encoding='utf-8') != before:\n"
+            "    raise SystemExit(3)\n"
+            "p.write_text(after, encoding='utf-8')\n"
+        )
+        validate_script = (
+            "from pathlib import Path\n"
+            "import runpy\n"
+            "p = Path('src/calculator.py')\n"
+            "fun = runpy.run_path(str(p))['add']\n"
+            "assert fun(2, 3) == 5 and fun(-5, 7) == 2\n"
+        )
+        (repo / "scripts" / "ci_fix.py").write_text(
+            fix_script, encoding="utf-8",
+        )
+        (repo / "scripts" / "ci_validate.py").write_text(
+            validate_script, encoding="utf-8",
+        )
+        git(repo, "add", "src/calculator.py", "scripts/ci_fix.py",
+            "scripts/ci_validate.py")
         git(repo, "commit", "-m", "native E2E source")
         expected_head = git(repo, "rev-parse", "HEAD")
         policy = {
