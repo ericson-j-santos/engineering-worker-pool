@@ -1,0 +1,45 @@
+name: Governed Worker Pool PR Merge
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+      - Worker Pool Candidate Image Canary
+    types: [completed]
+
+# This is not GitHub's repository auto-merge setting: this job consumes
+# completed CI events and asks GitHub to merge only if every server-side
+# protection and independent SHA check is satisfied.
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+  checks: read
+
+concurrency:
+  group: engineering-worker-pool-governed-merge
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    if: >-
+      github.repository == 'ericson-j-santos/engineering-worker-pool' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Checkout trusted default branch only
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Validate fail-closed policy with negative controls
+        run: node --test tests/test_governed_auto_merge.cjs
+      - name: Validate owner, exact SHA, CI, canary and branch protection
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const governed = require('./scripts/governed_auto_merge.cjs');
+            await governed.run(github, context, core);
