@@ -38,6 +38,7 @@ def repository(tmp_path: Path):
     (root / "src").mkdir()
     target = root / "src" / "task.py"
     target.write_text("VALUE = 1\n", encoding="utf-8")
+    (root / "outside.txt").write_text("outside\n", encoding="utf-8")
     git(root, "add", ".")
     git(root, "commit", "-m", "fixture")
     return root, target, git(root, "rev-parse", "HEAD")
@@ -60,7 +61,8 @@ class Api:
                 "worker_id": worker_id,
                 "role": "validator" if "validator" in worker_id else "builder",
                 "lease_token": "fixture-lease-token",
-                "expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat()}}
+                "lease_expires_at": (
+                    datetime.now(UTC) + timedelta(minutes=5)).isoformat()}}
 
     def start(self, task_id, worker_id, lease_token, correlation_id):
         self.calls.append(("start", worker_id))
@@ -261,6 +263,39 @@ def test_omitted_change_untracked_and_missing_required_command_fail(tmp_path):
         assert api.calls[-1] == ("fail", expected)
 
 
+@pytest.mark.parametrize("operation", ["delete", "rename"])
+def test_independent_diff_detects_omitted_delete_and_rename(tmp_path, operation):
+    class HiddenChange(Adapter):
+        def build(self, context):
+            outside = context.root / "outside.txt"
+            if operation == "delete":
+                outside.unlink()
+            else:
+                outside.rename(context.root / "renamed.txt")
+            return super().build(context)
+
+    executor, manifest, api, _adapter, _root = setup(
+        tmp_path, adapter=HiddenChange())
+    with pytest.raises(NativeExecutorBlocked, match="builder_diff_mismatch"):
+        executor.run(manifest, role="builder", worker_id="fixture-builder")
+    assert api.calls[-1] == ("fail", "builder_diff_mismatch")
+
+
+def test_replay_receipt_cannot_move_to_distinct_checkout(tmp_path):
+    executor, manifest, _api, adapter, root = setup(tmp_path)
+    built = executor.run(manifest, role="builder", worker_id="fixture-builder")
+    other = tmp_path / "copied-checkout"
+    git(root, "worktree", "add", "--detach", str(other), built["produced_sha"])
+    copied = NativeOneShotExecutor(
+        api=executor.api, workspace=LocalWorkspace(other), receipts=executor.receipts,
+        adapters={adapter.descriptor.adapter_id: adapter},
+        command_registries={adapter.descriptor.adapter_id: {
+            "fixture.build": lambda: None, "fixture.validate": lambda: None}},
+        boundary=executor.boundary)
+    with pytest.raises(NativeExecutorBlocked, match="receipt_mismatch"):
+        copied.run(manifest, role="builder", worker_id="fixture-builder")
+
+
 def test_claim_snapshot_race_blocks_before_adapter(tmp_path):
     executor, manifest, api, adapter, _root = setup(tmp_path)
     original = api.claim_exact
@@ -326,7 +361,8 @@ def test_task_drift_and_expired_or_invalid_lease_do_not_run_adapter(tmp_path):
             return {"claimed": True, "task": claimed,
                     "lease": {"task_id": task_id, "worker_id": worker_id,
                     "role": "builder", "lease_token": "fixture-lease-token",
-                    "expires_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat()}}
+                    "lease_expires_at": (
+                        datetime.now(UTC) - timedelta(seconds=1)).isoformat()}}
 
     executor2, manifest2, _api2, adapter2, _root2 = setup(
         tmp_path / "expired2")
@@ -365,7 +401,7 @@ def test_real_store_builder_validator_transitions_and_replay(tmp_path):
                     "lease": None if lease is None else {
                         "task_id": lease.task_id, "lease_token": lease.lease_token,
                         "worker_id": lease.worker_id, "role": lease.role,
-                        "expires_at": lease.lease_expires_at}}
+                        "lease_expires_at": lease.lease_expires_at}}
 
         def start(self, task_id, worker_id, lease_token, correlation_id):
             store.start_task(task_id=task_id, worker_id=worker_id,

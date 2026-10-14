@@ -207,8 +207,8 @@ class LocalWorkspace:
         return self._git("status", "--porcelain", "--untracked-files=all")
 
     def changed_paths(self, base_sha: str, produced_sha: str) -> tuple[str, ...]:
-        output = self._git("diff", "--name-only", "--diff-filter=ACMRTUXB",
-                           base_sha, produced_sha)
+        output = self._git("diff", "--name-only", "--no-renames", base_sha,
+                           produced_sha)
         return tuple(sorted(line for line in output.splitlines() if line))
 
     def validate_replay(self, produced_sha: str) -> None:
@@ -337,8 +337,17 @@ class NativeOneShotExecutor:
                 _need(set(previous) == required
                       and previous.get("schema_version") == 1
                       and previous.get("manifest_sha256") == _digest(raw_manifest)
+                      and previous.get("task_id") == manifest.task_id
                       and previous.get("role") == role
-                      and previous.get("worker_id") == worker_id, "receipt_mismatch")
+                      and previous.get("worker_id") == worker_id
+                      and previous.get("adapter_contract_sha256")
+                      == descriptor.contract_sha256
+                      and previous.get("result") == (
+                          "NATIVE_ONE_SHOT_BUILT" if role == "builder"
+                          else "NATIVE_ONE_SHOT_VALIDATED")
+                      and previous.get("workspace_id") == hashlib.sha256(
+                          str(self.workspace.root).encode()).hexdigest(),
+                      "receipt_mismatch")
                 produced = previous.get("produced_sha")
                 _need(type(produced) is str and bool(SHA40.fullmatch(produced)),
                       "receipt_produced_sha")
@@ -369,7 +378,7 @@ class NativeOneShotExecutor:
             claimed_task = claim.get("task") or {}
             lease = claim.get("lease") or {}
             token = lease.get("lease_token")
-            expires_at = lease.get("expires_at")
+            expires_at = lease.get("lease_expires_at")
             try:
                 expires = datetime.fromisoformat(str(expires_at))
             except ValueError:
