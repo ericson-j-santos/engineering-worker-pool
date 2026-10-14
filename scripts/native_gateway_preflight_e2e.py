@@ -46,6 +46,300 @@ def expected_block(reason: str, **kwargs: object) -> None:
         raise AssertionError(f"negative-control-missed:{reason}")
 
 
+
+def exercise_isolated_native_chain(
+    *, root: Path, source_repo: Path, builder_root: Path,
+    builder_boundary, source_sha: str, policy: dict, policy_path: Path,
+    gateway, preflight, authority: dict,
+) -> dict[str, object]:
+    """Exercise the real API/SQLite plus native Builder -> independent Validator.
+
+    This is a synthetic, GitHub-hosted fixture; product tasks remain untouched.
+    """
+    import importlib
+    import runpy
+    from fastapi.testclient import TestClient
+    from app.native_one_shot import (
+        AdapterDescriptor, AdapterResult, LocalWorkspace,
+        NativeOneShotExecutor, ReceiptStore,
+    )
+    from app.native_pool_http import LocalWorkerApi
+
+    source_path = "src/calculator.py"
+    repaired_source = "def add(a, b):\\n    return a + b\\n"
+    original_source = "def add(a, b):\\n    return a - b\\n"
+    expected_worker_sha = os.environ.get("EXPECTED_SHA", "")
+    if (os.environ.get("GITHUB_ACTIONS") != "true"
+            or os.environ.get("GITHUB_REPOSITORY")
+            != "ericson-j-santos/engineering-worker-pool"
+            or len(expected_worker_sha) != 40
+            or git(ROOT, "rev-parse", "HEAD") != expected_worker_sha):
+        raise AssertionError("native_chain_ci_context_invalid")
+
+    def require(condition: bool, reason: str) -> None:
+        if not condition:
+            raise AssertionError(reason)
+
+    def code_value(path: Path, left: int, right: int) -> int:
+        # Deterministic source in a private synthetic CI fixture.
+        return runpy.run_path(str(path))["add"](left, right)
+
+    class FixtureAdapter:
+        descriptor = AdapterDescriptor(
+            "ci.native.patch.v1", (source_path,),
+            ("ci.build",), ("ci.validate",),
+        )
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def build(self, context):
+            self.calls.append("build")
+            context.invoke("ci.build")
+            target = context.root / source_path
+            require(target.read_text(encoding="utf-8") == original_source,
+                    "native_chain_baseline_drift")
+            require(code_value(target, 2, 3) == -1,
+                    "native_chain_not_reproduced")
+            target.write_text(repaired_source, encoding="utf-8")
+            git(context.root, "add", "--", source_path)
+            git(context.root, "-c", "user.name=CI Fixture",
+                "-c", "user.email=fixture@example.invalid",
+                "commit", "-m", "fix(ci-fixture): restore addition")
+            produced = git(context.root, "rev-parse", "HEAD")
+            return AdapterResult(
+                produced, (source_path,), tuple(context.invoked),
+                hashlib.sha256(target.read_bytes()).hexdigest(),
+            )
+
+        def validate(self, context, produced_sha):
+            self.calls.append("validate")
+            context.invoke("ci.validate")
+            target = context.root / source_path
+            require(target.read_text(encoding="utf-8") == repaired_source
+                    and code_value(target, 2, 3) == 5
+                    and code_value(target, -5, 7) == 2,
+                    "native_chain_functional_regression")
+            return AdapterResult(
+                produced_sha, (source_path,), tuple(context.invoked),
+                hashlib.sha256(target.read_bytes()).hexdigest(),
+            )
+
+    token = root / "isolated-pool-token"
+    token.write_text("disposable-native-pool-token-2026", encoding="ascii")
+    token.chmod(0o600)
+    settings = {
+        "CODEX_WORKER_POOL_DB": str(root / "pool.db"),
+        "CODEX_WORKER_POOL_API_TOKEN_FILE": str(token),
+        "CODEX_WORKER_POOL_EXPECTED_RULES_SHA": PINNED_RULES,
+        "CODEX_WORKER_POOL_HEARTBEAT_TTL_SECONDS": "600",
+        "CODEX_WORKER_POOL_LEASE_SECONDS": "300",
+        "CODEX_WORKER_POOL_MAX_ATTEMPTS": "2",
+        "CODEX_WORKER_POOL_RECONCILE_INTERVAL_SECONDS": "10",
+    }
+    old_settings = {key: os.environ.get(key) for key in settings}
+    try:
+        os.environ.update(settings)
+        sys.modules.pop("app.main", None)
+        service = importlib.import_module("app.main")
+        with TestClient(service.app, base_url="http://127.0.0.1:18097") as client:
+            headers = {
+                "Authorization": "Bearer disposable-native-pool-token-2026",
+            }
+
+            def post(path: str, data: dict, status: int = 200) -> dict:
+                response = client.post(path, headers=headers, json=data)
+                require(response.status_code == status,
+                        "native_chain_post_contract")
+                return response.json()
+
+            require(client.get("/health").status_code == 200,
+                    "native_chain_health")
+            require(client.get("/v1/contract").status_code == 401,
+                    "native_chain_negative_auth")
+            lane = post("/v1/repositories", {
+                "repository": "ci-isolated/native-fixture",
+                "enabled": True, "max_in_flight": 1,
+                "correlation_id": "ci-native-chain-20261014",
+            })
+            require(lane["enabled"] is True and lane["max_in_flight"] == 1,
+                    "native_chain_lane")
+            for worker_id, role in (
+                ("native-fixture-builder", "builder"),
+                ("native-fixture-validator", "validator"),
+            ):
+                response = post("/v1/workers", {
+                    "worker_id": worker_id, "host": "github-hosted-isolated",
+                    "role": role, "profile": "NORMAL", "capacity_score": 80,
+                    "rules_sha": PINNED_RULES,
+                    "gateway_ok": True, "state_validated": True,
+                    "worktree_root": str(builder_root),
+                    "correlation_id": "ci-native-chain-20261014",
+                })
+                require(response["worker_id"] == worker_id,
+                        "native_chain_worker_identity")
+
+            payload = {
+                "repository": "ci-isolated/native-fixture", "issue_number": 1,
+                "request_id": "native-chain-" + os.environ.get("GITHUB_RUN_ID", "fixture"),
+                "base_sha": source_sha,
+                "correlation_id": "ci-native-chain-20261014",
+                "max_attempts": 2,
+            }
+            first = post("/v1/tasks", payload, 201)
+            repeated_enqueue = post("/v1/tasks", payload, 200)
+            task_id = first["task"]["task_id"]
+            require(first["created"] is True
+                    and repeated_enqueue["created"] is False
+                    and repeated_enqueue["task"]["task_id"] == task_id,
+                    "native_chain_enqueue_replay")
+            adapter = FixtureAdapter()
+            registry = {"ci.build": lambda: None,
+                        "ci.validate": lambda: None}
+            receipt_store = ReceiptStore(root / "native-receipts")
+            manifest = {
+                "schema_version": 1,
+                "task_id": task_id,
+                "repository": "ci-isolated/native-fixture",
+                "base_sha": source_sha,
+                "workspace_sha": source_sha,
+                "adapter_id": adapter.descriptor.adapter_id,
+                "adapter_contract_sha256": adapter.descriptor.contract_sha256,
+                "before_sha256": {
+                    source_path: hashlib.sha256(
+                        (builder_root / source_path).read_bytes()
+                    ).hexdigest(),
+                },
+            }
+            with LocalWorkerApi(
+                port=18097, token_file=token, client=client,
+            ) as api:
+                builder = NativeOneShotExecutor(
+                    api=api, workspace=LocalWorkspace(builder_root),
+                    receipts=receipt_store,
+                    adapters={adapter.descriptor.adapter_id: adapter},
+                    command_registries={adapter.descriptor.adapter_id: registry},
+                    boundary=builder_boundary,
+                )
+                try:
+                    builder.run({**manifest, "workspace_sha": "f" * 40},
+                                role="builder", worker_id="native-fixture-builder")
+                except NativeExecutorBlocked as exc:
+                    require(str(exc) == "boundary_manifest_drift",
+                            "native_chain_negative_wrong_reason")
+                else:
+                    raise AssertionError("native_chain_missing_negative")
+                require(api.get_task(task_id)["state"] == "queued",
+                        "native_chain_negative_mutated_task")
+                built = builder.run(
+                    manifest, role="builder", worker_id="native-fixture-builder",
+                )
+                produced = built["produced_sha"]
+                require(built["result"] == "NATIVE_ONE_SHOT_BUILT"
+                        and produced != source_sha
+                        and api.get_task(task_id)["state"] == "validating",
+                        "native_chain_builder")
+                replayed = builder.run(
+                    manifest, role="builder", worker_id="native-fixture-builder",
+                )
+                require(replayed["replayed"] is True
+                        and replayed["produced_sha"] == produced
+                        and adapter.calls == ["build"],
+                        "native_chain_builder_replay")
+
+            git(source_repo, "branch", "ci-native-result", produced)
+            validator_source = root / "validator-source"
+            git(root, "clone", "--quiet", "--no-hardlinks",
+                str(source_repo), str(validator_source))
+            git(validator_source, "remote", "remove", "origin")
+            git(validator_source, "checkout", "--detach", produced)
+            with contextlib.redirect_stdout(io.StringIO()):
+                v_snapshot = preflight.preflight(
+                    validator_source, policy_path,
+                    "native-fixture-validator", "native-gateway-proof-20261014", True,
+                )
+            validator_root = Path(v_snapshot["reserved_worktree"])
+            gateway.enforce_session(
+                policy, "native-fixture-validator", validator_root, 2,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                require(gateway.inspect(
+                    validator_root, policy, "native-gateway-proof-20261014",
+                    "native-fixture-validator",
+                ) == 0, "native_chain_validator_inspect")
+            v_boundary = attest_execution_boundary(
+                **{**authority, "workspace": validator_root,
+                   "session_id": "native-fixture-validator",
+                   "expected_head": produced},
+            )
+            require(validator_root != builder_root
+                    and git(validator_root, "remote") == ""
+                    and git(validator_root, "diff", "--name-only",
+                            "--no-renames", source_sha, produced) == source_path
+                    and code_value(validator_root / source_path, 2, 3) == 5,
+                    "native_chain_validator_isolation")
+            v_manifest = {
+                **manifest,
+                "workspace_sha": produced,
+                "before_sha256": {
+                    source_path: hashlib.sha256(
+                        (validator_root / source_path).read_bytes()
+                    ).hexdigest(),
+                },
+            }
+            with LocalWorkerApi(
+                port=18097, token_file=token, client=client,
+            ) as api:
+                validator = NativeOneShotExecutor(
+                    api=api, workspace=LocalWorkspace(validator_root),
+                    receipts=receipt_store,
+                    adapters={adapter.descriptor.adapter_id: adapter},
+                    command_registries={adapter.descriptor.adapter_id: registry},
+                    boundary=v_boundary,
+                )
+                validation = validator.run(
+                    v_manifest, role="validator", worker_id="native-fixture-validator",
+                )
+                require(validation["result"] == "NATIVE_ONE_SHOT_VALIDATED"
+                        and adapter.calls == ["build", "validate"],
+                        "native_chain_validator")
+                final = api.get_task(task_id)
+                require(final["state"] == "completed"
+                        and final["produced_sha"] == produced
+                        and "lease_token" not in final,
+                        "native_chain_terminal_readback")
+                require(api.claim_exact(
+                    "native-fixture-builder", task_id,
+                    "ci-native-chain-20261014",
+                )["claimed"] is False, "native_chain_claim_after_completion")
+            independent = client.get(
+                f"/v1/tasks/{task_id}", headers=headers,
+            )
+            require(independent.status_code == 200
+                    and independent.json()["state"] == "completed"
+                    and independent.json()["produced_sha"] == produced
+                    and git(source_repo, "rev-parse", "HEAD") == source_sha,
+                    "native_chain_final_readback")
+    finally:
+        sys.modules.pop("app.main", None)
+        for key, previous in old_settings.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
+    return {
+        "native_chain_result": "NATIVE_CHAIN_ISOLATED_PASSED",
+        "native_chain_asgi_http": True,
+        "native_chain_sqlite": True,
+        "native_chain_builder_validator": True,
+        "native_chain_queue_replay": True,
+        "native_chain_independent_readback": True,
+        "native_chain_real_product_issue": False,
+        "native_chain_external_pr_created": False,
+        "native_chain_physical_host_touched": False,
+    }
+
+
 def run(rules_scripts: Path) -> None:
     rule_root = rules_scripts.resolve().parent
     if git(rule_root, "rev-parse", "HEAD") != PINNED_RULES:
@@ -63,8 +357,11 @@ def run(rules_scripts: Path) -> None:
         git(repo, "init", "-q")
         git(repo, "config", "user.email", "native-e2e@example.invalid")
         git(repo, "config", "user.name", "Native E2E")
-        (repo / "source.txt").write_text("source\n", encoding="utf-8")
-        git(repo, "add", "source.txt")
+        (repo / "src").mkdir()
+        (repo / "src" / "calculator.py").write_text(
+            "def add(a, b):\n    return a - b\n", encoding="utf-8",
+        )
+        git(repo, "add", "src/calculator.py")
         git(repo, "commit", "-m", "native E2E source")
         expected_head = git(repo, "rev-parse", "HEAD")
         policy = {
@@ -152,7 +449,14 @@ def run(rules_scripts: Path) -> None:
         assert attest_execution_boundary(**args) == verified
         assert git(workspace, "status", "--porcelain") == ""
         assert git(workspace, "rev-parse", "HEAD") == expected_head
+        integration = exercise_isolated_native_chain(
+            root=root, source_repo=repo, builder_root=workspace,
+            builder_boundary=verified, source_sha=expected_head,
+            policy=policy, policy_path=policy_path, gateway=cg, preflight=sp,
+            authority=args,
+        )
         print(json.dumps({
+            **integration,
             "result": "NATIVE_GATEWAY_PREFLIGHT_E2E_PASSED",
             "rules_sha": PINNED_RULES,
             "source_sha": expected_head,
