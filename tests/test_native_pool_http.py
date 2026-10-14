@@ -81,9 +81,12 @@ def test_exact_claim_real_isolated_api_and_independent_readback(tmp_path, monkey
             assert "lease_token" not in readback
             assert api.claim_exact("native-builder", task_id, "native-http-replay")[
                 "claimed"] is False
-        # The default client must not bypass real HTTP auth.
-        token.write_text("incorrect-but-valid-token\n", encoding="ascii")
-        with LocalWorkerApi(port=18097, token_file=token, client=app) as unauth:
+        # A distinct wrong client token must not rotate the server's secret.
+        bad_token = tmp_path / "incorrect-client-token"
+        bad_token.write_text("incorrect-but-valid-token\n", encoding="ascii")
+        bad_token.chmod(0o600)
+        assert token.read_text(encoding="ascii").strip() == "isolated-worker-token-value"
+        with LocalWorkerApi(port=18097, token_file=bad_token, client=app) as unauth:
             with pytest.raises(NativeExecutorBlocked, match="worker_auth_rejected"):
                 unauth.get_task(task_id)
         assert app.get(f"/v1/tasks/{task_id}", headers=headers).json()["state"] == "completed"
