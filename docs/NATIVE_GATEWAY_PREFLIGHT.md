@@ -35,3 +35,19 @@ Gateway governado, com recibo do próprio comando validado depois.
 Também permanece pendente o contrato de remoto/origem do worktree do
 `NativeOneShotExecutor`; não remover o bloqueio de remotos até atestar
 origem e comandos autorizados, sem bypass.
+
+## Canário integrado de fila e código (CI hospedado)
+
+O mesmo teste com o Gateway fixado executa também uma **tarefa
+sintética descartável**, atravessando a API FastAPI real (ASGI in-process),
+SQLite, claim exato, Builder que cria um commit de correção e Validator em
+clone e sessão separados. O teste confirma falha original, mudança funcional,
+estado persistido por GET independente, 401 sem token, controle de SHA
+divergente, replay sem duplicidade e bloqueio de claim após concluir.
+
+Resultado explícito: `NATIVE_CHAIN_ISOLATED_PASSED`, com
+`native_chain_real_product_issue=false` e
+`native_chain_external_pr_created=false`. Essa prova demonstra o encadeamento
+entre as bibliotecas, **não** uma tarefa real/PR/merge/DEV e não é o aceite
+do primeiro ciclo autônomo. As alterações do fixture em CI não autorizam
+executar adaptadores por subprocesso fora do Command Gateway no Desktop.
