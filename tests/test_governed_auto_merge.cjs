@@ -135,6 +135,7 @@ function harness(options={}) {
   let calls=0;
   let mergeArgs;
   let getCalls=0;
+  let serverMerged=false;
   let logs=[];
   const latestSha=options.latestSha || SHA;
   const mergeSha="c".repeat(40);
@@ -156,12 +157,16 @@ function harness(options={}) {
         merge:async args=>{
           calls++;mergeArgs=args;
           if (options.deny) throw {status:405};
+          serverMerged = true;
           return {data:{merged:true,sha:mergeSha}};
         }
       },
       repos:{
         getBranch:async()=>({data:{
-          ...data.branch,commit:{sha:options.branchHead || BASE}
+          ...data.branch,commit:{
+            sha:options.branchHead ||
+              (serverMerged && !options.stalePostReadback ? mergeSha : BASE)
+          }
         }}),
         compareCommitsWithBasehead:async()=>({data:data.compare})
       },
@@ -209,4 +214,12 @@ test("integration: repository/main changed -> no merge",async()=>{
   await run(x.github,x.context,x.core);
   assert.equal(x.mergeCalls(),0);
   assert.equal(x.logs.some(s=>s.includes("branch_protection_not_confirmed")),true);
+});
+
+test("integration: server merge without independent main readback blocks success",async()=>{
+  const x=harness({stalePostReadback:true});
+  await run(x.github,x.context,x.core);
+  assert.equal(x.mergeCalls(),1);
+  assert.equal(x.logs.some(s=>s.includes("independent_main_readback_failed")),true);
+  assert.equal(x.logs.some(s=>s.startsWith("GOVERNED_MERGE_VERIFIED:")),false);
 });
