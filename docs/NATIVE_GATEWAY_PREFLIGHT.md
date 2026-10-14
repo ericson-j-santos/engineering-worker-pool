@@ -51,3 +51,25 @@ Resultado explícito: `NATIVE_CHAIN_ISOLATED_PASSED`, com
 entre as bibliotecas, **não** uma tarefa real/PR/merge/DEV e não é o aceite
 do primeiro ciclo autônomo. As alterações do fixture em CI não autorizam
 executar adaptadores por subprocesso fora do Command Gateway no Desktop.
+
+## Execução de comandos pelo Gateway, com recibo independente
+
+O módulo \`app/native_gateway_commands.py\` integra o \`NativeOneShotExecutor\`
+ao Command Gateway aprovado, sem interpretar comando da fila.
+\`GovernedCommand\` declara apenas chaves locais/por papel com argv fixo.
+Scripts Python de produto exigem SHA-256 fixado fora da tarefa.
+Operações Git são restritas a add/commit/status previstos.
+Cada chamada revalida sessão, política/código do Gateway, HEAD e o evento
+\`run\` emitido pelo próprio Gateway, confrontando estado antes/depois.
+Falhas, scripts alterados, comandos arbitrários, papéis diferentes e
+recibos divergentes bloqueiam o processamento.
+
+O CI usa um fixture Git descartável e agora passa a modificação, stage,
+commit e verificação do Builder/Validator pelas funções reais de
+\`command_gateway.execute\`. O efeito fica isolado no runner hospedado;
+a fila, a Issue e o runtime do ReqSys permanecem intocados.
+
+**Não libera produção:** um handler real precisa ser aprovado e pinado
+separadamente no repositório de produto; ainda faltam sessão física,
+Worker Pool instalado e tarefas com capacidade validada, ACL NTFS e
+readback E2E do ReqSys.
