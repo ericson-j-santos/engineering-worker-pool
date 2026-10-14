@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 import threading
 from datetime import UTC, datetime, timedelta
@@ -279,6 +280,37 @@ def test_independent_diff_detects_omitted_delete_and_rename(tmp_path, operation)
     with pytest.raises(NativeExecutorBlocked, match="builder_diff_mismatch"):
         executor.run(manifest, role="builder", worker_id="fixture-builder")
     assert api.calls[-1] == ("fail", "builder_diff_mismatch")
+
+
+@pytest.mark.parametrize("field,value", [
+    ("session_id", "different-session"),
+    ("correlation_id", "different-correlation"),
+    ("gateway_verified", False),
+    ("gateway_verified", 1),
+    ("replayed", True),
+    ("evidence_sha256", "f" * 63),
+    ("changed_paths", []),
+    ("changed_paths", ["outside.txt"]),
+    ("changed_paths", ["src/task.py", "src/unknown.py"]),
+    ("changed_paths", ["src/task.py", "src/task.py"]),
+    ("invoked_commands", []),
+    ("invoked_commands", ["fixture.validate"]),
+])
+def test_replay_rejects_tampered_receipt_without_claim(tmp_path, field, value):
+    executor, manifest, api, adapter, _root = setup(tmp_path)
+    built = executor.run(manifest, role="builder", worker_id="fixture-builder")
+    assert built["result"] == "NATIVE_ONE_SHOT_BUILT"
+
+    receipt_path = executor.receipts.paths(TASK, "builder")[1]
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt[field] = value
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    calls_before = list(api.calls)
+    with pytest.raises(NativeExecutorBlocked, match="receipt_mismatch"):
+        executor.run(manifest, role="builder", worker_id="fixture-builder")
+    assert api.calls == calls_before
+    assert adapter.calls == ["build"]
 
 
 def test_replay_receipt_cannot_move_to_distinct_checkout(tmp_path):

@@ -346,12 +346,32 @@ class NativeOneShotExecutor:
                           "NATIVE_ONE_SHOT_BUILT" if role == "builder"
                           else "NATIVE_ONE_SHOT_VALIDATED")
                       and previous.get("workspace_id") == hashlib.sha256(
-                          str(self.workspace.root).encode()).hexdigest(),
+                          str(self.workspace.root).encode()).hexdigest()
+                      and previous.get("session_id") == self.boundary.session_id
+                      and previous.get("correlation_id") == self.boundary.correlation_id
+                      and previous.get("gateway_verified") is True
+                      and previous.get("replayed") is False
+                      and type(previous.get("evidence_sha256")) is str
+                      and bool(SHA256.fullmatch(previous["evidence_sha256"]))
+                      and type(previous.get("changed_paths")) is list
+                      and all(type(path) is str for path in previous["changed_paths"])
+                      and set(previous["changed_paths"]).issubset(descriptor.allowed_paths)
+                      and len(previous["changed_paths"]) == len(
+                          set(previous["changed_paths"]))
+                      and type(previous.get("invoked_commands")) is list
+                      and all(type(key) is str for key in previous["invoked_commands"])
+                      and set(previous["invoked_commands"]) == set(
+                          descriptor.commands_for(role))
+                      and len(previous["invoked_commands"]) == len(
+                          descriptor.commands_for(role)),
                       "receipt_mismatch")
                 produced = previous.get("produced_sha")
                 _need(type(produced) is str and bool(SHA40.fullmatch(produced)),
                       "receipt_produced_sha")
                 self.workspace.validate_replay(produced)
+                _need(tuple(previous["changed_paths"])
+                      == self.workspace.changed_paths(manifest.base_sha, produced),
+                      "receipt_mismatch")
                 return {**previous, "replayed": True}
 
             # All local identity, path and content drift checks happen before
