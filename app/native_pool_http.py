@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import stat
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -153,7 +154,22 @@ class LocalWorkerApi:
               and lease.get("task_id") == task_id
               and lease.get("worker_id") == worker_id
               and type(lease.get("lease_token")) is str
-              and 16 <= len(lease["lease_token"]) <= 128,
+              and 16 <= len(lease["lease_token"]) <= 128
+              and type(lease.get("role")) is str
+              and lease["role"] in {"builder", "validator"}
+              and task.get("state") in {"leased", "validating"},
+              "worker_claim_invalid")
+        # A claimed lease must be time-bound and explicitly UTC-offset-aware.
+        # Never trust the transport's claimed=true without an expiry contract.
+        expires = lease.get("lease_expires_at")
+        _need(type(expires) is str and 20 <= len(expires) <= 48,
+              "worker_claim_invalid")
+        try:
+            deadline = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+        except ValueError:
+            raise NativeExecutorBlocked("worker_claim_invalid") from None
+        _need(deadline.tzinfo is not None and deadline.utcoffset() is not None
+              and deadline.astimezone(UTC) > datetime.now(UTC),
               "worker_claim_invalid")
         self._task(task, task_id)
         return reply

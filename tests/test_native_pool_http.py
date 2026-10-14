@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -179,5 +180,51 @@ def test_reject_unbounded_or_wrong_claim_without_claim_replay(tmp_path):
                 api.claim_exact("native-builder", "cwp-" + "1" * 24,
                                 "native-http-reject")
         assert len(calls) == 1
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("lease_patch,task_patch", [
+    ({"role": "operator"}, {}),
+    ({"role": None}, {}),
+    ({"lease_expires_at": None}, {}),
+    ({"lease_expires_at": "not-an-iso-date"}, {}),
+    ({"lease_expires_at": "2000-01-01T00:00:00+00:00"}, {}),
+    ({"lease_expires_at": "2999-01-01T00:00:00"}, {}),
+    ({}, {"state": "completed"}),
+])
+def test_claim_with_unverified_role_or_expiry_never_becomes_eligible(
+    tmp_path, lease_patch, task_patch,
+):
+    task_id = "cwp-" + "1" * 24
+    future = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
+    lease = {
+        "task_id": task_id, "worker_id": "native-builder",
+        "role": "builder", "lease_token": "isolated-lease-token-123",
+        "lease_expires_at": future,
+    }
+    task = {
+        "task_id": task_id, "state": "leased",
+        "leased_by": "native-builder",
+    }
+    lease.update(lease_patch)
+    task.update(task_patch)
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={
+            "claimed": True, "task": task, "lease": lease,
+        }, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler),
+                          trust_env=False, follow_redirects=False)
+    try:
+        with LocalWorkerApi(port=8097, token_file=token_file(tmp_path),
+                            client=client) as api:
+            with pytest.raises(NativeExecutorBlocked, match="worker_claim_invalid"):
+                api.claim_exact("native-builder", task_id, "native-lease-negative")
+        assert len(calls) == 1
+        assert calls[0].url.path == "/v1/claims/exact"
     finally:
         client.close()
