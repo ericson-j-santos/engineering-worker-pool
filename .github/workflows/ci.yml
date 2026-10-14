@@ -53,7 +53,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Compile
-        run: python -m compileall -q app tests scripts/local_worker_e2e.py scripts/structured_worker_e2e.py scripts/structured_acceptance.py
+        run: python -m compileall -q app tests scripts/local_worker_e2e.py scripts/structured_worker_e2e.py scripts/structured_acceptance.py scripts/native_gateway_preflight_e2e.py
       - name: Test
         run: python -m pytest -q
 
@@ -65,6 +65,20 @@ jobs:
           ref: 6cd74b32a24810cae7213744b697564e00be8b25
           path: _rules
           persist-credentials: false
+
+      - name: Checkout pinned current Gateway rules for native session E2E
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/checkout@v4
+        with:
+          repository: ericson-j-santos/chatgpt-operational-rules
+          ref: ddd09dc616181c0aaf46d33a194e9b00a6989332
+          path: _rules_native
+          persist-credentials: false
+
+      - name: Test native boundary against actual pinned Command Gateway
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        timeout-minutes: 2
+        run: python scripts/native_gateway_preflight_e2e.py --rules-scripts _rules_native/scripts
 
       - name: Start local-only coding model
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
