@@ -66,8 +66,8 @@ def exercise_isolated_native_chain(
     from app.native_pool_http import LocalWorkerApi
 
     source_path = "src/calculator.py"
-    repaired_source = "def add(a, b):\\n    return a + b\\n"
-    original_source = "def add(a, b):\\n    return a - b\\n"
+    repaired_source = "def add(a, b):\n    return a + b\n"
+    original_source = "def add(a, b):\n    return a - b\n"
     expected_worker_sha = os.environ.get("EXPECTED_SHA", "")
     if (os.environ.get("GITHUB_ACTIONS") != "true"
             or os.environ.get("GITHUB_REPOSITORY")
