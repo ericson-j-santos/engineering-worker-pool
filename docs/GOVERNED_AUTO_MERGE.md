@@ -36,3 +36,11 @@ classificar o auto-merge como `IMPLEMENTED_NOT_E2E_PROVEN`.
 
 Não autoriza automaticamente deploy, host, acesso a credenciais, execução de
 trabalhadores, claim de task, alteração de banco nem ambiente HML/PROD.
+
+**Identidade estável dos workflows:** GitHub pode sobrescrever o campo
+`workflow_run.name` com o `run-name` dinâmico no evento `completed`.
+O gate compara `workflow_id` e `path` oficiais:
+CI 365494718 (`.github/workflows/ci.yml`) e canário 383149508
+(`.github/workflows/candidate-canary.yml`), ambos com SHA, branch e
+repositório de origem exatos. O teste preventivo usa nomes dinâmicos reais
+e rejeita IDs/caminhos, branch ou repositório divergentes.

@@ -7,12 +7,16 @@ const SHA = "a".repeat(40);
 const BASE = "b".repeat(40);
 const REPO = "ericson-j-santos/engineering-worker-pool";
 const MARKER = "<!-- engineering-worker-pool:governed-automerge-v1 -->";
+const CI_ID = 365494718;
+const CANARY_ID = 383149508;
 
 function fixture(overrides={}) {
   const source = {
     repository: REPO,
     trigger: {
-      name: "CI", event: "pull_request", status: "completed",
+      name: "Worker Pool CI · pull_request · 38648656918",
+      workflow_id: CI_ID, path: ".github/workflows/ci.yml",
+      event: "pull_request", status: "completed",
       conclusion: "success", head_sha: SHA, head_branch: "governed/real-fix-20261014",
       head_repository: { full_name: REPO }
     },
@@ -31,8 +35,14 @@ function fixture(overrides={}) {
       {name:"candidate-canary",head_sha:SHA,status:"completed",conclusion:"success",app:{id:15368}}
     ],
     workflowRuns: [
-      {name:"CI", event:"pull_request",status:"completed",conclusion:"success",head_sha:SHA},
-      {name:"Worker Pool Candidate Image Canary",event:"pull_request",status:"completed",conclusion:"success",head_sha:SHA}
+      {name:"Worker Pool CI · pull_request · 38648656918",
+       workflow_id:CI_ID,path:".github/workflows/ci.yml",
+       head_branch:"governed/real-fix-20261014",head_repository:{full_name:REPO},
+       event:"pull_request",status:"completed",conclusion:"success",head_sha:SHA},
+      {name:"Candidate canary · pull_request · 38648657111",
+       workflow_id:CANARY_ID,path:".github/workflows/candidate-canary.yml",
+       head_branch:"governed/real-fix-20261014",head_repository:{full_name:REPO},
+       event:"pull_request",status:"completed",conclusion:"success",head_sha:SHA}
     ],
     compare: {status:"ahead",ahead_by:1,behind_by:0},
     branch: {
@@ -60,11 +70,30 @@ test("genuine owner-scoped PR with two real gates may merge", () => {
   assert.equal(x.canaryRequired, true);
 });
 
+test("dynamic workflow run-name cannot replace immutable workflow ID and path", () => {
+  const data = fixture();
+  data.trigger.name = "custom run-name · 555";
+  data.workflowRuns[0].name = "CI renamed by run-name";
+  assert.equal(decide(data).allowed, true);
+  blocked("ci_not_fully_verified", {
+    workflowRuns: fixture().workflowRuns.map(r =>
+      r.workflow_id === CI_ID ? {...r, path:".github/workflows/other.yml"} : r),
+  });
+  blocked("ci_not_fully_verified", {
+    workflowRuns: fixture().workflowRuns.map(r =>
+      r.workflow_id === CI_ID ? {...r, head_branch:"different-task"} : r),
+  });
+  blocked("canary_not_fully_verified", {
+    workflowRuns: fixture().workflowRuns.map(r =>
+      r.workflow_id === CANARY_ID ? {...r, head_repository:{full_name:"fork/repo"}} : r),
+  });
+});
+
 test("docs-only passes without nonexistent path-scoped canary", () => {
   const data = fixture({
     files:[{filename:"docs/CHANGELOG_NATIVE.md",status:"added"}],
     checks:fixture().checks.filter(c=>c.name==="test"),
-    workflowRuns:fixture().workflowRuns.filter(r=>r.name==="CI")
+    workflowRuns:fixture().workflowRuns.filter(r=>r.workflow_id===CI_ID)
   });
   assert.equal(canaryRequired(data.files), false);
   assert.equal(decide(data).allowed, true);
@@ -73,7 +102,8 @@ test("docs-only passes without nonexistent path-scoped canary", () => {
 test("repo, event, workflow, fork, author, branch and marker are strict", () => {
   blocked("repository_mismatch", {repository:"different/repo"});
   blocked("trigger_untrusted", {trigger:{...fixture().trigger,event:"push"}});
-  blocked("trigger_untrusted", {trigger:{...fixture().trigger,name:"Unknown Workflow"}});
+  blocked("trigger_untrusted", {trigger:{...fixture().trigger,workflow_id:999}});
+  blocked("trigger_untrusted", {trigger:{...fixture().trigger,path:".github/workflows/malicious.yml"}});
   blocked("trigger_untrusted", {trigger:{...fixture().trigger,conclusion:"failure"}});
   blocked("pr_not_admitted", {trigger:{...fixture().trigger,head_sha:BASE}});
   blocked("trigger_untrusted", {trigger:{...fixture().trigger,head_repository:{full_name:"some/fork"}}});
@@ -114,10 +144,10 @@ test("missing, stale, failed and spoofed required CI is never accepted", () => {
   blocked("ci_not_fully_verified", {checks:fixture().checks.map(c=>c.name==="test"?{...c,conclusion:"skipped"}:c)});
   blocked("ci_not_fully_verified", {checks:fixture().checks.map(c=>c.name==="test"?{...c,app:{id:123}}:c)});
   blocked("ci_not_fully_verified", {checks:fixture().checks.map(c=>c.name==="test"?{...c,status:"in_progress"}:c)});
-  blocked("ci_not_fully_verified", {workflowRuns:fixture().workflowRuns.map(r=>r.name==="CI"?{...r,event:"push"}:r)});
-  blocked("ci_not_fully_verified", {workflowRuns:fixture().workflowRuns.map(r=>r.name==="CI"?{...r,head_sha:BASE}:r)});
+  blocked("ci_not_fully_verified", {workflowRuns:fixture().workflowRuns.map(r=>r.workflow_id===CI_ID?{...r,event:"push"}:r)});
+  blocked("ci_not_fully_verified", {workflowRuns:fixture().workflowRuns.map(r=>r.workflow_id===CI_ID?{...r,head_sha:BASE}:r)});
   blocked("canary_not_fully_verified", {checks:fixture().checks.filter(c=>c.name==="test")});
-  blocked("canary_not_fully_verified", {workflowRuns:fixture().workflowRuns.filter(r=>r.name==="CI")});
+  blocked("canary_not_fully_verified", {workflowRuns:fixture().workflowRuns.filter(r=>r.workflow_id===CI_ID)});
 });
 
 test("base drift, unprotected main, mismatched GitHub App, reviews", () => {

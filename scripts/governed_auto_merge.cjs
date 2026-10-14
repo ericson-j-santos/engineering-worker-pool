@@ -10,8 +10,13 @@ const REPOSITORY = "ericson-j-santos/engineering-worker-pool";
 const OWNER = "ericson-j-santos";
 const ACTIONS_APP_ID = 15368;
 const MARKER = "<!-- engineering-worker-pool:governed-automerge-v1 -->";
-const CI_WORKFLOW = "CI";
-const CANARY_WORKFLOW = "Worker Pool Candidate Image Canary";
+// Completed workflow_run.name may be overridden by dynamic run-name.
+const CI_WORKFLOW = { id: 365494718, path: ".github/workflows/ci.yml" };
+const CANARY_WORKFLOW = { id: 383149508, path: ".github/workflows/candidate-canary.yml" };
+function trustedWorkflow(run) {
+  return [CI_WORKFLOW, CANARY_WORKFLOW].some(w =>
+    run?.workflow_id === w.id && run?.path === w.path);
+}
 const ACTIVE = new Set(["queued", "pending", "in_progress", "requested", "waiting"]);
 const ALLOWED_PREFIX = /^(?:governed\/)[a-z0-9][a-z0-9._-]{2,150}$/;
 const SHA = /^[0-9a-f]{40}$/;
@@ -39,9 +44,12 @@ function currentGreenCheck(checks, name, sha) {
     found[0].app && found[0].app.id === ACTIONS_APP_ID;
 }
 
-function currentGreenRun(runs, name, sha) {
-  return runs.some(r => r.name === name &&
+function currentGreenRun(runs, identity, sha, branch) {
+  return runs.some(r => r.workflow_id === identity.id &&
+    r.path === identity.path &&
     r.event === "pull_request" && r.head_sha === sha &&
+    r.head_branch === branch &&
+    r.head_repository?.full_name === REPOSITORY &&
     r.status === "completed" && r.conclusion === "success");
 }
 
@@ -56,7 +64,7 @@ function decide({
   if (repository !== REPOSITORY) return block("repository_mismatch");
   if (!trigger || trigger.event !== "pull_request" ||
       trigger.status !== "completed" || trigger.conclusion !== "success" ||
-      ![CI_WORKFLOW, CANARY_WORKFLOW].includes(trigger.name) ||
+      !trustedWorkflow(trigger) ||
       trigger.head_repository?.full_name !== REPOSITORY ||
       !SHA.test(trigger.head_sha || "")) return block("trigger_untrusted");
   if (!pr || pr.state !== "open" || pr.draft !== false ||
@@ -113,12 +121,14 @@ function decide({
       checks.some(c => c.head_sha === trigger.head_sha &&
         (ACTIVE.has(c.status) || c.conclusion !== "success")) ||
       !currentGreenCheck(checks, "test", trigger.head_sha) ||
-      !currentGreenRun(workflowRuns, CI_WORKFLOW, trigger.head_sha))
+      !currentGreenRun(workflowRuns, CI_WORKFLOW, trigger.head_sha,
+                       trigger.head_branch))
     return block("ci_not_fully_verified");
   const requiredCanary = canaryRequired(files);
   if (requiredCanary &&
       (!currentGreenCheck(checks, "candidate-canary", trigger.head_sha) ||
-       !currentGreenRun(workflowRuns, CANARY_WORKFLOW, trigger.head_sha)))
+       !currentGreenRun(workflowRuns, CANARY_WORKFLOW, trigger.head_sha,
+                        trigger.head_branch)))
     return block("canary_not_fully_verified");
 
   return {
@@ -135,7 +145,7 @@ async function run(github, context, core) {
   const repo = context.repo.repo;
   if (!trigger || context.repo.owner + "/" + repo !== REPOSITORY ||
       trigger.event !== "pull_request" || trigger.conclusion !== "success" ||
-      ![CI_WORKFLOW, CANARY_WORKFLOW].includes(trigger.name)) {
+      !trustedWorkflow(trigger)) {
     core.info("GOVERNED_MERGE_BLOCKED: event_out_of_scope");
     return;
   }
