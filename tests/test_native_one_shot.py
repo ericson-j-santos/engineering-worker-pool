@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import subprocess
 import threading
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from app.native_one_shot import (
     NativeOneShotExecutor,
     ReceiptStore,
 )
+from app.store import WorkerPoolStore
 
 TASK = "cwp-" + "1" * 24
 REPO = "ericson-j-santos/reqsys-v2-enterprise-real"
@@ -51,9 +53,14 @@ class Api:
 
     def claim_exact(self, worker_id, task_id, correlation_id):
         self.calls.append(("claim", worker_id, task_id))
-        return {"claimed": True, "lease": {"worker_id": worker_id,
+        claimed = dict(self.task)
+        claimed["state"] = "validating" if "validator" in worker_id else "leased"
+        claimed["leased_by"] = worker_id
+        return {"claimed": True, "task": claimed, "lease": {"task_id": task_id,
+                "worker_id": worker_id,
                 "role": "validator" if "validator" in worker_id else "builder",
-                "lease_token": "fixture-lease-token"}}
+                "lease_token": "fixture-lease-token",
+                "expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat()}}
 
     def start(self, task_id, worker_id, lease_token, correlation_id):
         self.calls.append(("start", worker_id))
@@ -137,15 +144,17 @@ def test_builder_then_validator_and_replay(tmp_path):
 
     # Validator receives an independently materialized checkout at produced_sha.
     produced = built["produced_sha"]
+    validator_root = tmp_path / "validator-repo"
+    git(root, "worktree", "add", "--detach", str(validator_root), produced)
     manifest = {**manifest, "workspace_sha": produced,
                 "before_sha256": {"src/task.py": hashlib.sha256(
-                    (root / "src" / "task.py").read_bytes()).hexdigest()}}
+                    (validator_root / "src" / "task.py").read_bytes()).hexdigest()}}
     api.task.update(produced_sha=produced, state="validating")
     validator = Adapter()
     manifest["adapter_contract_sha256"] = validator.descriptor.contract_sha256
     edge = ExecutionBoundary("native-test", "native-one-shot-test", produced, True, True)
     validate_executor = NativeOneShotExecutor(
-        api=api, workspace=LocalWorkspace(root), receipts=executor.receipts,
+        api=api, workspace=LocalWorkspace(validator_root), receipts=executor.receipts,
         adapters={validator.descriptor.adapter_id: validator},
         command_registries={validator.descriptor.adapter_id: {
             "fixture.build": lambda: None, "fixture.validate": lambda: "valid"}},
@@ -219,12 +228,60 @@ def test_role_cannot_invoke_other_roles_command(tmp_path):
     assert api.calls[-1] == ("fail", "command_not_allowlisted")
 
 
+def test_omitted_change_untracked_and_missing_required_command_fail(tmp_path):
+    class Omitted(Adapter):
+        def build(self, context):
+            result = super().build(context)
+            return AdapterResult(result.produced_sha, (), result.invoked_commands,
+                                 result.evidence_sha256)
+
+    class Untracked(Adapter):
+        def build(self, context):
+            result = super().build(context)
+            (context.root / "rogue.txt").write_text("untracked\n", encoding="utf-8")
+            return result
+
+    class MissingCommand(Adapter):
+        def build(self, context):
+            path = context.root / "src" / "task.py"
+            path.write_text("VALUE = 2\n", encoding="utf-8")
+            git(context.root, "add", ".")
+            git(context.root, "commit", "-m", "without required command")
+            return AdapterResult(git(context.root, "rev-parse", "HEAD"),
+                                 ("src/task.py",), (), "a" * 64)
+
+    for name, adapter, expected in (
+        ("omitted", Omitted(), "adapter_result_paths"),
+        ("untracked", Untracked(), "builder_workspace_dirty"),
+        ("missing-command", MissingCommand(), "required_command_missing"),
+    ):
+        executor, manifest, api, _adapter, _root = setup(tmp_path / name, adapter=adapter)
+        with pytest.raises(NativeExecutorBlocked, match=expected):
+            executor.run(manifest, role="builder", worker_id="fixture-builder")
+        assert api.calls[-1] == ("fail", expected)
+
+
+def test_claim_snapshot_race_blocks_before_adapter(tmp_path):
+    executor, manifest, api, adapter, _root = setup(tmp_path)
+    original = api.claim_exact
+
+    def raced_claim(worker_id, task_id, correlation_id):
+        claimed = original(worker_id, task_id, correlation_id)
+        claimed["task"]["base_sha"] = "f" * 40
+        return claimed
+
+    api.claim_exact = raced_claim
+    with pytest.raises(NativeExecutorBlocked, match="claimed_task_drift"):
+        executor.run(manifest, role="builder", worker_id="fixture-builder")
+    assert adapter.calls == []
+
+
 def test_interruption_fails_lease_without_receipt(tmp_path):
     adapter = Adapter(interrupt=True)
     executor, manifest, api, _adapter, _root = setup(tmp_path, adapter=adapter)
-    with pytest.raises(NativeExecutorBlocked, match="fixture_interrupted"):
+    with pytest.raises(NativeExecutorBlocked, match="adapter_failed"):
         executor.run(manifest, role="builder", worker_id="fixture-builder")
-    assert api.calls[-1] == ("fail", "fixture_interrupted")
+    assert api.calls[-1] == ("fail", "adapter_failed")
     assert not executor.receipts.paths(TASK, "builder")[1].exists()
 
 
@@ -264,8 +321,12 @@ def test_task_drift_and_expired_or_invalid_lease_do_not_run_adapter(tmp_path):
     class Expired(Api):
         def claim_exact(self, worker_id, task_id, correlation_id):
             self.calls.append(("claim", worker_id, task_id))
-            return {"claimed": True, "lease": {"worker_id": worker_id,
-                    "role": "builder", "lease_token": "short"}}
+            claimed = {**self.task, "state": "leased"}
+            claimed["leased_by"] = worker_id
+            return {"claimed": True, "task": claimed,
+                    "lease": {"task_id": task_id, "worker_id": worker_id,
+                    "role": "builder", "lease_token": "fixture-lease-token",
+                    "expires_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat()}}
 
     executor2, manifest2, _api2, adapter2, _root2 = setup(
         tmp_path / "expired2")
@@ -274,3 +335,88 @@ def test_task_drift_and_expired_or_invalid_lease_do_not_run_adapter(tmp_path):
     with pytest.raises(NativeExecutorBlocked, match="lease_invalid"):
         executor2.run(manifest2, role="builder", worker_id="fixture-builder")
     assert adapter2.calls == []
+
+
+def test_real_store_builder_validator_transitions_and_replay(tmp_path):
+    root, target, initial = repository(tmp_path)
+    store = WorkerPoolStore(tmp_path / "pool.db", expected_rules_sha="a" * 40)
+    for worker_id, role in (("native-builder", "builder"),
+                            ("native-validator", "validator")):
+        store.register_worker(
+            worker_id=worker_id, host="isolated", role=role, profile="NORMAL",
+            correlation_id=f"corr-{worker_id}", controller_version="test",
+            rules_sha="a" * 40, gateway_ok=True, state_validated=True,
+            worktree_root=str(root))
+    queued, created = store.enqueue_task(
+        repository=REPO, issue_number=1705, request_id="native-integration",
+        correlation_id="corr-enqueue", priority=10, base_sha=initial)
+    assert created is True
+
+    class StoreApi:
+        def get_task(self, task_id):
+            return store.get_task(task_id)
+
+        def claim_exact(self, worker_id, task_id, correlation_id):
+            role = store.get_worker(worker_id)["role"]
+            task, lease = store.claim_task(worker_id=worker_id, role=role,
+                                           correlation_id=correlation_id,
+                                           only_task_id=task_id)
+            return {"claimed": task is not None, "task": task,
+                    "lease": None if lease is None else {
+                        "task_id": lease.task_id, "lease_token": lease.lease_token,
+                        "worker_id": lease.worker_id, "role": lease.role,
+                        "expires_at": lease.lease_expires_at}}
+
+        def start(self, task_id, worker_id, lease_token, correlation_id):
+            store.start_task(task_id=task_id, worker_id=worker_id,
+                             lease_token=lease_token, correlation_id=correlation_id)
+
+        def submit_validation(self, task_id, worker_id, lease_token, produced_sha,
+                              correlation_id):
+            store.submit_for_validation(task_id=task_id, worker_id=worker_id,
+                                        lease_token=lease_token, produced_sha=produced_sha,
+                                        correlation_id=correlation_id)
+
+        def complete(self, task_id, worker_id, lease_token, correlation_id):
+            store.complete_task(task_id=task_id, worker_id=worker_id,
+                                lease_token=lease_token, correlation_id=correlation_id)
+
+        def fail(self, task_id, worker_id, lease_token, correlation_id, reason):
+            store.fail_task(task_id=task_id, worker_id=worker_id,
+                            lease_token=lease_token, correlation_id=correlation_id,
+                            reason=reason)
+
+    adapter = Adapter()
+    manifest = {"schema_version": 1, "task_id": queued["task_id"],
+                "repository": REPO, "base_sha": initial, "workspace_sha": initial,
+                "adapter_id": adapter.descriptor.adapter_id,
+                "adapter_contract_sha256": adapter.descriptor.contract_sha256,
+                "before_sha256": {"src/task.py": hashlib.sha256(
+                    target.read_bytes()).hexdigest()}}
+    receipts = ReceiptStore(tmp_path / "receipts")
+    commands = {"fixture.build": lambda: None, "fixture.validate": lambda: None}
+    builder = NativeOneShotExecutor(
+        api=StoreApi(), workspace=LocalWorkspace(root), receipts=receipts,
+        adapters={adapter.descriptor.adapter_id: adapter},
+        command_registries={adapter.descriptor.adapter_id: commands},
+        boundary=ExecutionBoundary("native-test", "native-store-builder", initial,
+                                   True, True))
+    built = builder.run(manifest, role="builder", worker_id="native-builder")
+    assert store.get_task(queued["task_id"])["state"] == "validating"
+    assert builder.run(manifest, role="builder", worker_id="native-builder")["replayed"]
+
+    validator_root = tmp_path / "validator-store"
+    git(root, "worktree", "add", "--detach", str(validator_root), built["produced_sha"])
+    validator_manifest = {**manifest, "workspace_sha": built["produced_sha"],
+                          "before_sha256": {"src/task.py": hashlib.sha256(
+                              (validator_root / "src" / "task.py").read_bytes()).hexdigest()}}
+    validator_adapter = Adapter()
+    validator = NativeOneShotExecutor(
+        api=StoreApi(), workspace=LocalWorkspace(validator_root), receipts=receipts,
+        adapters={validator_adapter.descriptor.adapter_id: validator_adapter},
+        command_registries={validator_adapter.descriptor.adapter_id: commands},
+        boundary=ExecutionBoundary("native-test", "native-store-validator",
+                                   built["produced_sha"], True, True))
+    validator.run(validator_manifest, role="validator", worker_id="native-validator")
+    final = store.get_task(queued["task_id"])
+    assert final["state"] == "completed" and final["lease_token"] is None

@@ -11,8 +11,10 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
@@ -201,19 +203,25 @@ class LocalWorkspace:
     def head(self) -> str:
         return self._git("rev-parse", "HEAD").lower()
 
+    def status(self) -> str:
+        return self._git("status", "--porcelain", "--untracked-files=all")
+
+    def changed_paths(self, base_sha: str, produced_sha: str) -> tuple[str, ...]:
+        output = self._git("diff", "--name-only", "--diff-filter=ACMRTUXB",
+                           base_sha, produced_sha)
+        return tuple(sorted(line for line in output.splitlines() if line))
+
     def validate_replay(self, produced_sha: str) -> None:
         _need(self.root.is_dir() and not self.root.is_symlink(), "workspace_root")
         _need(self._git("remote") == "", "workspace_remote_forbidden")
-        _need(self._git("status", "--porcelain", "--untracked-files=all") == "",
-              "workspace_dirty")
+        _need(self.status() == "", "workspace_dirty")
         _need(self.head() == produced_sha, "replay_head_drift")
 
     def validate_before_claim(self, manifest: TaskManifest,
                               descriptor: AdapterDescriptor) -> None:
         _need(self.root.is_dir() and not self.root.is_symlink(), "workspace_root")
         _need(self._git("remote") == "", "workspace_remote_forbidden")
-        _need(self._git("status", "--porcelain", "--untracked-files=all") == "",
-              "workspace_dirty")
+        _need(self.status() == "", "workspace_dirty")
         _need(self.head() == manifest.workspace_sha, "workspace_head_drift")
         _need(set(manifest.before_sha256) == set(descriptor.allowed_paths),
               "manifest_adapter_path_mismatch")
@@ -262,10 +270,18 @@ class ReceiptStore:
 
     @staticmethod
     def write(path: Path, value: dict[str, Any]) -> None:
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n",
-                             encoding="utf-8")
-        temporary.replace(path)
+        _need(not path.exists() and not path.is_symlink(), "receipt_exists")
+        descriptor, name = tempfile.mkstemp(prefix=f".{path.stem}-", suffix=".tmp",
+                                            dir=path.parent)
+        temporary = Path(name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(json.dumps(value, sort_keys=True, indent=2) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 class NativeOneShotExecutor:
@@ -310,9 +326,19 @@ class NativeOneShotExecutor:
         lock, receipt_path = self.receipts.acquire(manifest.task_id, role)
         try:
             if receipt_path.exists():
+                _need(not receipt_path.is_symlink() and receipt_path.is_file(),
+                      "receipt_invalid")
                 previous = json.loads(receipt_path.read_text(encoding="utf-8"))
-                _need(previous.get("manifest_sha256") == _digest(raw_manifest)
-                      and previous.get("role") == role, "receipt_mismatch")
+                required = {"schema_version", "result", "task_id", "role", "worker_id",
+                            "manifest_sha256", "adapter_contract_sha256", "produced_sha",
+                            "evidence_sha256", "changed_paths", "invoked_commands",
+                            "session_id", "correlation_id", "gateway_verified",
+                            "workspace_id", "replayed"}
+                _need(set(previous) == required
+                      and previous.get("schema_version") == 1
+                      and previous.get("manifest_sha256") == _digest(raw_manifest)
+                      and previous.get("role") == role
+                      and previous.get("worker_id") == worker_id, "receipt_mismatch")
                 produced = previous.get("produced_sha")
                 _need(type(produced) is str and bool(SHA40.fullmatch(produced)),
                       "receipt_produced_sha")
@@ -322,6 +348,13 @@ class NativeOneShotExecutor:
             # All local identity, path and content drift checks happen before
             # the first API method, including get_task and claim_exact.
             self.workspace.validate_before_claim(manifest, descriptor)
+            if role == "validator":
+                builder_receipt = self.receipts.paths(manifest.task_id, "builder")[1]
+                if builder_receipt.exists():
+                    prior = json.loads(builder_receipt.read_text(encoding="utf-8"))
+                    current_id = hashlib.sha256(str(self.workspace.root).encode()).hexdigest()
+                    _need(prior.get("workspace_id") != current_id,
+                          "validator_workspace_not_distinct")
             context = AdapterContext(self.workspace.root, manifest, descriptor,
                                      self.command_registries.get(manifest.adapter_id, {}), role)
 
@@ -333,11 +366,29 @@ class NativeOneShotExecutor:
             claim = self.api.claim_exact(worker_id, manifest.task_id,
                                          self.boundary.correlation_id)
             _need(claim.get("claimed") is True, "claim_unavailable")
+            claimed_task = claim.get("task") or {}
             lease = claim.get("lease") or {}
             token = lease.get("lease_token")
+            expires_at = lease.get("expires_at")
+            try:
+                expires = datetime.fromisoformat(str(expires_at))
+            except ValueError:
+                expires = datetime.min.replace(tzinfo=UTC)
             _need(type(token) is str and 16 <= len(token) <= 128
+                  and lease.get("task_id") == manifest.task_id
                   and lease.get("worker_id") == worker_id
-                  and lease.get("role") == role, "lease_invalid")
+                  and lease.get("role") == role
+                  and expires.tzinfo is not None and expires > datetime.now(UTC),
+                  "lease_invalid")
+            if not (claimed_task.get("task_id") == manifest.task_id
+                    and claimed_task.get("repository") == manifest.repository
+                    and claimed_task.get("base_sha") == manifest.base_sha
+                    and claimed_task.get("state") == (
+                        "leased" if role == "builder" else "validating")
+                    and claimed_task.get("leased_by") == worker_id):
+                self.api.fail(manifest.task_id, worker_id, token,
+                              self.boundary.correlation_id, "claimed_task_drift")
+                raise NativeExecutorBlocked("claimed_task_drift")
             try:
                 if role == "builder":
                     self.api.start(manifest.task_id, worker_id, token,
@@ -346,27 +397,46 @@ class NativeOneShotExecutor:
                     self._validate_result(result, descriptor, context, role)
                     _need(self.workspace.head() == result.produced_sha,
                           "builder_produced_sha_drift")
+                    _need(self.workspace.status() == "", "builder_workspace_dirty")
+                    _need(self.workspace.changed_paths(manifest.base_sha, result.produced_sha)
+                          == result.changed_paths, "builder_diff_mismatch")
+                    _need(set(context.invoked) == set(descriptor.commands_for(role)),
+                          "required_command_missing")
                     self.api.submit_validation(manifest.task_id, worker_id, token,
                                                result.produced_sha,
                                                self.boundary.correlation_id)
                 else:
-                    produced = task.get("produced_sha")
+                    produced = claimed_task.get("produced_sha")
                     _need(type(produced) is str and bool(SHA40.fullmatch(produced)),
                           "validation_sha_missing")
                     _need(manifest.workspace_sha == produced, "validator_workspace_sha_drift")
+                    before_head, before_status = self.workspace.head(), self.workspace.status()
                     result = adapter.validate(context, produced)
                     self._validate_result(result, descriptor, context, role)
                     _need(result.produced_sha == produced
-                          and self.workspace.head() == produced,
+                          and self.workspace.head() == before_head == produced
+                          and self.workspace.status() == before_status == "",
                           "validator_sha_drift")
+                    _need(set(context.invoked) == set(descriptor.commands_for(role)),
+                          "required_command_missing")
                     self.api.complete(manifest.task_id, worker_id, token,
                                       self.boundary.correlation_id)
             except Exception as exc:
-                reason = exc.args[0] if isinstance(exc, NativeExecutorBlocked) else "adapter_failed"
+                allowed = {"adapter_result_sha", "adapter_result_paths",
+                           "adapter_result_commands", "adapter_result_evidence",
+                           "builder_produced_sha_drift", "builder_workspace_dirty",
+                           "builder_diff_mismatch", "required_command_missing",
+                           "validation_sha_missing", "validator_workspace_sha_drift",
+                           "validator_sha_drift", "command_not_allowlisted"}
+                candidate = exc.args[0] if isinstance(exc, NativeExecutorBlocked) else None
+                reason = candidate if candidate in allowed else "adapter_failed"
                 self.api.fail(manifest.task_id, worker_id, token,
                               self.boundary.correlation_id, str(reason))
+                if candidate not in allowed:
+                    raise NativeExecutorBlocked("adapter_failed") from None
                 raise
             receipt = {
+                "schema_version": 1,
                 "result": "NATIVE_ONE_SHOT_BUILT" if role == "builder"
                           else "NATIVE_ONE_SHOT_VALIDATED",
                 "task_id": manifest.task_id, "role": role, "worker_id": worker_id,
@@ -379,6 +449,7 @@ class NativeOneShotExecutor:
                 "session_id": self.boundary.session_id,
                 "correlation_id": self.boundary.correlation_id,
                 "gateway_verified": True, "replayed": False,
+                "workspace_id": hashlib.sha256(str(self.workspace.root).encode()).hexdigest(),
             }
             self.receipts.write(receipt_path, receipt)
             return receipt
