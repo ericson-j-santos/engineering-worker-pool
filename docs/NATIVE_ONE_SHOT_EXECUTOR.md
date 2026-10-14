@@ -49,7 +49,9 @@ versionado e testado no proprio repositorio, com comandos fixos no registro loca
 A releitura de recibo exige identidade da sessão e correlação originais,
 `gateway_verified=true` com tipo booleano, `replayed=false` no registro
 persistido, hash de evidência bem formado e consistência dos caminhos/comandos
-com o contrato do adapter. Um recibo editado ou copiado para outra sessão
+com o contrato do adapter. O replay também compara os caminhos declarados ao
+diff Git real entre base e commit produzido, detectando inclusive listas vazias.
+Um recibo editado ou copiado para outra sessão
 falha antes de acessar a API ou executar o handler; regressões positivas e
 negativas são executadas no CI.
 

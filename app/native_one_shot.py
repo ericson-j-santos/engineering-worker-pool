@@ -369,6 +369,9 @@ class NativeOneShotExecutor:
                 _need(type(produced) is str and bool(SHA40.fullmatch(produced)),
                       "receipt_produced_sha")
                 self.workspace.validate_replay(produced)
+                _need(tuple(previous["changed_paths"])
+                      == self.workspace.changed_paths(manifest.base_sha, produced),
+                      "receipt_mismatch")
                 return {**previous, "replayed": True}
 
             # All local identity, path and content drift checks happen before

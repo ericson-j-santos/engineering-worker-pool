@@ -289,6 +289,8 @@ def test_independent_diff_detects_omitted_delete_and_rename(tmp_path, operation)
     ("gateway_verified", 1),
     ("replayed", True),
     ("evidence_sha256", "f" * 63),
+    ("changed_paths", []),
+    ("changed_paths", ["outside.txt"]),
     ("changed_paths", ["src/task.py", "src/unknown.py"]),
     ("changed_paths", ["src/task.py", "src/task.py"]),
     ("invoked_commands", []),
