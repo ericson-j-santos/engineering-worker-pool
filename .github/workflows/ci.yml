@@ -56,6 +56,8 @@ jobs:
         run: python -m compileall -q app tests scripts/local_worker_e2e.py scripts/structured_worker_e2e.py scripts/structured_acceptance.py scripts/native_gateway_preflight_e2e.py
       - name: Test
         run: python -m pytest -q
+      - name: Verify fail-closed governed merge policy
+        run: node --test tests/test_governed_auto_merge.cjs
 
       - name: Checkout canonical rules for disposable E2E
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
