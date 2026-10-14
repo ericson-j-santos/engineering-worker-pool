@@ -17,6 +17,11 @@ import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+# A script invoked by pathname starts with scripts/ on sys.path. Resolve the
+# versioned repository root explicitly before importing the Worker Pool package.
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
 from app.native_gateway_preflight import attest_execution_boundary
 from app.native_one_shot import NativeExecutorBlocked
 
