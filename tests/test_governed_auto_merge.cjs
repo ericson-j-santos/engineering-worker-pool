@@ -1,7 +1,7 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { decide, canaryRequired, run } = require("../scripts/governed_auto_merge.cjs");
+const { decide, canaryRequired, validatePostMergeCIContext, run } = require("../scripts/governed_auto_merge.cjs");
 
 const SHA = "a".repeat(40);
 const BASE = "b".repeat(40);
@@ -164,6 +164,8 @@ function harness(options={}) {
   const data = fixture();
   let calls=0;
   let mergeArgs;
+  let dispatchCalls=0;
+  let dispatchArgs;
   let getCalls=0;
   let serverMerged=false;
   let logs=[];
@@ -201,7 +203,15 @@ function harness(options={}) {
         compareCommitsWithBasehead:async()=>({data:data.compare})
       },
       checks:{listForRef:async()=>({data:{total_count:data.checks.length,check_runs:data.checks}})},
-      actions:{listWorkflowRunsForRepo:async()=>({data:{total_count:data.workflowRuns.length,workflow_runs:data.workflowRuns}})}
+      actions:{
+        listWorkflowRunsForRepo:async()=>({data:{total_count:data.workflowRuns.length,workflow_runs:data.workflowRuns}}),
+        createWorkflowDispatch:async args=>{
+          dispatchCalls++;
+          dispatchArgs=args;
+          if (options.dispatchDenied) throw {status:403};
+          return {status:204};
+        }
+      }
     }
   };
   const core = {
@@ -211,7 +221,8 @@ function harness(options={}) {
   const context={repo:{owner:"ericson-j-santos",repo:"engineering-worker-pool"},
     payload:{workflow_run:data.trigger}};
   return {github,core,context,logs,getCalls:()=>getCalls,
-    mergeCalls:()=>calls,mergeArgs:()=>mergeArgs};
+    mergeCalls:()=>calls,mergeArgs:()=>mergeArgs,
+    dispatchCalls:()=>dispatchCalls,dispatchArgs:()=>dispatchArgs};
 }
 
 test("integration: only official merge endpoint with expected head, independent main readback",async()=>{
@@ -222,12 +233,22 @@ test("integration: only official merge endpoint with expected head, independent 
   assert.equal(x.mergeArgs().pull_number,42);
   assert.equal(x.mergeArgs().merge_method,"merge");
   assert.equal(x.logs.some(s=>s.startsWith("GOVERNED_MERGE_VERIFIED:")),true);
+  assert.equal(x.dispatchCalls(),1);
+  assert.deepEqual(x.dispatchArgs(),{
+    owner:"ericson-j-santos",
+    repo:"engineering-worker-pool",
+    workflow_id:"ci.yml",
+    ref:"main",
+    inputs:{expected_merge_sha:"c".repeat(40),expected_merge_pr:"42"}
+  });
+  assert.equal(x.logs.some(s=>s.includes("result=accepted_not_validated")),true);
 });
 
 test("integration: concurrency prevents stale-head merge",async()=>{
   const x=harness({latestSha:BASE});
   await run(x.github,x.context,x.core);
   assert.equal(x.mergeCalls(),0);
+  assert.equal(x.dispatchCalls(),0);
   assert.equal(x.logs.some(s=>s.includes("concurrent_state_change")),true);
 });
 
@@ -235,6 +256,7 @@ test("integration: GitHub refuses merge -> no fake success",async()=>{
   const x=harness({deny:true});
   await run(x.github,x.context,x.core);
   assert.equal(x.mergeCalls(),1);
+  assert.equal(x.dispatchCalls(),0);
   assert.equal(x.logs.some(s=>s.includes("github_merge_denied_http_405")),true);
   assert.equal(x.logs.some(s=>s.startsWith("GOVERNED_MERGE_VERIFIED:")),false);
 });
@@ -251,5 +273,52 @@ test("integration: server merge without independent main readback blocks success
   await run(x.github,x.context,x.core);
   assert.equal(x.mergeCalls(),1);
   assert.equal(x.logs.some(s=>s.includes("independent_main_readback_failed")),true);
+  assert.equal(x.dispatchCalls(),0);
   assert.equal(x.logs.some(s=>s.startsWith("GOVERNED_MERGE_VERIFIED:")),false);
+});
+
+
+test("post-merge workflow dispatch is not confused with CI success", async () => {
+  const x=harness({dispatchDenied:true});
+  await run(x.github,x.context,x.core);
+  assert.equal(x.mergeCalls(),1);
+  assert.equal(x.dispatchCalls(),1);
+  assert.equal(x.logs.some(s=>s.includes("GOVERNED_POSTMERGE_CI_DISPATCH_FAILED_http_403")),true);
+  assert.equal(x.logs.some(s=>s.includes("GOVERNED_POSTMERGE_CI_DISPATCH_ACCEPTED")),false);
+});
+
+test("immutable post-merge CI inputs block wrong target, event or repository", () => {
+  const env={
+    GITHUB_EVENT_NAME:"workflow_dispatch",
+    GITHUB_REF:"refs/heads/main",
+    GITHUB_SHA:"c".repeat(40),
+    GITHUB_REPOSITORY:"ericson-j-santos/engineering-worker-pool",
+    EXPECTED_MERGE_SHA:"c".repeat(40),
+    EXPECTED_MERGE_PR:"32"
+  };
+  assert.equal(validatePostMergeCIContext(env),true);
+  for (const patch of [
+    {EXPECTED_MERGE_SHA:"d".repeat(40)},
+    {EXPECTED_MERGE_SHA:"not-a-sha"},
+    {GITHUB_REF:"refs/heads/feature"},
+    {GITHUB_EVENT_NAME:"pull_request"},
+    {GITHUB_REPOSITORY:"untrusted/fork"},
+    {EXPECTED_MERGE_PR:"0"},
+    {EXPECTED_MERGE_PR:"32; echo bad"},
+    {EXPECTED_MERGE_PR:""},
+    {GITHUB_SHA:"bad"},
+  ]) assert.equal(validatePostMergeCIContext({...env,...patch}),false);
+});
+
+test("post-merge dispatch workflow contract stays enabled", () => {
+  const fs=require("node:fs");
+  const base=require("node:path").resolve(__dirname,"..");
+  const ci=fs.readFileSync(require("node:path").join(base,".github/workflows/ci.yml"),"utf8");
+  const merge=fs.readFileSync(require("node:path").join(base,".github/workflows/governed-auto-merge.yml"),"utf8");
+  assert.match(ci,/expected_merge_sha:/);
+  assert.match(ci,/expected_merge_pr:/);
+  assert.match(ci,/scripts\/verify_postmerge_dispatch\.cjs/);
+  assert.match(merge,/actions: write/);
+  assert.match(merge,/governed_auto_merge\.cjs/);
+  assert.match(merge,/ref: main/);
 });

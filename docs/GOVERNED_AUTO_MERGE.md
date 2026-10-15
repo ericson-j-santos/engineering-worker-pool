@@ -44,3 +44,30 @@ CI 365494718 (`.github/workflows/ci.yml`) e canário 383149508
 (`.github/workflows/candidate-canary.yml`), ambos com SHA, branch e
 repositório de origem exatos. O teste preventivo usa nomes dinâmicos reais
 e rejeita IDs/caminhos, branch ou repositório divergentes.
+
+
+## Validação explícita após o merge
+
+O piloto real da PR #32 comprovou a integração automática pelo GitHub Actions,
+mas mostrou que uma operação de merge efetuada com o `GITHUB_TOKEN` não
+aciona o CI normal por `push`. A execução posterior por `issue_comment`
+validou apenas compilação/testes; **não** substitui um CI pós-merge próprio.
+
+Depois de confirmar o HEAD da `main`, o workflow chama a API GitHub
+`createWorkflowDispatch` **somente** para `.github/workflows/ci.yml`,
+com `ref=main`, `expected_merge_sha` e `expected_merge_pr` tipados.
+O próprio CI rejeita branch, evento, repositório, SHA ou PR divergentes
+antes dos testes, usando o código versionado
+`scripts/verify_postmerge_dispatch.cjs`.
+
+O registro `GOVERNED_POSTMERGE_CI_DISPATCH_ACCEPTED` significa apenas
+despacho aceito; a homologação requer o **novo** workflow
+`event=workflow_dispatch`, SHA idêntico ao merge, passo de identidade
+executado e job `test` terminal `success`.
+Se a API recusar o dispatch, o merge permanece registrado mas a
+automação falha com `GOVERNED_POSTMERGE_CI_DISPATCH_FAILED`, sem fingir
+CI pós-merge aprovado. Isso é separado do aceite E2E do produto.
+
+A permissão do token é `actions: write` somente no workflow confiável
+de merge, já com permissão para atualizar PR; a CI de código continua
+com `contents: read`.
