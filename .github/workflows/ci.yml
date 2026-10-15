@@ -6,6 +6,15 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      expected_merge_sha:
+        description: "Expected merged main commit SHA for governed follow-up"
+        required: false
+        type: string
+      expected_merge_pr:
+        description: "Merged pull request number for governed follow-up"
+        required: false
+        type: string
   issue_comment:
     types: [created]
 
@@ -47,6 +56,12 @@ jobs:
       - name: Confirm immutable checkout
         shell: bash
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Verify explicitly dispatched post-merge SHA
+        if: github.event_name == 'workflow_dispatch' && inputs.expected_merge_sha != ''
+        env:
+          EXPECTED_MERGE_SHA: ${{ inputs.expected_merge_sha }}
+          EXPECTED_MERGE_PR: ${{ inputs.expected_merge_pr }}
+        run: node scripts/verify_postmerge_dispatch.cjs
       - name: Admit exact owner comment
         if: github.event_name == 'issue_comment'
         run: python -m app.ci_entrypoint

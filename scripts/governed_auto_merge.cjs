@@ -138,6 +138,19 @@ function decide({
   };
 }
 
+
+// A merge performed with GITHUB_TOKEN does not generate a normal push CI.
+// Dispatch the existing CI explicitly after independent readback; acceptance
+// of the request is NOT proof that the resulting CI run passed.
+function validatePostMergeCIContext(env) {
+  return env?.GITHUB_EVENT_NAME === "workflow_dispatch" &&
+    env.GITHUB_REPOSITORY === REPOSITORY &&
+    env.GITHUB_REF === "refs/heads/main" &&
+    SHA.test(env.GITHUB_SHA || "") &&
+    env.EXPECTED_MERGE_SHA === env.GITHUB_SHA &&
+    /^[1-9][0-9]{0,8}$/.test(env.EXPECTED_MERGE_PR || "");
+}
+
 async function run(github, context, core) {
   const payload = context.payload;
   const trigger = payload.workflow_run;
@@ -246,6 +259,24 @@ async function run(github, context, core) {
   }
   core.info("GOVERNED_MERGE_VERIFIED: pr=" + number +
     " sha=" + response.data.sha + " expected_head=" + result.expectedHead);
+  // GITHUB_TOKEN merges suppress push-triggered Actions. The only permitted
+  // follow-up is a fixed workflow_dispatch of our own CI on main.
+  try {
+    await github.rest.actions.createWorkflowDispatch({
+      owner, repo, workflow_id: "ci.yml", ref: "main",
+      inputs: {
+        expected_merge_sha: response.data.sha,
+        expected_merge_pr: String(number)
+      }
+    });
+  } catch (e) {
+    core.setFailed("GOVERNED_POSTMERGE_CI_DISPATCH_FAILED_http_" +
+      String(e.status || "unknown"));
+    return;
+  }
+  core.info("GOVERNED_POSTMERGE_CI_DISPATCH_ACCEPTED: pr=" + number +
+    " sha=" + response.data.sha +
+    " result=accepted_not_validated");
 }
 
-module.exports = { decide, canaryRequired, run };
+module.exports = { decide, canaryRequired, validatePostMergeCIContext, run };
