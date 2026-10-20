@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import sqlite3
 import threading
@@ -15,7 +16,9 @@ STATES = ("queued", "leased", "running", "validating", "blocked", "completed", "
 ACTIVE = ("leased", "running", "validating")
 ROLES = ("builder", "validator")
 PROFILES = ("NORMAL", "ESTUDO")
+CHECKPOINT_EFFECT_STATES = ("none", "pending", "confirmed", "not_applied", "unknown")
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
+SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 TASK_ID = re.compile(r"^cwp-[0-9a-f]{24}$")
 BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 SECRET = re.compile(r"(?i)\b(token|secret|password|passwd|dsn|connection[_-]?string|api[_-]?key)\s*[:=]\s*[^\s,;]+")
@@ -91,6 +94,8 @@ class Lease:
     worker_id: str
     role: str
     lease_expires_at: str
+    lease_generation: int
+    attempt_id: str
 
 
 class WorkerPoolStore:
@@ -188,6 +193,9 @@ class WorkerPoolStore:
               workspace_key TEXT NOT NULL, base_sha TEXT, produced_sha TEXT,
               builder_worker_id TEXT, validator_worker_id TEXT, leased_by TEXT,
               lease_token TEXT, lease_expires_at TEXT,
+              lease_generation INTEGER NOT NULL DEFAULT 0 CHECK(lease_generation>=0),
+              attempt_id TEXT,
+              fencing_required INTEGER NOT NULL DEFAULT 0 CHECK(fencing_required IN (0,1)),
               attempt_count INTEGER NOT NULL DEFAULT 0,
               max_attempts INTEGER NOT NULL, blocked_reason TEXT, last_error TEXT,
               correlation_id TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -200,6 +208,50 @@ class WorkerPoolStore:
               attempt_count INTEGER NOT NULL, reason TEXT NOT NULL,
               quarantined_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS pool_control(
+              control_key TEXT PRIMARY KEY CHECK(control_key='fenced_cutover'),
+              enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+              enabled_at TEXT, enabled_by_correlation_id TEXT
+            );
+            INSERT OR IGNORE INTO pool_control(control_key,enabled)
+              VALUES('fenced_cutover',0);
+            CREATE TABLE IF NOT EXISTS task_attempts(
+              attempt_id TEXT PRIMARY KEY, task_id TEXT NOT NULL,
+              lease_generation INTEGER NOT NULL CHECK(lease_generation>=1),
+              worker_id TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('builder','validator')),
+              lease_started_at TEXT NOT NULL, lease_expires_at TEXT NOT NULL,
+              ended_at TEXT, end_reason TEXT,
+              UNIQUE(task_id,lease_generation),
+              FOREIGN KEY(task_id) REFERENCES tasks(task_id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS task_checkpoints(
+              task_id TEXT NOT NULL, checkpoint_id TEXT NOT NULL,
+              lease_generation INTEGER NOT NULL CHECK(lease_generation>=1),
+              attempt_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK(sequence>=1),
+              stage TEXT NOT NULL, artifact_kind TEXT, artifact_ref TEXT,
+              artifact_sha256 TEXT, next_action TEXT NOT NULL,
+              effect_id TEXT, effect_state TEXT NOT NULL CHECK(effect_state IN
+                ('none','pending','confirmed','not_applied','unknown')),
+              effect_result_ref TEXT, content_digest TEXT NOT NULL,
+              correlation_id TEXT NOT NULL, created_at TEXT NOT NULL,
+              PRIMARY KEY(task_id,checkpoint_id),
+              UNIQUE(task_id,lease_generation,sequence),
+              FOREIGN KEY(task_id) REFERENCES tasks(task_id) ON DELETE CASCADE,
+              FOREIGN KEY(attempt_id) REFERENCES task_attempts(attempt_id)
+            );
+            CREATE TABLE IF NOT EXISTS effect_reconciliations(
+              task_id TEXT NOT NULL, effect_id TEXT NOT NULL,
+              lease_generation INTEGER NOT NULL CHECK(lease_generation>=1),
+              outcome TEXT NOT NULL CHECK(outcome IN ('confirmed','not_applied')),
+              readback_ref TEXT NOT NULL, content_digest TEXT NOT NULL,
+              correlation_id TEXT NOT NULL, created_at TEXT NOT NULL,
+              PRIMARY KEY(task_id,effect_id,lease_generation),
+              FOREIGN KEY(task_id) REFERENCES tasks(task_id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_checkpoints_generation
+              ON task_checkpoints(task_id,lease_generation,sequence DESC);
+            CREATE INDEX IF NOT EXISTS idx_task_checkpoints_effect
+              ON task_checkpoints(task_id,effect_id,sequence DESC);
             CREATE INDEX IF NOT EXISTS idx_task_queue
               ON tasks(state,priority,created_at);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_active
@@ -217,6 +269,45 @@ class WorkerPoolStore:
                 }
                 if "last_material_progress_at" not in task_columns:
                     db.execute("ALTER TABLE tasks ADD COLUMN last_material_progress_at TEXT")
+                if "lease_generation" not in task_columns:
+                    db.execute(
+                        "ALTER TABLE tasks ADD COLUMN lease_generation "
+                        "INTEGER NOT NULL DEFAULT 0 CHECK(lease_generation>=0)"
+                    )
+                if "attempt_id" not in task_columns:
+                    db.execute("ALTER TABLE tasks ADD COLUMN attempt_id TEXT")
+                if "fencing_required" not in task_columns:
+                    db.execute(
+                        "ALTER TABLE tasks ADD COLUMN fencing_required "
+                        "INTEGER NOT NULL DEFAULT 0 CHECK(fencing_required IN (0,1))"
+                    )
+                db.executescript(
+                    """CREATE TRIGGER IF NOT EXISTS guard_fenced_task_admission
+                         BEFORE INSERT ON tasks
+                         WHEN NEW.fencing_required=1
+                          AND NOT EXISTS(
+                            SELECT 1 FROM pool_control
+                            WHERE control_key='fenced_cutover' AND enabled=1
+                          )
+                       BEGIN
+                         SELECT RAISE(ABORT,'fenced_cutover_not_enabled');
+                       END;
+                       CREATE TRIGGER IF NOT EXISTS guard_fenced_claim
+                         BEFORE UPDATE OF leased_by ON tasks
+                         WHEN OLD.fencing_required=1
+                          AND OLD.leased_by IS NULL
+                          AND NEW.leased_by IS NOT NULL
+                          AND (
+                            NEW.lease_generation<>OLD.lease_generation+1 OR
+                            NEW.attempt_id IS NULL OR
+                            NEW.attempt_id=COALESCE(OLD.attempt_id,'')
+                          )
+                       BEGIN
+                         SELECT RAISE(
+                           ABORT,'fenced_claim_requires_generation_and_attempt'
+                         );
+                       END;"""
+                )
                 db.execute(
                     """UPDATE tasks
                        SET last_material_progress_at=COALESCE(
@@ -239,6 +330,39 @@ class WorkerPoolStore:
         if row is None:
             raise NotFoundError("registro não encontrado")
         return dict(row)
+
+    def fenced_cutover_status(self) -> dict[str, Any]:
+        with self._db() as db:
+            row = db.execute(
+                """SELECT enabled,enabled_at,enabled_by_correlation_id
+                   FROM pool_control WHERE control_key='fenced_cutover'"""
+            ).fetchone()
+        data = self._d(row)
+        data["enabled"] = bool(data["enabled"])
+        return data
+
+    def enable_fenced_cutover(
+        self, *, correlation_id: str, legacy_claimers_drained: bool,
+        shared_queue_exclusive: bool,
+    ) -> dict[str, Any]:
+        correlation_id = correlation_id.strip()
+        if not correlation_id:
+            raise ValueError("correlation_id obrigatório")
+        if not legacy_claimers_drained or not shared_queue_exclusive:
+            raise ValueError("cutover cercado exige fila exclusiva e claimers antigos drenados")
+        stamp = iso(self.clock())
+        with self._tx() as db:
+            db.execute(
+                """UPDATE pool_control
+                   SET enabled=1,
+                       enabled_at=COALESCE(enabled_at,?),
+                       enabled_by_correlation_id=COALESCE(
+                         enabled_by_correlation_id,?
+                       )
+                   WHERE control_key='fenced_cutover'""",
+                (stamp, correlation_id),
+            )
+        return self.fenced_cutover_status()
 
     def register_worker(
         self, *, worker_id: str, host: str, role: str, correlation_id: str,
@@ -372,6 +496,7 @@ class WorkerPoolStore:
         self, *, repository: str, issue_number: int, request_id: str,
         correlation_id: str, priority: int = 100, base_sha: str | None = None,
         max_attempts: int | None = None, target_branch: str | None = None,
+        fencing_required: bool = False,
     ) -> tuple[dict[str, Any], bool]:
         if "/" not in repository or issue_number < 1 or not request_id.strip() or not correlation_id.strip():
             raise ValueError("identidade da task inválida")
@@ -383,21 +508,28 @@ class WorkerPoolStore:
         if attempts < 1:
             raise ValueError("max_attempts inválido")
         with self._tx() as db:
+            if fencing_required and not db.execute(
+                """SELECT 1 FROM pool_control
+                   WHERE control_key='fenced_cutover' AND enabled=1"""
+            ).fetchone():
+                raise ConflictError("fenced_cutover_not_enabled")
             self._ensure_repository_lane(db, repository.strip())
             row = db.execute("SELECT * FROM tasks WHERE idempotency_key=?", (key,)).fetchone()
             created = row is None
             if not created and target_branch is not None and row["branch"] != task_branch:
                 raise ConflictError("target_branch divergente no replay")
+            if not created and bool(row["fencing_required"]) != bool(fencing_required):
+                raise ConflictError("fencing_required divergente no replay")
             if created:
                 db.execute("""INSERT INTO tasks(
                   task_id,repository,issue_number,request_id,idempotency_key,state,priority,
                   branch,workspace_key,base_sha,max_attempts,correlation_id,created_at,updated_at,
-                  last_material_progress_at)
-                  VALUES(?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?)""",
+                  last_material_progress_at,fencing_required)
+                  VALUES(?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?)""",
                   (tid, repository.strip(), issue_number, request_id.strip(), key, int(priority),
                    task_branch, workspace(repository, tid),
                    base_sha.lower() if base_sha else None, attempts,
-                   correlation_id.strip(), stamp, stamp, stamp))
+                   correlation_id.strip(), stamp, stamp, stamp, int(bool(fencing_required))))
                 row = db.execute("SELECT * FROM tasks WHERE task_id=?", (tid,)).fetchone()
         return self._d(row), created
 
@@ -425,19 +557,76 @@ class WorkerPoolStore:
           (row["task_id"], row["idempotency_key"], row["correlation_id"],
            row["attempt_count"], sanitize(reason), stamp))
 
+    @staticmethod
+    def _has_unresolved_effect(db: sqlite3.Connection, task_id: str) -> bool:
+        return db.execute(
+            """SELECT 1 FROM task_checkpoints current
+               WHERE current.task_id=?
+                 AND current.effect_id IS NOT NULL
+                 AND (
+                   (
+                     current.effect_state='unknown'
+                     AND NOT EXISTS(
+                       SELECT 1 FROM effect_reconciliations reconciliation
+                       WHERE reconciliation.task_id=current.task_id
+                         AND reconciliation.effect_id=current.effect_id
+                         AND reconciliation.lease_generation=current.lease_generation
+                     )
+                   ) OR (
+                     current.effect_state='pending'
+                     AND NOT EXISTS(
+                       SELECT 1 FROM effect_reconciliations reconciliation
+                       WHERE reconciliation.task_id=current.task_id
+                         AND reconciliation.effect_id=current.effect_id
+                         AND reconciliation.lease_generation=current.lease_generation
+                     )
+                     AND NOT EXISTS(
+                       SELECT 1 FROM task_checkpoints later
+                       WHERE later.task_id=current.task_id
+                         AND later.effect_id=current.effect_id
+                         AND (
+                           later.lease_generation>current.lease_generation OR
+                           (later.lease_generation=current.lease_generation
+                            AND later.sequence>current.sequence)
+                         )
+                     )
+                   )
+                 )
+               LIMIT 1""",
+            (task_id,),
+        ).fetchone() is not None
+
+    def _require_resolved_effects(
+        self, db: sqlite3.Connection, row: sqlite3.Row
+    ) -> None:
+        if bool(row["fencing_required"]) and self._has_unresolved_effect(
+            db, row["task_id"]
+        ):
+            raise ConflictError("efeito requer reconciliação antes da transição")
+
     def _recover(self, db: sqlite3.Connection) -> int:
         stamp = iso(self.clock())
         rows = db.execute("""SELECT * FROM tasks WHERE state IN ('leased','running','validating')
           AND lease_expires_at IS NOT NULL AND lease_expires_at<=?""", (stamp,)).fetchall()
         for row in rows:
-            if row["attempt_count"] >= row["max_attempts"]:
+            if bool(row["fencing_required"]) and self._has_unresolved_effect(db, row["task_id"]):
+                state = "blocked"
+                blocked_reason = "effect_reconciliation_required"
+                last_error = "effect_reconciliation_required"
+            elif row["attempt_count"] >= row["max_attempts"]:
                 self._quarantine(db, row, "lease_expired_max_attempts", stamp)
                 state = "failed"
+                blocked_reason = None
+                last_error = "lease_expired_max_attempts"
             else:
                 state = "validating" if row["produced_sha"] else "queued"
+                blocked_reason = None
+                last_error = "lease_expired_recovered"
+            self._end_attempt(db, row, stamp=stamp, reason=last_error)
             db.execute("""UPDATE tasks SET state=?,leased_by=NULL,lease_token=NULL,
-              lease_expires_at=NULL,last_error='lease_expired_recovered',updated_at=?
-              WHERE task_id=?""", (state, stamp, row["task_id"]))
+              lease_expires_at=NULL,attempt_id=NULL,blocked_reason=?,last_error=?,updated_at=?
+              WHERE task_id=?""",
+              (state, blocked_reason, last_error, stamp, row["task_id"]))
         return len(rows)
 
     def _worker_is_alternative(
@@ -485,7 +674,12 @@ class WorkerPoolStore:
         result = {"rerouted": 0, "blocked": 0, "failed": 0}
         workers = db.execute("SELECT * FROM workers").fetchall()
         for row in rows:
-            if row["attempt_count"] >= row["max_attempts"]:
+            if bool(row["fencing_required"]) and self._has_unresolved_effect(db, row["task_id"]):
+                state = "blocked"
+                blocked_reason = "effect_reconciliation_required"
+                last_error = "effect_reconciliation_required"
+                result["blocked"] += 1
+            elif row["attempt_count"] >= row["max_attempts"]:
                 self._quarantine(db, row, "material_progress_timeout_max_attempts", stamp)
                 state = "failed"
                 blocked_reason = None
@@ -501,9 +695,10 @@ class WorkerPoolStore:
                 blocked_reason = "material_progress_timeout_no_alternative"
                 last_error = "material_progress_timeout_no_alternative"
                 result["blocked"] += 1
+            self._end_attempt(db, row, stamp=stamp, reason=last_error)
             db.execute(
                 """UPDATE tasks SET state=?,leased_by=NULL,lease_token=NULL,
-                   lease_expires_at=NULL,blocked_reason=?,last_error=?,updated_at=?
+                   lease_expires_at=NULL,attempt_id=NULL,blocked_reason=?,last_error=?,updated_at=?
                    WHERE task_id=?""",
                 (state, blocked_reason, last_error, stamp, row["task_id"]),
             )
@@ -526,6 +721,7 @@ class WorkerPoolStore:
     def claim_task(
         self, *, worker_id: str, role: str, correlation_id: str,
         lease_seconds: int | None = None, only_task_id: str | None = None,
+        fencing_required: bool = False,
     ) -> tuple[dict[str, Any] | None, Lease | None]:
         """Opt-in exact-task claim; unrelated queue entries are not reconciled.
 
@@ -550,6 +746,7 @@ class WorkerPoolStore:
                     """SELECT t.* FROM tasks t
                        JOIN repository_lanes r ON r.repository=t.repository
                        WHERE t.state='queued'
+                          AND t.fencing_required=?
                          AND r.enabled=1
                          AND (
                            NOT EXISTS(
@@ -574,7 +771,7 @@ class WorkerPoolStore:
                          r.repository,
                          t.priority,t.created_at,t.rowid,t.task_id
                        LIMIT 1""",
-                    (worker_id, worker_id, only_task_id, only_task_id),
+                    (int(bool(fencing_required)), worker_id, worker_id, only_task_id, only_task_id),
                 ).fetchone()
                 wanted, next_state = "queued", "leased"
             else:
@@ -582,6 +779,7 @@ class WorkerPoolStore:
                     """SELECT t.* FROM tasks t
                        JOIN repository_lanes r ON r.repository=t.repository
                        WHERE t.state='validating'
+                          AND t.fencing_required=?
                          AND t.leased_by IS NULL
                          AND t.produced_sha IS NOT NULL
                          AND (t.builder_worker_id IS NULL OR t.builder_worker_id<>?)
@@ -603,18 +801,22 @@ class WorkerPoolStore:
                          r.repository,
                          t.priority,t.updated_at,t.rowid,t.task_id
                        LIMIT 1""",
-                    (worker_id, worker_id, worker_id, only_task_id, only_task_id),
+                    (int(bool(fencing_required)), worker_id, worker_id, worker_id,
+                     only_task_id, only_task_id),
                 ).fetchone()
                 wanted, next_state = "validating", "validating"
             if not row:
                 return None, None
-            token, expires = uuid.uuid4().hex, iso(now + timedelta(seconds=ttl))
+            token = uuid.uuid4().hex
+            attempt_id = uuid.uuid4().hex
+            expires = iso(now + timedelta(seconds=ttl))
             validator = worker_id if role == "validator" else row["validator_worker_id"]
             cur = db.execute("""UPDATE tasks SET state=?,leased_by=?,lease_token=?,
               lease_expires_at=?,attempt_count=attempt_count+1,validator_worker_id=?,
+              lease_generation=lease_generation+1,attempt_id=?,
               correlation_id=?,updated_at=?,last_material_progress_at=?
               WHERE task_id=? AND state=? AND leased_by IS NULL""",
-              (next_state, worker_id, token, expires, validator, correlation_id,
+              (next_state, worker_id, token, expires, validator, attempt_id, correlation_id,
                stamp, stamp, row["task_id"], wanted))
             if cur.rowcount != 1:
                 raise ConflictError("task adquirida concorrentemente")
@@ -635,10 +837,25 @@ class WorkerPoolStore:
                 (stamp, stamp, row["repository"]),
             )
             row = db.execute("SELECT * FROM tasks WHERE task_id=?", (row["task_id"],)).fetchone()
+            db.execute(
+                """INSERT INTO task_attempts(
+                     attempt_id,task_id,lease_generation,worker_id,role,
+                     lease_started_at,lease_expires_at)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (attempt_id, row["task_id"], row["lease_generation"], worker_id, role,
+                 stamp, expires),
+            )
         data = self._d(row)
-        return data, Lease(data["task_id"], token, worker_id, role, expires)
+        return data, Lease(
+            data["task_id"], token, worker_id, role, expires,
+            int(data["lease_generation"]), attempt_id,
+        )
 
-    def _lease(self, db: sqlite3.Connection, tid: str, worker: str, token: str, allowed: tuple[str, ...]) -> sqlite3.Row:
+    def _lease(
+        self, db: sqlite3.Connection, tid: str, worker: str, token: str,
+        allowed: tuple[str, ...], lease_generation: int | None = None,
+        attempt_id: str | None = None,
+    ) -> sqlite3.Row:
         row = db.execute("SELECT * FROM tasks WHERE task_id=?", (tid,)).fetchone()
         if not row:
             raise NotFoundError(f"task não encontrada: {tid}")
@@ -646,22 +863,59 @@ class WorkerPoolStore:
             raise ConflictError(f"estado inválido: {row['state']}")
         if row["leased_by"] != worker or row["lease_token"] != token:
             raise ConflictError("lease inválido")
+        if bool(row["fencing_required"]) and (
+            lease_generation is None or attempt_id is None
+        ):
+            raise ConflictError("fence obrigatório")
+        if lease_generation is not None and int(row["lease_generation"]) != int(lease_generation):
+            raise ConflictError("lease_generation inválida")
+        if attempt_id is not None and row["attempt_id"] != attempt_id:
+            raise ConflictError("attempt_id inválido")
         if not row["lease_expires_at"] or parse_iso(row["lease_expires_at"]) <= self.clock():
             raise ConflictError("lease expirado")
         return row
 
+    @staticmethod
+    def _end_attempt(
+        db: sqlite3.Connection, row: sqlite3.Row, *, stamp: str, reason: str,
+    ) -> None:
+        if not row["attempt_id"]:
+            return
+        db.execute(
+            """UPDATE task_attempts SET ended_at=COALESCE(ended_at,?),
+                 end_reason=COALESCE(end_reason,?) WHERE attempt_id=?""",
+            (stamp, reason, row["attempt_id"]),
+        )
+
     def renew_lease(self, *, task_id: str, worker_id: str, lease_token: str,
-                    correlation_id: str, lease_seconds: int | None = None) -> dict[str, Any]:
+                    correlation_id: str, lease_seconds: int | None = None,
+                    lease_generation: int | None = None,
+                    attempt_id: str | None = None) -> dict[str, Any]:
         expires = iso(self.clock() + timedelta(seconds=int(lease_seconds or self.default_lease_seconds)))
         with self._tx() as db:
-            self._lease(db, task_id, worker_id, lease_token, ACTIVE)
+            row = self._lease(
+                db, task_id, worker_id, lease_token, ACTIVE,
+                lease_generation=lease_generation, attempt_id=attempt_id,
+            )
             db.execute("UPDATE tasks SET lease_expires_at=?,correlation_id=?,updated_at=? WHERE task_id=?",
                        (expires, correlation_id, iso(self.clock()), task_id))
+            if row["attempt_id"]:
+                db.execute(
+                    "UPDATE task_attempts SET lease_expires_at=? WHERE attempt_id=?",
+                    (expires, row["attempt_id"]),
+                )
         return self.get_task(task_id)
 
-    def start_task(self, *, task_id: str, worker_id: str, lease_token: str, correlation_id: str) -> dict[str, Any]:
+    def start_task(
+        self, *, task_id: str, worker_id: str, lease_token: str,
+        correlation_id: str, lease_generation: int | None = None,
+        attempt_id: str | None = None,
+    ) -> dict[str, Any]:
         with self._tx() as db:
-            self._lease(db, task_id, worker_id, lease_token, ("leased",))
+            self._lease(
+                db, task_id, worker_id, lease_token, ("leased",),
+                lease_generation=lease_generation, attempt_id=attempt_id,
+            )
             if self.get_worker(worker_id)["role"] != "builder":
                 raise ConflictError("somente Builder pode iniciar task")
             stamp = iso(self.clock())
@@ -673,63 +927,342 @@ class WorkerPoolStore:
     def submit_for_validation(
         self, *, task_id: str, worker_id: str, lease_token: str,
         produced_sha: str, correlation_id: str,
+        lease_generation: int | None = None, attempt_id: str | None = None,
     ) -> dict[str, Any]:
         produced_sha = produced_sha.lower()
         if not SHA40.fullmatch(produced_sha):
             raise ValueError("produced_sha inválido")
         with self._tx() as db:
-            row = self._lease(db, task_id, worker_id, lease_token, ("running",))
+            row = self._lease(
+                db, task_id, worker_id, lease_token, ("running",),
+                lease_generation=lease_generation, attempt_id=attempt_id,
+            )
             if row["builder_worker_id"] != worker_id:
                 raise ConflictError("builder divergente")
+            self._require_resolved_effects(db, row)
             stamp = iso(self.clock())
+            self._end_attempt(db, row, stamp=stamp, reason="validation_handoff")
             db.execute("""UPDATE tasks SET state='validating',produced_sha=?,leased_by=NULL,
-              lease_token=NULL,lease_expires_at=NULL,correlation_id=?,updated_at=?,
+              lease_token=NULL,lease_expires_at=NULL,attempt_id=NULL,
+              correlation_id=?,updated_at=?,
               last_material_progress_at=? WHERE task_id=?""",
               (produced_sha, correlation_id, stamp, stamp, task_id))
         return self.get_task(task_id)
 
-    def complete_task(self, *, task_id: str, worker_id: str, lease_token: str, correlation_id: str) -> dict[str, Any]:
+    def complete_task(
+        self, *, task_id: str, worker_id: str, lease_token: str,
+        correlation_id: str, lease_generation: int | None = None,
+        attempt_id: str | None = None,
+    ) -> dict[str, Any]:
         with self._tx() as db:
-            row = self._lease(db, task_id, worker_id, lease_token, ("validating",))
+            row = self._lease(
+                db, task_id, worker_id, lease_token, ("validating",),
+                lease_generation=lease_generation, attempt_id=attempt_id,
+            )
             if self.get_worker(worker_id)["role"] != "validator" or row["builder_worker_id"] == worker_id:
                 raise ConflictError("Validator independente obrigatório")
             if not row["produced_sha"]:
                 raise ConflictError("task sem produced_sha")
+            self._require_resolved_effects(db, row)
             stamp = iso(self.clock())
+            self._end_attempt(db, row, stamp=stamp, reason="completed")
             db.execute("""UPDATE tasks SET state='completed',leased_by=NULL,lease_token=NULL,
-              lease_expires_at=NULL,correlation_id=?,updated_at=?,completed_at=?,
+              lease_expires_at=NULL,attempt_id=NULL,correlation_id=?,updated_at=?,completed_at=?,
               last_material_progress_at=? WHERE task_id=?""",
               (correlation_id, stamp, stamp, stamp, task_id))
         return self.get_task(task_id)
 
     def fail_task(self, *, task_id: str, worker_id: str, lease_token: str,
-                  correlation_id: str, reason: str) -> dict[str, Any]:
+                  correlation_id: str, reason: str,
+                  lease_generation: int | None = None,
+                  attempt_id: str | None = None) -> dict[str, Any]:
         reason, stamp = sanitize(reason.strip()) or "worker_failure", iso(self.clock())
         with self._tx() as db:
-            row = self._lease(db, task_id, worker_id, lease_token, ACTIVE)
+            row = self._lease(
+                db, task_id, worker_id, lease_token, ACTIVE,
+                lease_generation=lease_generation, attempt_id=attempt_id,
+            )
+            self._require_resolved_effects(db, row)
             if row["attempt_count"] >= row["max_attempts"]:
                 state = "failed"
                 self._quarantine(db, row, reason, stamp)
             else:
                 state = "validating" if row["produced_sha"] else "queued"
+            self._end_attempt(db, row, stamp=stamp, reason="failed_attempt")
             db.execute("""UPDATE tasks SET state=?,leased_by=NULL,lease_token=NULL,
-              lease_expires_at=NULL,last_error=?,correlation_id=?,updated_at=? WHERE task_id=?""",
+              lease_expires_at=NULL,attempt_id=NULL,last_error=?,correlation_id=?,updated_at=?
+              WHERE task_id=?""",
               (state, reason, correlation_id, stamp, task_id))
         return self.get_task(task_id)
 
     def block_task(self, *, task_id: str, worker_id: str, lease_token: str,
-                   correlation_id: str, reason: str) -> dict[str, Any]:
+                   correlation_id: str, reason: str,
+                   lease_generation: int | None = None,
+                   attempt_id: str | None = None) -> dict[str, Any]:
         reason = sanitize(reason.strip())
         if not reason:
             raise ValueError("reason obrigatório")
         with self._tx() as db:
-            self._lease(db, task_id, worker_id, lease_token, ACTIVE)
+            row = self._lease(
+                db, task_id, worker_id, lease_token, ACTIVE,
+                lease_generation=lease_generation, attempt_id=attempt_id,
+            )
+            if bool(row["fencing_required"]) and self._has_unresolved_effect(
+                db, task_id
+            ):
+                reason = "effect_reconciliation_required"
             stamp = iso(self.clock())
+            self._end_attempt(db, row, stamp=stamp, reason="blocked")
             db.execute("""UPDATE tasks SET state='blocked',leased_by=NULL,lease_token=NULL,
-              lease_expires_at=NULL,blocked_reason=?,correlation_id=?,updated_at=?,
+              lease_expires_at=NULL,attempt_id=NULL,blocked_reason=?,correlation_id=?,updated_at=?,
               last_material_progress_at=? WHERE task_id=?""",
               (reason, correlation_id, stamp, stamp, task_id))
         return self.get_task(task_id)
+
+    def record_checkpoint(
+        self, *, task_id: str, worker_id: str, lease_token: str,
+        lease_generation: int, attempt_id: str, checkpoint_id: str,
+        sequence: int, stage: str, next_action: str, correlation_id: str,
+        artifact_kind: str | None = None, artifact_ref: str | None = None,
+        artifact_sha256: str | None = None, effect_id: str | None = None,
+        effect_state: str = "none", effect_result_ref: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        if not SAFE_ID.fullmatch(checkpoint_id):
+            raise ValueError("checkpoint_id inválido")
+        if not SAFE_ID.fullmatch(stage):
+            raise ValueError("stage inválido")
+        if artifact_kind is not None and not SAFE_ID.fullmatch(artifact_kind):
+            raise ValueError("artifact_kind inválido")
+        if effect_id is not None and not SAFE_ID.fullmatch(effect_id):
+            raise ValueError("effect_id inválido")
+        if effect_state not in CHECKPOINT_EFFECT_STATES:
+            raise ValueError("effect_state inválido")
+        if (effect_state == "none") != (effect_id is None):
+            raise ValueError("effect_id incompatível com effect_state")
+        if sequence < 1:
+            raise ValueError("sequence inválida")
+        if artifact_sha256 is not None:
+            artifact_sha256 = artifact_sha256.strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", artifact_sha256):
+                raise ValueError("artifact_sha256 inválido")
+        stage = stage.strip()
+        next_action = sanitize(next_action.strip())
+        artifact_ref = sanitize(artifact_ref.strip()) if artifact_ref else None
+        effect_result_ref = sanitize(effect_result_ref.strip()) if effect_result_ref else None
+        correlation_id = correlation_id.strip()
+        if not next_action or not correlation_id:
+            raise ValueError("checkpoint incompleto")
+        if effect_state in ("confirmed", "not_applied") and not effect_result_ref:
+            raise ValueError("effect_result_ref obrigatório para efeito resolvido")
+        if effect_state == "none" and effect_result_ref is not None:
+            raise ValueError("effect_result_ref exige effect_id")
+        semantic = {
+            "checkpoint_id": checkpoint_id,
+            "sequence": int(sequence),
+            "stage": stage,
+            "artifact_kind": artifact_kind,
+            "artifact_ref": artifact_ref,
+            "artifact_sha256": artifact_sha256,
+            "next_action": next_action,
+            "effect_id": effect_id,
+            "effect_state": effect_state,
+            "effect_result_ref": effect_result_ref,
+        }
+        digest = hashlib.sha256(
+            json.dumps(semantic, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        with self._tx() as db:
+            lease_row = self._lease(
+                db, task_id, worker_id, lease_token, ACTIVE,
+                lease_generation=lease_generation, attempt_id=attempt_id,
+            )
+            if not bool(lease_row["fencing_required"]):
+                raise ConflictError("checkpoint exige task cercada")
+            existing = db.execute(
+                """SELECT * FROM task_checkpoints
+                   WHERE task_id=? AND checkpoint_id=?""",
+                (task_id, checkpoint_id),
+            ).fetchone()
+            if existing is not None:
+                if existing["content_digest"] != digest:
+                    raise ConflictError("checkpoint divergente no replay")
+                return self._d(existing), False
+            if effect_id is not None:
+                unresolved_unknown = db.execute(
+                    """SELECT 1 FROM task_checkpoints checkpoint
+                       WHERE checkpoint.task_id=?
+                         AND checkpoint.effect_id=?
+                         AND checkpoint.effect_state='unknown'
+                         AND NOT EXISTS(
+                           SELECT 1 FROM effect_reconciliations reconciliation
+                           WHERE reconciliation.task_id=checkpoint.task_id
+                             AND reconciliation.effect_id=checkpoint.effect_id
+                             AND reconciliation.lease_generation=
+                                 checkpoint.lease_generation
+                         )
+                       LIMIT 1""",
+                    (task_id, effect_id),
+                ).fetchone()
+                if unresolved_unknown is not None:
+                    raise ConflictError(
+                        "efeito unknown exige reconciliação independente"
+                    )
+            last = db.execute(
+                """SELECT MAX(sequence) AS sequence FROM task_checkpoints
+                   WHERE task_id=? AND lease_generation=?""",
+                (task_id, lease_generation),
+            ).fetchone()
+            expected_sequence = int(last["sequence"] or 0) + 1
+            if int(sequence) != expected_sequence:
+                raise ConflictError("sequence de checkpoint inválida")
+            stamp = iso(self.clock())
+            db.execute(
+                """INSERT INTO task_checkpoints(
+                     task_id,checkpoint_id,lease_generation,attempt_id,sequence,stage,
+                     artifact_kind,artifact_ref,artifact_sha256,next_action,effect_id,
+                     effect_state,effect_result_ref,content_digest,correlation_id,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    task_id, checkpoint_id, int(lease_generation), attempt_id, int(sequence),
+                    stage, artifact_kind, artifact_ref, artifact_sha256, next_action,
+                    effect_id, effect_state, effect_result_ref, digest, correlation_id, stamp,
+                ),
+            )
+            db.execute(
+                """UPDATE tasks SET last_material_progress_at=?,correlation_id=?,updated_at=?
+                   WHERE task_id=?""",
+                (stamp, correlation_id, stamp, task_id),
+            )
+            created = db.execute(
+                """SELECT * FROM task_checkpoints
+                   WHERE task_id=? AND checkpoint_id=?""",
+                (task_id, checkpoint_id),
+            ).fetchone()
+        return self._d(created), True
+
+    def get_latest_checkpoint(self, task_id: str) -> dict[str, Any] | None:
+        with self._db() as db:
+            if not db.execute("SELECT 1 FROM tasks WHERE task_id=?", (task_id,)).fetchone():
+                raise NotFoundError(f"task não encontrada: {task_id}")
+            row = db.execute(
+                """SELECT checkpoint.*,
+                          reconciliation.outcome AS reconciliation_outcome,
+                          reconciliation.readback_ref AS reconciliation_readback_ref,
+                          reconciliation.created_at AS reconciled_at
+                   FROM task_checkpoints checkpoint
+                   LEFT JOIN effect_reconciliations reconciliation
+                     ON reconciliation.task_id=checkpoint.task_id
+                    AND reconciliation.effect_id=checkpoint.effect_id
+                    AND reconciliation.lease_generation=checkpoint.lease_generation
+                   WHERE checkpoint.task_id=?
+                   ORDER BY checkpoint.lease_generation DESC,checkpoint.sequence DESC
+                   LIMIT 1""",
+                (task_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def get_recovery_context(self, task_id: str) -> dict[str, Any]:
+        latest_checkpoint = self.get_latest_checkpoint(task_id)
+        with self._db() as db:
+            effects = db.execute(
+                """SELECT checkpoint.*,
+                          reconciliation.outcome AS reconciliation_outcome,
+                          reconciliation.readback_ref AS reconciliation_readback_ref,
+                          reconciliation.created_at AS reconciled_at
+                   FROM task_checkpoints checkpoint
+                   LEFT JOIN effect_reconciliations reconciliation
+                     ON reconciliation.task_id=checkpoint.task_id
+                    AND reconciliation.effect_id=checkpoint.effect_id
+                    AND reconciliation.lease_generation=checkpoint.lease_generation
+                   WHERE checkpoint.task_id=?
+                     AND checkpoint.effect_id IS NOT NULL
+                     AND NOT EXISTS(
+                       SELECT 1 FROM task_checkpoints later
+                       WHERE later.task_id=checkpoint.task_id
+                         AND later.effect_id=checkpoint.effect_id
+                         AND (
+                           later.lease_generation>checkpoint.lease_generation OR
+                           (later.lease_generation=checkpoint.lease_generation
+                            AND later.sequence>checkpoint.sequence)
+                         )
+                     )
+                   ORDER BY checkpoint.effect_id""",
+                (task_id,),
+            ).fetchall()
+        return {
+            "latest_checkpoint": latest_checkpoint,
+            "effects": [dict(row) for row in effects],
+        }
+
+    def reconcile_effect(
+        self, *, task_id: str, effect_id: str, lease_generation: int,
+        outcome: str, readback_ref: str, correlation_id: str,
+    ) -> tuple[dict[str, Any], bool]:
+        if not SAFE_ID.fullmatch(effect_id):
+            raise ValueError("effect_id inválido")
+        if int(lease_generation) < 1:
+            raise ValueError("lease_generation inválida")
+        if outcome not in ("confirmed", "not_applied"):
+            raise ValueError("outcome de reconciliação inválido")
+        readback_ref = sanitize(readback_ref.strip())
+        correlation_id = correlation_id.strip()
+        if not readback_ref or not correlation_id:
+            raise ValueError("reconciliação incompleta")
+        semantic = {
+            "effect_id": effect_id,
+            "lease_generation": int(lease_generation),
+            "outcome": outcome,
+            "readback_ref": readback_ref,
+        }
+        digest = hashlib.sha256(
+            json.dumps(semantic, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        with self._tx() as db:
+            task = db.execute(
+                "SELECT * FROM tasks WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if task is None:
+                raise NotFoundError(f"task não encontrada: {task_id}")
+            existing = db.execute(
+                """SELECT * FROM effect_reconciliations
+                   WHERE task_id=? AND effect_id=? AND lease_generation=?""",
+                (task_id, effect_id, int(lease_generation)),
+            ).fetchone()
+            if existing is not None:
+                if existing["content_digest"] != digest:
+                    raise ConflictError("reconciliação divergente no replay")
+                return self._d(existing), False
+            if not bool(task["fencing_required"]):
+                raise ConflictError("reconciliação exige task cercada")
+            if task["state"] != "blocked" or task["blocked_reason"] != "effect_reconciliation_required":
+                raise ConflictError("task não aguarda reconciliação de efeito")
+            latest = db.execute(
+                """SELECT * FROM task_checkpoints
+                   WHERE task_id=? AND effect_id=?
+                   ORDER BY lease_generation DESC,sequence DESC LIMIT 1""",
+                (task_id, effect_id),
+            ).fetchone()
+            if latest is None or latest["effect_state"] not in ("pending", "unknown"):
+                raise ConflictError("efeito não está pendente de reconciliação")
+            if int(latest["lease_generation"]) != int(lease_generation):
+                raise ConflictError("lease_generation da reconciliação divergente")
+            stamp = iso(self.clock())
+            db.execute(
+                """INSERT INTO effect_reconciliations(
+                     task_id,effect_id,lease_generation,outcome,readback_ref,
+                     content_digest,correlation_id,created_at)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    task_id, effect_id, int(lease_generation), outcome, readback_ref,
+                    digest, correlation_id, stamp,
+                ),
+            )
+            created = db.execute(
+                """SELECT * FROM effect_reconciliations
+                   WHERE task_id=? AND effect_id=? AND lease_generation=?""",
+                (task_id, effect_id, int(lease_generation)),
+            ).fetchone()
+        return self._d(created), True
 
     def requeue_blocked(self, task_id: str, *, correlation_id: str) -> dict[str, Any]:
         with self._tx() as db:
@@ -738,6 +1271,8 @@ class WorkerPoolStore:
                 raise NotFoundError(f"task não encontrada: {task_id}")
             if row["state"] != "blocked":
                 raise ConflictError("somente task bloqueada pode ser reenfileirada")
+            if bool(row["fencing_required"]) and self._has_unresolved_effect(db, task_id):
+                raise ConflictError("efeito requer reconciliação")
             state = "validating" if row["produced_sha"] else "queued"
             stamp = iso(self.clock())
             db.execute("""UPDATE tasks SET state=?,blocked_reason=NULL,
@@ -818,11 +1353,13 @@ class WorkerPoolStore:
             views.append(w)
         safe = ("task_id","repository","issue_number","state","priority","branch","workspace_key",
                 "base_sha","produced_sha","builder_worker_id","validator_worker_id","leased_by",
-                "lease_expires_at","attempt_count","max_attempts","blocked_reason","last_error",
+                "lease_expires_at","lease_generation","attempt_id","fencing_required",
+                "attempt_count","max_attempts","blocked_reason","last_error",
                 "correlation_id","updated_at","last_material_progress_at")
         task_views = []
         for row in tasks:
             item = {k: row[k] for k in safe}
+            item["fencing_required"] = bool(item["fencing_required"])
             progress_age = max(
                 0.0,
                 (now - parse_iso(row["last_material_progress_at"])).total_seconds(),

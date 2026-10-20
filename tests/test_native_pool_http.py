@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sys
 from datetime import UTC, datetime, timedelta
@@ -27,8 +28,17 @@ def token_file(tmp_path: Path, value: str = "isolated-worker-token-value") -> Pa
 
 
 def isolated_server(tmp_path: Path, monkeypatch, token: Path):
+    reconciliation_token = tmp_path / "reconciliation-token"
+    reconciliation_token.write_text(
+        "isolated-reconciliation-token-value\n", encoding="ascii"
+    )
+    reconciliation_token.chmod(0o600)
     monkeypatch.setenv("CODEX_WORKER_POOL_DB", str(tmp_path / "pool.db"))
     monkeypatch.setenv("CODEX_WORKER_POOL_API_TOKEN_FILE", str(token))
+    monkeypatch.setenv(
+        "CODEX_WORKER_POOL_RECONCILIATION_TOKEN_FILE",
+        str(reconciliation_token),
+    )
     monkeypatch.setenv("CODEX_WORKER_POOL_EXPECTED_RULES_SHA", RULES)
     monkeypatch.setenv("CODEX_WORKER_POOL_HEARTBEAT_TTL_SECONDS", "600")
     monkeypatch.setenv("CODEX_WORKER_POOL_LEASE_SECONDS", "300")
@@ -91,6 +101,162 @@ def test_exact_claim_real_isolated_api_and_independent_readback(tmp_path, monkey
             with pytest.raises(NativeExecutorBlocked, match="worker_auth_rejected"):
                 unauth.get_task(task_id)
         assert app.get(f"/v1/tasks/{task_id}", headers=headers).json()["state"] == "completed"
+
+
+def test_fenced_exact_http_checkpoint_and_stale_generation(tmp_path, monkeypatch):
+    token = token_file(tmp_path)
+    module, app = isolated_server(tmp_path, monkeypatch, token)
+    headers = {"Authorization": "Bearer " + token.read_text().strip()}
+    with app:
+        module.store.enable_fenced_cutover(
+            correlation_id="native-http-cutover",
+            legacy_claimers_drained=True,
+            shared_queue_exclusive=True,
+        )
+        for worker_id, role in (("native-builder", "builder"),
+                                ("native-validator", "validator")):
+            response = app.post("/v1/workers", headers=headers, json={
+                "worker_id": worker_id, "host": "isolated",
+                "role": role, "profile": "NORMAL",
+                "gateway_ok": True, "state_validated": True,
+                "rules_sha": RULES, "worktree_root": str(tmp_path / worker_id),
+                "correlation_id": "native-fenced-register-" + role,
+            })
+            assert response.status_code == 200
+        created = app.post("/v1/tasks", headers=headers, json={
+            "repository": REPO, "issue_number": 18,
+            "request_id": "native-http-fenced", "base_sha": BASE,
+            "correlation_id": "native-fenced-create",
+            "fencing_required": True,
+        })
+        assert created.status_code == 201
+        task_id = created.json()["task"]["task_id"]
+
+        with LocalWorkerApi(port=18097, token_file=token, client=app) as api:
+            assert api.claim_exact(
+                "native-builder", task_id, "native-fenced-legacy-negative",
+            )["claimed"] is False
+            builder = api.claim_fenced_exact(
+                "native-builder", task_id, "native-fenced-claim-builder",
+            )
+            lease_a = builder["lease"]
+            assert lease_a["lease_generation"] == 1
+            assert builder["recovery_context"] == {
+                "latest_checkpoint": None, "effects": [],
+            }
+            fence_a = {
+                "lease_generation": lease_a["lease_generation"],
+                "attempt_id": lease_a["attempt_id"],
+            }
+            api.start(
+                task_id, "native-builder", lease_a["lease_token"],
+                "native-fenced-start", **fence_a,
+            )
+            effect_id = "native-artifact-http"
+            pending = api.record_checkpoint(
+                task_id, "native-builder", lease_a["lease_token"],
+                lease_a["lease_generation"], lease_a["attempt_id"],
+                "native-builder-artifact-pending", 1, "artifact_publish",
+                "publish_artifact", "native-fenced-checkpoint-pending",
+                effect_id=effect_id, effect_state="pending",
+            )
+            assert pending["effect_state"] == "pending"
+            confirmed = api.record_checkpoint(
+                task_id, "native-builder", lease_a["lease_token"],
+                lease_a["lease_generation"], lease_a["attempt_id"],
+                "native-builder-result", 2, "builder_result",
+                "submit_validation", "native-fenced-checkpoint-confirmed",
+                artifact_kind="git_bundle.v1",
+                artifact_ref="artifact://fixture/bundle",
+                artifact_sha256="d" * 64,
+                effect_id=effect_id,
+                effect_state="confirmed",
+                effect_result_ref="artifact://fixture/bundle",
+            )
+            assert confirmed == api.get_latest_checkpoint(task_id)
+            api.submit_validation(
+                task_id, "native-builder", lease_a["lease_token"], "c" * 40,
+                "native-fenced-validation", **fence_a,
+            )
+
+            validator = api.claim_fenced_exact(
+                "native-validator", task_id, "native-fenced-claim-validator",
+            )
+            lease_b = validator["lease"]
+            assert lease_b["lease_generation"] == 2
+            assert validator["recovery_context"]["latest_checkpoint"][
+                "checkpoint_id"] == "native-builder-result"
+            with pytest.raises(NativeExecutorBlocked, match="worker_http_unverified"):
+                api.fail(
+                    task_id, "native-builder", lease_a["lease_token"],
+                    "native-fenced-stale-fail", "adapter_failed", **fence_a,
+                )
+            active = api.get_task(task_id)
+            assert active["state"] == "validating"
+            assert active["leased_by"] == "native-validator"
+
+            api.record_checkpoint(
+                task_id, "native-validator", lease_b["lease_token"],
+                lease_b["lease_generation"], lease_b["attempt_id"],
+                "native-validator-result", 1, "validator_result", "complete",
+                "native-fenced-validator-checkpoint",
+                artifact_kind="git_bundle.v1",
+                artifact_ref="artifact://fixture/bundle",
+                artifact_sha256="d" * 64,
+            )
+            api.complete(
+                task_id, "native-validator", lease_b["lease_token"],
+                "native-fenced-complete",
+                lease_generation=lease_b["lease_generation"],
+                attempt_id=lease_b["attempt_id"],
+            )
+            final = api.get_task(task_id)
+            assert final["state"] == "completed"
+            assert final["lease_generation"] == 2
+
+            ambiguous_created = app.post("/v1/tasks", headers=headers, json={
+                "repository": REPO, "issue_number": 19,
+                "request_id": "native-http-ambiguous", "base_sha": BASE,
+                "correlation_id": "native-ambiguous-create",
+                "fencing_required": True,
+            })
+            assert ambiguous_created.status_code == 201
+            ambiguous_id = ambiguous_created.json()["task"]["task_id"]
+            ambiguous_claim = api.claim_fenced_exact(
+                "native-builder", ambiguous_id, "native-ambiguous-claim",
+            )
+            ambiguous_lease = ambiguous_claim["lease"]
+            ambiguous_fence = {
+                "lease_generation": ambiguous_lease["lease_generation"],
+                "attempt_id": ambiguous_lease["attempt_id"],
+            }
+            api.start(
+                ambiguous_id, "native-builder", ambiguous_lease["lease_token"],
+                "native-ambiguous-start", **ambiguous_fence,
+            )
+            for sequence, state, action in (
+                (1, "pending", "publish_artifact"),
+                (2, "unknown", "reconcile_artifact"),
+            ):
+                api.record_checkpoint(
+                    ambiguous_id, "native-builder",
+                    ambiguous_lease["lease_token"],
+                    ambiguous_lease["lease_generation"],
+                    ambiguous_lease["attempt_id"],
+                    f"native-ambiguous-{state}", sequence,
+                    "artifact_publish", action,
+                    f"native-ambiguous-checkpoint-{state}",
+                    effect_id="native-ambiguous-artifact",
+                    effect_state=state,
+                )
+            api.block(
+                ambiguous_id, "native-builder", ambiguous_lease["lease_token"],
+                "native-ambiguous-block", "artifact_publish_ambiguous",
+                **ambiguous_fence,
+            )
+            blocked = api.get_task(ambiguous_id)
+            assert blocked["state"] == "blocked"
+            assert blocked["blocked_reason"] == "effect_reconciliation_required"
 
 
 @pytest.mark.parametrize("port", [0, 65536, True, "8097"])
@@ -163,6 +329,63 @@ def test_transport_failure_never_retries_mutation(tmp_path):
         client.close()
 
 
+@pytest.mark.parametrize("readback_stage,accepted", [
+    ("artifact_publish", True),
+    ("different_stage", False),
+])
+def test_checkpoint_transport_ambiguity_uses_readback_without_post_replay(
+    tmp_path, readback_stage, accepted,
+):
+    token = token_file(tmp_path)
+    task_id = "cwp-" + "1" * 24
+    calls = []
+    stored = None
+
+    def handler(request):
+        nonlocal stored
+        calls.append((request.method, request.url.path))
+        if request.method == "POST":
+            body = json.loads(request.content)
+            stored = {
+                "task_id": task_id,
+                **{
+                    key: value for key, value in body.items()
+                    if key not in {"worker_id", "lease_token"}
+                },
+                "stage": readback_stage,
+            }
+            raise httpx.ConnectTimeout("private-network-detail")
+        return httpx.Response(
+            200, json={"checkpoint": stored}, request=request,
+        )
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler), trust_env=False,
+        follow_redirects=False,
+    )
+    try:
+        with LocalWorkerApi(port=8097, token_file=token, client=client) as api:
+            arguments = (
+                task_id, "native-builder", "isolated-lease-token-123", 1,
+                "attempt-1", "checkpoint-1", 1, "artifact_publish",
+                "publish_artifact", "native-checkpoint-ambiguity",
+            )
+            if accepted:
+                checkpoint = api.record_checkpoint(*arguments)
+                assert checkpoint["checkpoint_id"] == "checkpoint-1"
+            else:
+                with pytest.raises(
+                    NativeExecutorBlocked, match="worker_checkpoint_ambiguous"
+                ):
+                    api.record_checkpoint(*arguments)
+        assert calls == [
+            ("POST", f"/v1/tasks/{task_id}/checkpoints"),
+            ("GET", f"/v1/tasks/{task_id}/checkpoints/latest"),
+        ]
+    finally:
+        client.close()
+
+
 def test_reject_unbounded_or_wrong_claim_without_claim_replay(tmp_path):
     token = token_file(tmp_path)
     calls = []
@@ -180,6 +403,66 @@ def test_reject_unbounded_or_wrong_claim_without_claim_replay(tmp_path):
                 api.claim_exact("native-builder", "cwp-" + "1" * 24,
                                 "native-http-reject")
         assert len(calls) == 1
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("drift", ["generation", "attempt", "recovery"])
+def test_fenced_claim_rejects_missing_or_inconsistent_fence_context(tmp_path, drift):
+    task_id = "cwp-" + "1" * 24
+    worker_id = "native-builder"
+    future = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
+    task = {
+        "task_id": task_id,
+        "state": "leased",
+        "leased_by": worker_id,
+        "fencing_required": True,
+        "lease_generation": 1,
+        "attempt_id": "attempt-1",
+    }
+    lease = {
+        "task_id": task_id,
+        "worker_id": worker_id,
+        "role": "builder",
+        "lease_token": "isolated-lease-token-123",
+        "lease_expires_at": future,
+        "lease_generation": 1,
+        "attempt_id": "attempt-1",
+    }
+    recovery = {"latest_checkpoint": None, "effects": []}
+    if drift == "generation":
+        lease["lease_generation"] = None
+    elif drift == "attempt":
+        task["attempt_id"] = "different-attempt"
+    else:
+        recovery["effects"] = "not-a-list"
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={
+            "claimed": True,
+            "task": task,
+            "lease": lease,
+            "recovery_context": recovery,
+        }, request=request)
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler), trust_env=False,
+        follow_redirects=False,
+    )
+    try:
+        with LocalWorkerApi(
+            port=8097, token_file=token_file(tmp_path), client=client,
+        ) as api:
+            with pytest.raises(
+                NativeExecutorBlocked, match="worker_fenced_claim_invalid"
+            ):
+                api.claim_fenced_exact(
+                    worker_id, task_id, "native-fenced-claim-negative",
+                )
+        assert len(calls) == 1
+        assert calls[0].url.path == "/v1/claims/fenced/exact"
     finally:
         client.close()
 

@@ -26,12 +26,18 @@ from app.work import WorkOrchestrator
 SERVICE_NAME = "codex-worker-pool"
 DB_PATH = Path(os.getenv("CODEX_WORKER_POOL_DB", "./data/codex-worker-pool.db"))
 TOKEN_FILE = os.getenv("CODEX_WORKER_POOL_API_TOKEN_FILE", "").strip()
+RECONCILIATION_TOKEN_FILE = os.getenv(
+    "CODEX_WORKER_POOL_RECONCILIATION_TOKEN_FILE", ""
+).strip()
 HEARTBEAT_TTL_SECONDS = int(os.getenv("CODEX_WORKER_POOL_HEARTBEAT_TTL_SECONDS", "90"))
 LEASE_SECONDS = int(os.getenv("CODEX_WORKER_POOL_LEASE_SECONDS", "120"))
 MAX_ATTEMPTS = int(os.getenv("CODEX_WORKER_POOL_MAX_ATTEMPTS", "3"))
 PROGRESS_STALL_SECONDS = int(os.getenv("CODEX_WORKER_POOL_PROGRESS_STALL_SECONDS", "300"))
 RECONCILE_INTERVAL_SECONDS = float(os.getenv("CODEX_WORKER_POOL_RECONCILE_INTERVAL_SECONDS", "5"))
 EXPECTED_RULES_SHA = os.getenv("CODEX_WORKER_POOL_EXPECTED_RULES_SHA", "").strip().lower() or None
+FENCED_CUTOVER_ATTESTED = (
+    os.getenv("CODEX_WORKER_POOL_FENCED_CUTOVER_ATTESTED", "").strip() == "1"
+)
 
 store = WorkerPoolStore(
     DB_PATH,
@@ -41,6 +47,12 @@ store = WorkerPoolStore(
     progress_stall_seconds=PROGRESS_STALL_SECONDS,
     expected_rules_sha=EXPECTED_RULES_SHA,
 )
+if FENCED_CUTOVER_ATTESTED:
+    store.enable_fenced_cutover(
+        correlation_id="runtime-fenced-cutover-attestation",
+        legacy_claimers_drained=True,
+        shared_queue_exclusive=True,
+    )
 work_orchestrator = WorkOrchestrator(DB_PATH, store)
 reconciliation_controller = ReconciliationController(
     store,
@@ -89,6 +101,27 @@ def _read_api_token() -> str:
     return token
 
 
+def _read_reconciliation_token() -> str:
+    if not RECONCILIATION_TOKEN_FILE:
+        return ""
+    path = Path(RECONCILIATION_TOKEN_FILE)
+    try:
+        token = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return token
+
+
+def _reconciliation_auth_ready() -> bool:
+    reconciliation_token = _read_reconciliation_token()
+    api_token = _read_api_token()
+    return bool(
+        reconciliation_token
+        and api_token
+        and not hmac.compare_digest(reconciliation_token, api_token)
+    )
+
+
 def require_auth(authorization: str | None = Header(default=None)) -> None:
     expected = _read_api_token()
     if not expected:
@@ -103,12 +136,31 @@ def require_auth(authorization: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
 
 
+def require_reconciliation_auth(
+    authorization: str | None = Header(default=None),
+) -> None:
+    expected = _read_reconciliation_token()
+    if not expected or not _reconciliation_auth_ready():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="reconciliation_auth_not_configured_or_not_separated",
+        )
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+    supplied = authorization.removeprefix("Bearer ").strip()
+    if not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+
+
 def correlation(value: str | None) -> str:
     return (value or "").strip() or str(uuid.uuid4())
 
 
 def public_task(task: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in task.items() if key != "lease_token"}
+    result = {key: value for key, value in task.items() if key != "lease_token"}
+    if "fencing_required" in result:
+        result["fencing_required"] = bool(result["fencing_required"])
+    return result
 
 
 class WorkerRegistration(BaseModel):
@@ -155,6 +207,7 @@ class TaskCreate(BaseModel):
     base_sha: str = Field(min_length=40, max_length=40)
     target_branch: str | None = Field(default=None, max_length=200)
     max_attempts: int | None = Field(default=None, ge=1, le=20)
+    fencing_required: bool = False
 
 
 class ClaimRequest(BaseModel):
@@ -171,6 +224,11 @@ class LeaseMutation(BaseModel):
     worker_id: str = Field(min_length=1, max_length=128)
     lease_token: str = Field(min_length=16, max_length=128)
     correlation_id: str = Field(min_length=1, max_length=128)
+    lease_generation: int | None = Field(default=None, ge=1)
+    attempt_id: str | None = Field(
+        default=None, min_length=1, max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+    )
 
 
 class RenewLease(LeaseMutation):
@@ -185,12 +243,50 @@ class Failure(LeaseMutation):
     reason: str = Field(min_length=1, max_length=1000)
 
 
+class CheckpointRecord(LeaseMutation):
+    lease_generation: int = Field(ge=1)
+    attempt_id: str = Field(
+        min_length=1, max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+    )
+    checkpoint_id: str = Field(
+        min_length=1, max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+    )
+    sequence: int = Field(ge=1)
+    stage: str = Field(
+        min_length=1, max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+    )
+    artifact_kind: str | None = Field(
+        default=None, max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+    )
+    artifact_ref: str | None = Field(default=None, max_length=1000)
+    artifact_sha256: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
+    next_action: str = Field(min_length=1, max_length=1000)
+    effect_id: str | None = Field(
+        default=None, max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+    )
+    effect_state: Literal["none", "pending", "confirmed", "not_applied", "unknown"] = "none"
+    effect_result_ref: str | None = Field(default=None, max_length=1000)
+
+
+class EffectReconciliation(BaseModel):
+    lease_generation: int = Field(ge=1)
+    outcome: Literal["confirmed", "not_applied"]
+    readback_ref: str = Field(min_length=1, max_length=1000)
+    correlation_id: str = Field(min_length=1, max_length=128)
+
+
 class Requeue(BaseModel):
     correlation_id: str = Field(min_length=1, max_length=128)
 
 
 class WorkCreate(TaskCreate):
     merge_policy: Literal["governed"] = "governed"
+    fencing_required: Literal[False] = False
 
 
 class EvidenceRecord(BaseModel):
@@ -235,6 +331,8 @@ def _error_response(code: int, detail: str):
 @app.get("/health")
 def health(response: Response) -> dict[str, Any]:
     auth_configured = bool(_read_api_token())
+    reconciliation_auth_configured = _reconciliation_auth_ready()
+    fenced_cutover = store.fenced_cutover_status()
     rules_sha_configured = bool(EXPECTED_RULES_SHA)
     ready = auth_configured and rules_sha_configured
     if not ready:
@@ -243,6 +341,8 @@ def health(response: Response) -> dict[str, Any]:
         "status": "healthy" if ready else "not_ready",
         "service": SERVICE_NAME,
         "auth_configured": auth_configured,
+        "reconciliation_auth_configured": reconciliation_auth_configured,
+        "fenced_cutover_enabled": fenced_cutover["enabled"],
         "expected_rules_sha_configured": rules_sha_configured,
         "db_path_configured": bool(str(DB_PATH)),
         "progress_stall_seconds": PROGRESS_STALL_SECONDS,
@@ -311,6 +411,11 @@ def worker_affinities(worker_id: str, payload: WorkerAffinityUpdate) -> dict[str
 
 @app.post("/v1/tasks", dependencies=[Depends(require_auth)], status_code=201)
 def enqueue_task(payload: TaskCreate, response: Response) -> dict[str, Any]:
+    if payload.fencing_required and not _reconciliation_auth_ready():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="reconciliation_auth_not_configured_or_not_separated",
+        )
     task, created = store.enqueue_task(**payload.model_dump())
     if not created:
         response.status_code = status.HTTP_200_OK
@@ -351,7 +456,9 @@ def task_diagnostics(task_id: str) -> dict[str, Any]:
 
 @app.post("/v1/work", dependencies=[Depends(require_auth)], status_code=201)
 def create_work(payload: WorkCreate, response: Response) -> dict[str, Any]:
-    work, created = work_orchestrator.create_work(**payload.model_dump())
+    work, created = work_orchestrator.create_work(
+        **payload.model_dump(exclude={"fencing_required"})
+    )
     if not created:
         response.status_code = status.HTTP_200_OK
     _audit(
@@ -396,7 +503,10 @@ def record_merge_result(work_id: str, payload: MergeResult) -> dict[str, Any]:
     return work
 
 
-def _claim_impl(payload: ClaimRequest, *, only_task_id: str | None = None) -> dict[str, Any]:
+def _claim_impl(
+    payload: ClaimRequest, *, only_task_id: str | None = None,
+    fencing_required: bool = False,
+) -> dict[str, Any]:
     worker = store.get_worker(payload.worker_id)
     task, lease = store.claim_task(
         worker_id=payload.worker_id,
@@ -404,10 +514,14 @@ def _claim_impl(payload: ClaimRequest, *, only_task_id: str | None = None) -> di
         correlation_id=payload.correlation_id,
         lease_seconds=payload.lease_seconds,
         only_task_id=only_task_id,
+        fencing_required=fencing_required,
     )
     if task is None or lease is None:
         _audit("claim.empty", payload.correlation_id, worker_id=payload.worker_id, role=worker["role"])
-        return {"claimed": False, "task": None, "lease": None}
+        result = {"claimed": False, "task": None, "lease": None}
+        if fencing_required:
+            result["recovery_context"] = None
+        return result
     _audit(
         "claim.acquired",
         payload.correlation_id,
@@ -415,7 +529,7 @@ def _claim_impl(payload: ClaimRequest, *, only_task_id: str | None = None) -> di
         role=worker["role"],
         task_id=task["task_id"],
     )
-    return {
+    result = {
         "claimed": True,
         "task": public_task(task),
         "lease": {
@@ -424,8 +538,13 @@ def _claim_impl(payload: ClaimRequest, *, only_task_id: str | None = None) -> di
             "worker_id": lease.worker_id,
             "role": lease.role,
             "lease_expires_at": lease.lease_expires_at,
+            "lease_generation": lease.lease_generation,
+            "attempt_id": lease.attempt_id,
         },
     }
+    if fencing_required:
+        result["recovery_context"] = store.get_recovery_context(task["task_id"])
+    return result
 
 
 @app.post("/v1/claims", dependencies=[Depends(require_auth)])
@@ -438,6 +557,14 @@ def claim(payload: ClaimRequest) -> dict[str, Any]:
 def claim_exact(payload: ExactClaimRequest) -> dict[str, Any]:
     """Select one approved task ID rather than drain arbitrary queued work."""
     return _claim_impl(payload, only_task_id=payload.task_id)
+
+
+@app.post("/v1/claims/fenced/exact", dependencies=[Depends(require_auth)])
+def claim_fenced_exact(payload: ExactClaimRequest) -> dict[str, Any]:
+    """Claim one opt-in fenced task without exposing it to legacy workers."""
+    return _claim_impl(
+        payload, only_task_id=payload.task_id, fencing_required=True,
+    )
 
 
 @app.post("/v1/tasks/{task_id}/lease/renew", dependencies=[Depends(require_auth)])
@@ -498,6 +625,59 @@ def block(task_id: str, payload: Failure) -> dict[str, Any]:
         reason_code="external_block",
     )
     return public_task(task)
+
+
+@app.post("/v1/tasks/{task_id}/checkpoints", dependencies=[Depends(require_auth)])
+def checkpoint(
+    task_id: str, payload: CheckpointRecord, response: Response,
+) -> dict[str, Any]:
+    checkpoint_record, created = store.record_checkpoint(
+        task_id=task_id, **payload.model_dump()
+    )
+    response.status_code = (
+        status.HTTP_201_CREATED if created else status.HTTP_200_OK
+    )
+    _audit(
+        "task.checkpoint_recorded",
+        payload.correlation_id,
+        worker_id=payload.worker_id,
+        task_id=task_id,
+        checkpoint_id=payload.checkpoint_id,
+        lease_generation=payload.lease_generation,
+        created=created,
+        effect_state=payload.effect_state,
+    )
+    return {"created": created, "checkpoint": checkpoint_record}
+
+
+@app.get("/v1/tasks/{task_id}/checkpoints/latest", dependencies=[Depends(require_auth)])
+def latest_checkpoint(task_id: str) -> dict[str, Any]:
+    return {"checkpoint": store.get_latest_checkpoint(task_id)}
+
+
+@app.post(
+    "/v1/tasks/{task_id}/effects/{effect_id}/reconcile",
+    dependencies=[Depends(require_reconciliation_auth)],
+)
+def reconcile_effect(
+    task_id: str, effect_id: str, payload: EffectReconciliation, response: Response,
+) -> dict[str, Any]:
+    reconciliation, created = store.reconcile_effect(
+        task_id=task_id, effect_id=effect_id, **payload.model_dump()
+    )
+    response.status_code = (
+        status.HTTP_201_CREATED if created else status.HTTP_200_OK
+    )
+    _audit(
+        "task.effect_reconciled",
+        payload.correlation_id,
+        task_id=task_id,
+        effect_id=effect_id,
+        lease_generation=payload.lease_generation,
+        outcome=payload.outcome,
+        created=created,
+    )
+    return {"created": created, "reconciliation": reconciliation}
 
 
 @app.post("/v1/tasks/{task_id}/requeue", dependencies=[Depends(require_auth)])

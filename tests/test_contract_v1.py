@@ -53,6 +53,49 @@ def test_contract_operations_exist_in_runtime(tmp_path: Path, monkeypatch) -> No
         assert (operation["method"], operation["path"]) in runtime, operation["id"]
 
 
+def test_fenced_continuity_routes_and_models_are_declared() -> None:
+    data = manifest()
+    operations = {item["id"]: item for item in data["operations"]}
+    assert operations["claim_fenced_exact_task"]["path"] == "/v1/claims/fenced/exact"
+    assert "recovery_context" in operations["claim_fenced_exact_task"][
+        "response_required"
+    ]
+    assert operations["record_checkpoint"]["request_model"] == "CheckpointRecord"
+    assert operations["latest_checkpoint"]["method"] == "GET"
+    assert operations["reconcile_effect"] == {
+        "id": "reconcile_effect",
+        "method": "POST",
+        "path": "/v1/tasks/{task_id}/effects/{effect_id}/reconcile",
+        "request_model": "EffectReconciliation",
+        "response_required": ["created", "reconciliation"],
+    }
+    assert set(data["models"]["EffectReconciliation"]["required"]) == {
+        "lease_generation", "outcome", "readback_ref", "correlation_id"
+    }
+    assert data["core_semantics"][
+        "effect_reconciliation_requires_distinct_authority"
+    ] is True
+    assert data["core_semantics"]["fenced_claim_returns_recovery_context"] is True
+    assert data["core_semantics"][
+        "database_guard_rejects_legacy_binary_fenced_claim"
+    ] is True
+    assert data["core_semantics"][
+        "fenced_admission_requires_exclusive_cutover_attestation"
+    ] is True
+    assert data["core_semantics"][
+        "mixed_version_claimers_on_one_queue_are_supported"
+    ] is False
+    assert data["core_semantics"]["fenced_worker_lease_mutations_require"] == [
+        "lease_token", "lease_generation", "attempt_id"
+    ]
+    assert data["core_semantics"][
+        "unknown_effect_is_terminal_for_worker_checkpoints"
+    ] is True
+    assert data["core_semantics"][
+        "resolved_worker_checkpoint_requires_effect_result_ref"
+    ] is True
+
+
 def test_contract_required_request_fields_match_runtime_models(tmp_path: Path, monkeypatch) -> None:
     module, _client, _headers = load_runtime(tmp_path, monkeypatch)
     for model_name, declared in manifest()["models"].items():
