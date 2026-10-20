@@ -1,0 +1,119 @@
+name: Continuity identity bundle
+run-name: Continuity identity bundle · ${{ github.event_name }} · ${{ github.event.pull_request.head.sha || github.sha }}
+
+on:
+  pull_request:
+    paths:
+      - "services/continuity_identity/**"
+      - "scripts/build_continuity_identity.py"
+      - ".github/workflows/continuity-identity-bundle.yml"
+      - "tests/test_continuity_identity_bundle_workflow.py"
+  push:
+    branches: [main]
+    paths:
+      - "services/continuity_identity/**"
+      - "scripts/build_continuity_identity.py"
+      - ".github/workflows/continuity-identity-bundle.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: continuity-identity-bundle-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      BUILD_METADATA: ${{ runner.temp }}/continuity-identity-build.json
+    steps:
+      - name: Checkout immutable source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.EXPECTED_SHA }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Setup Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24"
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+
+      - name: Confirm exact checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Install pinned broker dependency
+        shell: bash
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix services/continuity_identity
+
+      - name: Verify broker identity contracts
+        shell: bash
+        run: node --test services/continuity_identity/identity.test.mjs
+
+      - name: Build and verify deterministic bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/build_continuity_identity.py > "$BUILD_METADATA"
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import stat
+          from pathlib import Path
+
+          metadata = json.loads(Path(os.environ["BUILD_METADATA"]).read_text())
+          bundle = Path(".tmp/continuity-identity.zip")
+          payload = bundle.read_bytes()
+          assert metadata["result"] == "IDENTITY_BUNDLE_BUILT"
+          assert metadata["bytes"] == len(payload)
+          assert metadata["sha256"] == hashlib.sha256(payload).hexdigest()
+          assert stat.S_IMODE(bundle.stat().st_mode) == 0o600
+          assert 0 < len(payload) < 10_000_000
+          print(json.dumps({
+              "result": "IDENTITY_BUNDLE_VERIFIED",
+              "bytes": len(payload),
+              "sha256": metadata["sha256"],
+              "source_sha": os.environ["EXPECTED_SHA"],
+          }, sort_keys=True))
+          PY
+
+      - name: Upload short-lived code-only bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: continuity-identity-${{ env.EXPECTED_SHA }}
+          path: .tmp/continuity-identity.zip
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Publish non-secret summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import os
+          from pathlib import Path
+          value = json.loads(Path(os.environ["BUILD_METADATA"]).read_text())
+          print("## Continuity identity bundle")
+          print(f"- Source SHA: `{os.environ['EXPECTED_SHA']}`")
+          print(f"- Bundle SHA-256: `{value['sha256']}`")
+          print(f"- Bytes: {value['bytes']}")
+          print("- Secrets/configuration included: no")
+          print("- Deployment performed: no")
+          PY
