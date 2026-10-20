@@ -1,8 +1,4 @@
-{
-  "schema_version": 1,
-  "contract_name": "engineering-worker-pool",
-  "contract_version": "v1",
-  "service_name": "codex-worker-pool",
+name": "codex-worker-pool",
   "compatibility_policy": {
     "within_v1": "backward-compatible additive changes only",
     "breaking_change_requires": "new major contract path/version",
@@ -37,6 +33,22 @@
     ],
     "blocked_task_releases_capacity": true,
     "heartbeat_or_lease_renewal_is_material_progress": false,
+    "fencing_is_opt_in": true,
+    "legacy_claims_exclude_fenced_tasks": true,
+    "database_guard_rejects_legacy_binary_fenced_claim": true,
+    "fenced_admission_requires_exclusive_cutover_attestation": true,
+    "mixed_version_claimers_on_one_queue_are_supported": false,
+    "fenced_worker_lease_mutations_require": [
+      "lease_token",
+      "lease_generation",
+      "attempt_id"
+    ],
+    "checkpoint_replay_is_material_progress": false,
+    "unresolved_effect_blocks_automatic_reroute": true,
+    "unknown_effect_is_terminal_for_worker_checkpoints": true,
+    "resolved_worker_checkpoint_requires_effect_result_ref": true,
+    "effect_reconciliation_requires_distinct_authority": true,
+    "fenced_claim_returns_recovery_context": true,
     "independent_readback_path": "/v1/tasks/{task_id}",
     "work_orchestrator_flow": "queue->worker->validator->evidence->governed_merge",
     "work_evidence_requires_exact_produced_sha": true,
@@ -76,6 +88,9 @@
         "request_id",
         "correlation_id",
         "base_sha"
+      ],
+      "optional": [
+        "fencing_required"
       ]
     },
     "ClaimRequest": {
@@ -84,11 +99,22 @@
         "correlation_id"
       ]
     },
+    "ExactClaimRequest": {
+      "required": [
+        "worker_id",
+        "correlation_id",
+        "task_id"
+      ]
+    },
     "LeaseMutation": {
       "required": [
         "worker_id",
         "lease_token",
         "correlation_id"
+      ],
+      "optional": [
+        "lease_generation",
+        "attempt_id"
       ]
     },
     "RenewLease": {
@@ -112,6 +138,27 @@
         "lease_token",
         "correlation_id",
         "reason"
+      ]
+    },
+    "CheckpointRecord": {
+      "required": [
+        "worker_id",
+        "lease_token",
+        "correlation_id",
+        "lease_generation",
+        "attempt_id",
+        "checkpoint_id",
+        "sequence",
+        "stage",
+        "next_action"
+      ]
+    },
+    "EffectReconciliation": {
+      "required": [
+        "lease_generation",
+        "outcome",
+        "readback_ref",
+        "correlation_id"
       ]
     },
     "Requeue": {
@@ -245,6 +292,29 @@
       ]
     },
     {
+      "id": "claim_exact_task",
+      "method": "POST",
+      "path": "/v1/claims/exact",
+      "request_model": "ExactClaimRequest",
+      "response_required": [
+        "claimed",
+        "task",
+        "lease"
+      ]
+    },
+    {
+      "id": "claim_fenced_exact_task",
+      "method": "POST",
+      "path": "/v1/claims/fenced/exact",
+      "request_model": "ExactClaimRequest",
+      "response_required": [
+        "claimed",
+        "task",
+        "lease",
+        "recovery_context"
+      ]
+    },
+    {
       "id": "renew_lease",
       "method": "POST",
       "path": "/v1/tasks/{task_id}/lease/renew",
@@ -303,6 +373,35 @@
       "response_required": [
         "task_id",
         "state"
+      ]
+    },
+    {
+      "id": "record_checkpoint",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/checkpoints",
+      "request_model": "CheckpointRecord",
+      "response_required": [
+        "created",
+        "checkpoint"
+      ]
+    },
+    {
+      "id": "latest_checkpoint",
+      "method": "GET",
+      "path": "/v1/tasks/{task_id}/checkpoints/latest",
+      "request_model": null,
+      "response_required": [
+        "checkpoint"
+      ]
+    },
+    {
+      "id": "reconcile_effect",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/effects/{effect_id}/reconcile",
+      "request_model": "EffectReconciliation",
+      "response_required": [
+        "created",
+        "reconciliation"
       ]
     },
     {

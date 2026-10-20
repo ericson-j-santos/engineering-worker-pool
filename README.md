@@ -140,3 +140,60 @@ Os testes usam SQLite e tarefas sintéticas, não o banco DEV existente;
 merge, cutover 1.2→1.4 e instalação de executores persistentes exigem
 E2E físico e gates próprios. A rota legada `POST /v1/claims`
 permanece compatível para trabalhadores gerais já existentes.
+
+## Continuidade cercada por geração
+
+Uma task pode optar por continuidade estrita com `fencing_required=true`.
+Ela fica invisível para as rotas de claim legadas do serviço atualizado e deve
+ser adquirida por
+`POST /v1/claims/fenced/exact`. Cada claim produz uma `lease_generation`
+monotônica e um `attempt_id`; ambos acompanham o token nas mutações worker-side
+que dependem de uma lease ativa.
+Um trigger no SQLite exige que a atribuição de qualquer task cercada incremente
+a geração e grave uma tentativa nova no mesmo `UPDATE`. Com isso, o SQL de
+claim de um binário anterior falha fechado. Isso é um guard de segurança, não
+um escalonador compatível com versões mistas: o `SELECT` antigo ainda pode escolher
+uma task cercada e sofrer bloqueio head-of-line. Antes de admitir a primeira task
+cercada, o cutover deve parar/drenar todos os claimers anteriores ou isolar a fila;
+operação mista na mesma fila não é suportada.
+Depois dessa verificação operacional, o runtime novo persiste a attestation ao
+iniciar com `CODEX_WORKER_POOL_FENCED_CUTOVER_ATTESTED=1`. Sem ela, tanto o Store
+quanto um trigger de banco rejeitam a criação de tasks cercadas.
+
+Checkpoints recuperáveis são registrados em
+`POST /v1/tasks/{task_id}/checkpoints`. Replay idêntico é idempotente e não
+simula progresso. Efeitos marcados `pending` ou `unknown` bloqueiam a task em
+`effect_reconciliation_required`, evitando reexecução automática sem readback.
+Depois que um worker registra `unknown`, esse efeito se torna terminal para
+checkpoints do worker; somente a autoridade de reconciliação pode resolvê-lo.
+Todos os checkpoints worker-side `confirmed` ou `not_applied` exigem
+`effect_result_ref` não vazio.
+Uma autoridade técnica separada pode registrar o resultado do readback em
+`POST /v1/tasks/{task_id}/effects/{effect_id}/reconcile`; a credencial vem de
+`CODEX_WORKER_POOL_RECONCILIATION_TOKEN_FILE` e deve ser diferente da credencial
+dos workers. O pool aceita apenas `confirmed` ou `not_applied`, com geração e
+referência da evidência. A autoridade chamadora continua responsável por fazer a
+leitura independente real antes de declarar o resultado.
+
+A claim cercada devolve `recovery_context`, com o checkpoint mais recente e o
+estado mais recente de cada efeito. O novo executor deve preservar efeitos
+`confirmed` sem repeti-los; somente efeitos comprovados como `not_applied` podem
+ser tentados novamente, sempre sob a nova geração.
+
+Esses controles rejeitam gerações antigas dentro do Worker Pool. Um efeito em
+GitHub, banco ou serviço externo somente está cercado quando o próprio destino
+ou seu adaptador autorizado compara a geração no ponto da escrita.
+
+O teste de integração multiprocesso determinístico usa quatro processos (`A`,
+um ciclo de recovery de lease, `B` e validador `C`) e um segundo SQLite como
+sink externo sintético. Ele exercita diretamente `WorkerPoolStore`: prova a
+retomada da mesma task entre processos, transições CAS seriais `g1→g2→g3`,
+efeito único, rejeição de A/g1 durante a posse ativa de B/g2 e readback de C em
+conexão independente. Ele não exercita HTTP/autenticação, o controller de fundo,
+uma disputa CAS, hosts físicos, GitHub ou outro destino de produção.
+
+O executor one-shot e o backend S3/CAS de `git bundle` estão documentados em
+[docs/NATIVE_ONE_SHOT_EXECUTOR.md](docs/NATIVE_ONE_SHOT_EXECUTOR.md) e
+[docs/S3_GIT_BUNDLE_ARTIFACT.md](docs/S3_GIT_BUNDLE_ARTIFACT.md). O backend é
+injetável e testado com armazenamento sintético; não existe ativação automática,
+bucket ou credencial homologada, nem prova entre hosts físicos neste repositório.
