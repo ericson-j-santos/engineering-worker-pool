@@ -51,13 +51,17 @@ class LocalWorkerApi:
     """Exact-claim WorkerApi client; fixed IPv4 loopback only and no retries."""
 
     def __init__(self, *, port: int, token_file: Path,
-                 client: httpx.Client | None = None) -> None:
+                 client: httpx.Client | None = None,
+                 timeout_seconds: float = 8) -> None:
+        _need(type(timeout_seconds) in (int, float)
+              and 1 <= timeout_seconds <= 120, "worker_timeout_invalid")
+        self.timeout_seconds = timeout_seconds
         _need(type(port) is int and 1 <= port <= 65_535, "worker_port_invalid")
         self.base_url = f"http://127.0.0.1:{port}"
         self.token_file = Path(token_file)
         self._owned = client is None
         self._client = client if client is not None else httpx.Client(
-            trust_env=False, follow_redirects=False, timeout=8,
+            trust_env=False, follow_redirects=False, timeout=self.timeout_seconds,
         )
 
     def close(self) -> None:
@@ -108,7 +112,7 @@ class LocalWorkerApi:
                 headers={"Authorization": "Bearer " + self._token(),
                          "Accept": "application/json"},
                 json=payload if method == "POST" else None,
-                timeout=8,
+                timeout=self.timeout_seconds,
             )
         except (httpx.HTTPError, OSError):
             # POST effects are ambiguous after a transport error. Never retry.

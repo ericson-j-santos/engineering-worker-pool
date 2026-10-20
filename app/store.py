@@ -733,8 +733,9 @@ class WorkerPoolStore:
             raise ValueError("role/lease inválido")
         if only_task_id is not None and not TASK_ID.fullmatch(only_task_id):
             raise ValueError("exact_task_id inválido")
-        now, stamp = self.clock(), iso(self.clock())
         with self._tx() as db:
+            # Resolve lease time after waiting for the authority write lock.
+            now, stamp = self.clock(), iso(self.clock())
             if only_task_id is None:
                 # Preserve legacy claim behavior; the exact claim does not
                 # mutate unrelated leases as a side effect of a failed match.
@@ -763,7 +764,7 @@ class WorkerPoolStore:
                            WHERE active.repository=t.repository
                              AND active.state IN ('leased','running','validating')
                          ) < r.max_in_flight
-                         AND (? IS NULL OR t.task_id=?)
+                         AND (CAST(? AS TEXT) IS NULL OR t.task_id=?)
                        ORDER BY
                          r.builder_claim_count,
                          CASE WHEN r.last_builder_claimed_at IS NULL THEN 0 ELSE 1 END,
@@ -793,7 +794,7 @@ class WorkerPoolStore:
                              WHERE wa.worker_id=? AND wa.repository=t.repository
                            )
                          )
-                         AND (? IS NULL OR t.task_id=?)
+                         AND (CAST(? AS TEXT) IS NULL OR t.task_id=?)
                        ORDER BY
                          r.validator_claim_count,
                          CASE WHEN r.last_validator_claimed_at IS NULL THEN 0 ELSE 1 END,
@@ -891,12 +892,13 @@ class WorkerPoolStore:
                     correlation_id: str, lease_seconds: int | None = None,
                     lease_generation: int | None = None,
                     attempt_id: str | None = None) -> dict[str, Any]:
-        expires = iso(self.clock() + timedelta(seconds=int(lease_seconds or self.default_lease_seconds)))
         with self._tx() as db:
             row = self._lease(
                 db, task_id, worker_id, lease_token, ACTIVE,
                 lease_generation=lease_generation, attempt_id=attempt_id,
             )
+            expires = iso(self.clock() + timedelta(
+                seconds=int(lease_seconds or self.default_lease_seconds)))
             db.execute("UPDATE tasks SET lease_expires_at=?,correlation_id=?,updated_at=? WHERE task_id=?",
                        (expires, correlation_id, iso(self.clock()), task_id))
             if row["attempt_id"]:
