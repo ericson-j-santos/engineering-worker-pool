@@ -26,12 +26,18 @@ jobs:
       github.event.pull_request.user.login == 'ericson-j-santos' &&
       github.actor == 'ericson-j-santos'
     runs-on: ubuntu-24.04
+    container:
+      image: python:3.12.15-bookworm
+      volumes:
+        - /workspace
     timeout-minutes: 6
     outputs:
       capsule: ${{ steps.proof.outputs.capsule }}
       capsule_sha256: ${{ steps.proof.outputs.capsule_sha256 }}
     env:
       PYTHONDONTWRITEBYTECODE: "1"
+      REQSYS_WORKSPACE_ROOT: /workspace
+      REQSYS_GATEWAY_STATE_DIR: /workspace/.reqsys-command-gateway-posix
       REHEARSAL_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
       - name: Checkout immutable candidate without stored credentials
@@ -46,10 +52,6 @@ jobs:
           ref: a430688c499077f5472841560f224c40766b0b78
           path: .rehearsal-rules
           persist-credentials: false
-      - name: Configure Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-        with:
-          python-version: "3.12"
       - name: Governed producer, interruption and checkpoint
         id: proof
         run: python -B scripts/hosted_rehearsal.py run-produce
@@ -57,9 +59,15 @@ jobs:
   resume:
     needs: produce
     runs-on: ubuntu-24.04
+    container:
+      image: python:3.12.15-bookworm
+      volumes:
+        - /workspace
     timeout-minutes: 6
     env:
       PYTHONDONTWRITEBYTECODE: "1"
+      REQSYS_WORKSPACE_ROOT: /workspace
+      REQSYS_GATEWAY_STATE_DIR: /workspace/.reqsys-command-gateway-posix
       REHEARSAL_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
       REHEARSAL_CAPSULE: ${{ needs.produce.outputs.capsule }}
       REHEARSAL_CAPSULE_SHA256: ${{ needs.produce.outputs.capsule_sha256 }}
@@ -76,9 +84,5 @@ jobs:
           ref: a430688c499077f5472841560f224c40766b0b78
           path: .rehearsal-rules
           persist-credentials: false
-      - name: Configure Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-        with:
-          python-version: "3.12"
       - name: Governed independent resume and stale-generation rejection
         run: python -B scripts/hosted_rehearsal.py run-resume

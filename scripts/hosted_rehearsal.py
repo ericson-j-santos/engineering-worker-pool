@@ -18,6 +18,7 @@ from pathlib import Path
 import re
 import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -26,9 +27,19 @@ import zlib
 REPOSITORY = "ericson-j-santos/engineering-worker-pool"
 RULES_SHA = "a430688c499077f5472841560f224c40766b0b78"
 ROOT = Path(__file__).resolve().parents[1]
-HOSTED_ROOT = Path("/home/runner/work/engineering-worker-pool")
-SOURCE_ROOT = HOSTED_ROOT / "engineering-worker-pool"
-WORK_ROOT = HOSTED_ROOT / ".continuity-workers"
+WORK_ROOT = Path("/workspace/.chatgpt-workers")
+POLICY_RELATIVE = "config/command-gateway.policy.posix.json"
+POLICY_SHA256 = "50e2da27bcca6c82ae57cabbb5d8f490108fb363265c5f30fd0dcf78d6828bc5"
+# Independently read from MANIFEST.json at RULES_SHA; never derived from candidate bytes.
+PINNED_RULES_FILES = {
+    POLICY_RELATIVE: (2058, POLICY_SHA256),
+    "scripts/command_gateway.py": (64252, "14f1389a5c2447e0ec3ae707fd468c224e0f9f492fd7541de65906918c8ac4d1"),
+    "scripts/session_launcher.py": (32379, "076c8670fde811233918767ad3fda15584735d38a20be2720951e5516e77b257"),
+    "scripts/session_preflight.py": (6957, "57774599e388c034b929686f3d72dbb872f9b97fb19879a6f880a908dbde25d6"),
+    "scripts/session_bootstrap.py": (11018, "2148b5e8885b9b5a223007bf0733282199a919cae57e1622b4e107b3d6a83b36"),
+    "scripts/runner_version_preflight.py": (12120, "4ec5f4af67d7b8e5b859d7093241c6bcfa2dee9d9e37ec73f593b9c40784e09f"),
+    "scripts/host_health_check.py": (2450, "82a12ed90b8f922fb6a44677b3fcf450c9418ca133e9b45441f3fe798b797b3f"),
+}
 MAGIC = "worker-pool-hosted-rehearsal-v1"
 MAX_RAW = 2 * 1024 * 1024
 MAX_ENCODED = 128 * 1024
@@ -38,7 +49,7 @@ PUBLIC_INPUT = b"worker-pool disposable portable checkpoint v1"
 TEST_REPOSITORY = "example/hosted-continuity-rehearsal"
 EXIT_AFTER_CHECKPOINT = 73
 CAPSULE_KEYS = {"schema", "source_sha", "rules_sha", "run_id", "run_attempt",
-                "producer_host", "task_id", "old_generation", "old_attempt",
+                "producer_host", "producer_runner", "task_id", "old_generation", "old_attempt",
                 "artifact", "artifact_sha256", "database", "database_sha256"}
 CORR = "hosted-continuity-rehearsal"
 
@@ -87,6 +98,13 @@ def encode_capsule(value: dict) -> tuple[str, str]:
     return encoded, digest(raw)
 
 
+def runner_identity(value: object) -> str:
+    require(isinstance(value, str) and
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,127}", value) is not None,
+            "runner_identity_invalid")
+    return value
+
+
 def decode_capsule(encoded: str, expected_digest: str, context: dict) -> dict:
     require(isinstance(encoded, str) and 0 < len(encoded) <= MAX_ENCODED,
             "encoded_capsule_size")
@@ -115,6 +133,7 @@ def decode_capsule(encoded: str, expected_digest: str, context: dict) -> dict:
     require(isinstance(value["producer_host"], str) and
             re.fullmatch(r"[A-Za-z0-9._-]{1,128}", value["producer_host"]) is not None,
             "producer_identity_invalid")
+    runner_identity(value["producer_runner"])
     require(isinstance(value["old_attempt"], str) and
             re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", value["old_attempt"]) is not None,
             "source_attempt_invalid")
@@ -137,6 +156,78 @@ def decode_capsule(encoded: str, expected_digest: str, context: dict) -> dict:
             "database_format_invalid")
     require(digest(db) == value["database_sha256"], "database_integrity_mismatch")
     return value
+
+
+def physical_directory(path: Path) -> Path:
+    """Read-only: reject aliases before using an Actions workspace or governance source."""
+    require(path.is_absolute(), "physical_directory_required")
+    try:
+        for component in (path, *path.parents):
+            require(component.is_dir() and not component.is_symlink(),
+                    "physical_directory_required")
+        require(path.resolve(strict=True) == path, "physical_directory_required")
+    except OSError as exc:
+        raise RehearsalError("physical_directory_required") from exc
+    return path
+
+
+def read_regular_bytes(path: Path, limit: int) -> bytes:
+    """Bounded reads only; no bootstrap-side mkdir, policy rewrite or subprocess."""
+    physical_directory(path.parent)
+    try:
+        before = path.lstat()
+        require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1,
+                "regular_governance_file_required")
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as handle:
+            opened = os.fstat(handle.fileno())
+            payload = handle.read(limit + 1)
+            after = os.fstat(handle.fileno())
+        final = path.lstat()
+    except OSError as exc:
+        raise RehearsalError("regular_governance_file_required") from exc
+    identity = lambda value: (value.st_dev, value.st_ino, value.st_size,
+                              value.st_mtime_ns, value.st_ctime_ns, value.st_nlink)
+    require(identity(before) == identity(opened) == identity(after) == identity(final)
+            and len(payload) <= limit, "governance_file_changed_or_oversized")
+    return payload
+
+
+def canonical_governance(source: Path) -> tuple[Path, Path]:
+    """Verify the immutable checkout and import closure before launching any command."""
+    rules_root = physical_directory(source / ".rehearsal-rules")
+    head = read_regular_bytes(rules_root / ".git" / "HEAD", 128).decode("ascii").strip()
+    require(head == RULES_SHA, "canonical_rules_sha_mismatch")
+    manifest = json.loads(read_regular_bytes(rules_root / "MANIFEST.json", 1024 * 1024),
+                          object_pairs_hook=no_duplicates)
+    require(isinstance(manifest, dict) and manifest.get("version") == "1.6.12"
+            and isinstance(manifest.get("files"), list), "canonical_manifest_invalid")
+    index = {}
+    for entry in manifest["files"]:
+        require(isinstance(entry, dict) and isinstance(entry.get("path"), str)
+                and entry["path"] not in index, "canonical_manifest_invalid")
+        index[entry["path"]] = entry
+    for relative, (size, expected) in PINNED_RULES_FILES.items():
+        entry = index.get(relative, {})
+        require(entry.get("size") == size and entry.get("sha256") == expected,
+                "canonical_manifest_mismatch")
+        payload = read_regular_bytes(rules_root / relative, size)
+        require(len(payload) == size and digest(payload) == expected,
+                "canonical_governance_bytes_mismatch")
+    return rules_root / "scripts", rules_root / POLICY_RELATIVE
+
+
+def validated_test_count(payload: dict) -> int:
+    """An exit code alone cannot prove that discovery actually executed its controls."""
+    require(payload.get("result") == "ok" and payload.get("command_exit_code") == 0,
+            "rehearsal_contract_tests_failed")
+    report = str(payload.get("stdout", "")) + "\n" + str(payload.get("stderr", ""))
+    matches = re.findall(r"^Ran ([0-9]+) tests? in [0-9.]+s\s*$", report, re.MULTILINE)
+    require(len(matches) == 1 and int(matches[0]) > 0
+            and re.search(r"^OK\s*$", report, re.MULTILINE) is not None
+            and re.search(r"^(?:OK|FAILED)\s*\(", report, re.MULTILINE) is None,
+            "rehearsal_test_execution_unverified")
+    return int(matches[0])
 
 
 def context() -> dict:
@@ -231,6 +322,7 @@ def checkpoint_writer(ctx: dict) -> None:
 
 
 def produce(ctx: dict) -> dict:
+    producer_runner = runner_identity(os.environ.get("RUNNER_NAME"))
     root = work_path(ctx)
     root.mkdir(parents=True, exist_ok=False)
     result = subprocess.run([sys.executable, "-B", str(Path(__file__).resolve()), "writer"],
@@ -261,7 +353,7 @@ def produce(ctx: dict) -> dict:
     raw_db = (root / "checkpoint.db").read_bytes()
     artifact = strict_json((root / "stage-one.json").read_bytes())
     capsule = dict(ctx, schema=MAGIC, producer_host=socket.gethostname(),
-                   task_id=metadata["task_id"], old_generation=metadata["old_generation"],
+                   producer_runner=producer_runner, task_id=metadata["task_id"], old_generation=metadata["old_generation"],
                    old_attempt=metadata["old_attempt"], artifact=artifact,
                    artifact_sha256=digest(canonical(artifact)),
                    database=base64.b64encode(raw_db).decode(),
@@ -271,7 +363,8 @@ def produce(ctx: dict) -> dict:
     (root / "transfer.json").write_bytes(canonical({"capsule": encoded, "digest": sha}))
     return dict(ctx, phase="produce", capsule_sha256=sha,
                 process_interruption_verified=True, source_lease_released=True,
-                capsule_bytes=len(encoded), producer_host=socket.gethostname(),
+                capsule_bytes=len(encoded), producer_runner=producer_runner,
+                producer_container_hostname=socket.gethostname(),
                 product_data_used=False, live_failover_verified=False)
 
 
@@ -280,7 +373,9 @@ def resume(ctx: dict) -> dict:
     encoded = os.environ.get("REHEARSAL_CAPSULE", "")
     sha = os.environ.get("REHEARSAL_CAPSULE_SHA256", "")
     capsule = decode_capsule(encoded, sha, ctx)
-    require(capsule["producer_host"] != socket.gethostname(), "distinct_executor_required")
+    receiver_runner = runner_identity(os.environ.get("RUNNER_NAME"))
+    require(capsule["producer_host"] != socket.gethostname() and
+            capsule["producer_runner"] != receiver_runner, "distinct_executor_required")
     root = work_path(ctx)
     require(not root.exists(), "receiver_workspace_not_fresh")
     root.mkdir(parents=True)
@@ -357,7 +452,9 @@ def resume(ctx: dict) -> dict:
         correlation_id=CORR + "-replay", base_sha=ctx["source_sha"], fencing_required=True)
     require(created is False and repeated["task_id"] == tid, "task_replay_duplicated")
     return dict(ctx, phase="resume", capsule_sha256=sha,
-                producer_host=capsule["producer_host"], receiver_host=socket.gethostname(),
+                producer_runner=capsule["producer_runner"], receiver_runner=receiver_runner,
+                producer_container_hostname=capsule["producer_host"],
+                receiver_container_hostname=socket.gethostname(),
                 checkpoint_resume_verified=True, stale_generation_rejected=True,
                 checkpoint_replay_verified=True, task_replay_verified=True,
                 final_state=independently_read["state"], product_data_used=False,
@@ -369,6 +466,8 @@ def validate_launch(payload: dict, ctx: dict) -> Path:
     require(payload.get("result") == "SESSION_LAUNCH_OK" and
             payload.get("state_validated") is True and payload.get("head") == ctx["source_sha"],
             "session_not_verified")
+    require(payload.get("base_sync") == "isolated_session_source" and
+            payload.get("source_repo_root") == str(ROOT), "isolated_source_required")
     require(isinstance(payload.get("snapshot_sha256"), str) and
             SHA64.fullmatch(payload["snapshot_sha256"]) is not None,
             "snapshot_digest_required")
@@ -413,8 +512,13 @@ def execute_json(command: list[str], *, timeout: int, cwd: Path) -> dict:
 
 def run_governed(phase: str) -> None:
     ctx = context()
-    require(ROOT == SOURCE_ROOT and Path(os.environ.get("GITHUB_WORKSPACE", "")) == ROOT,
-            "fixed_hosted_workspace_required")
+    require(os.name == "posix" and sys.dont_write_bytecode,
+            "posix_bytecode_disabled_required")
+    require(os.environ.get("REQSYS_WORKSPACE_ROOT") == "/workspace"
+            and os.environ.get("REQSYS_GATEWAY_STATE_DIR") ==
+            "/workspace/.reqsys-command-gateway-posix", "canonical_path_environment_required")
+    source_root = physical_directory(Path(os.environ.get("GITHUB_WORKSPACE", "")))
+    require(ROOT == source_root, "actions_workspace_mismatch")
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
     pr = event.get("pull_request", {})
     require(pr.get("head", {}).get("repo", {}).get("full_name") == REPOSITORY and
@@ -426,8 +530,7 @@ def run_governed(phase: str) -> None:
     require(isinstance(branch, str) and
             re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}", branch) is not None and
             ".." not in branch, "branch_invalid")
-    rules = ROOT / ".rehearsal-rules" / "scripts"
-    policy = ROOT / "config" / "hosted-rehearsal-gateway.json"
+    rules, policy = canonical_governance(source_root)
     launch = execute_json(
         [sys.executable, "-B", str(rules / "session_launcher.py"), "--policy", str(policy),
          "--repo", str(ROOT), "--session-prefix", "rehearsal-" + phase,
@@ -448,8 +551,7 @@ def run_governed(phase: str) -> None:
     tests = execute_json(prefix + [sys.executable, "-B", "-m", "unittest", "discover",
                                    "-s", "tests", "-p", "test_hosted_rehearsal.py"],
                          timeout=110, cwd=ROOT)
-    require(tests.get("result") == "ok" and tests.get("command_exit_code") == 0,
-            "rehearsal_contract_tests_failed")
+    test_count = validated_test_count(tests)
     proof = execute_json(prefix + [sys.executable, "-B", "scripts/hosted_rehearsal.py", phase],
                          timeout=110, cwd=ROOT)
     require(proof.get("result") == "ok" and proof.get("command_exit_code") == 0 and
@@ -465,7 +567,9 @@ def run_governed(phase: str) -> None:
             output.write("capsule=" + transfer["capsule"] + "\n")
             output.write("capsule_sha256=" + transfer["digest"] + "\n")
     receipt.update(session_result=launch["result"], session_id=launch["session_id"],
-                   snapshot_sha256=launch["snapshot_sha256"], gateway_verified=True)
+                   snapshot_sha256=launch["snapshot_sha256"], gateway_verified=True,
+                   governance_profile="canonical_posix", policy_sha256=POLICY_SHA256,
+                   contract_tests_executed=test_count)
     print("REHEARSAL_EVIDENCE " + canonical(receipt).decode().strip())
 
 
