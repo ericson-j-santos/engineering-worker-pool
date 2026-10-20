@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "platform": "posix",
+  "allowed_roots": [
+    "/home/runner/work/engineering-worker-pool/engineering-worker-pool",
+    "/home/runner/work/engineering-worker-pool/.continuity-workers/*"
+  ],
+  "denied_roots": [],
+  "denied_segments": [
+    ".ssh",
+    ".azure",
+    ".aws",
+    ".gnupg",
+    ".kube"
+  ],
+  "denied_names": [
+    ".env",
+    ".env.*",
+    "id_rsa",
+    "id_ed25519",
+    "*.pem",
+    "*.pfx",
+    "*.p12"
+  ],
+  "allowed_executables": [
+    "git",
+    "python",
+    "python3"
+  ],
+  "blocked_executables": [
+    "cmd",
+    "powershell",
+    "pwsh",
+    "bash",
+    "sh",
+    "wsl",
+    "ssh",
+    "scp",
+    "az",
+    "gh",
+    "sudo",
+    "kubectl",
+    "terraform"
+  ],
+  "deny_inline_code": true,
+  "block_gui_input_automation": true,
+  "require_git_repo": true,
+  "risk2_requires_clean_tree": true,
+  "max_timeout_seconds": 120,
+  "git_state_timeout_seconds": 30,
+  "state_dir": "/home/runner/work/engineering-worker-pool/.continuity-state",
+  "git_untracked_excludes": [
+    ".tmp/**"
+  ],
+  "require_session_bootstrap": true,
+  "worktree_root": "/home/runner/work/engineering-worker-pool/.continuity-workers",
+  "worktree_prefix": "wt-chat-",
+  "rules_version": "1.6.12",
+  "require_preflight_snapshot": true,
+  "session_source_roots": [],
+  "governed_branch_updates": [],
+  "allowed_executable_specs": []
+}
