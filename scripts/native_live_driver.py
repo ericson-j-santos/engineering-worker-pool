@@ -277,6 +277,10 @@ def main():
             code = str(exc)
         public["code"] = code
         public["exception_type"] = type(exc).__name__
+        if type(exc).__module__ == "scripts.native_private_config":
+            shape = getattr(exc, "claim_shape_diagnostic", None)
+            if isinstance(shape, dict):
+                public["unverified_claim_shape"] = shape
     finally:
         if evidence_directory.is_dir() and not evidence_directory.is_symlink():
             from scripts.native_shared_continuity import protected_json

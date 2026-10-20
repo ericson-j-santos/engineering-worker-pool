@@ -2,12 +2,14 @@
 """Private, non-logging configuration intake for the native continuity runtime."""
 from __future__ import annotations
 import argparse
+import base64
 import getpass
 import json
 import os
 import re
 import stat
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -198,6 +200,49 @@ def _json_request(request: urllib.request.Request, *, maximum: int, stage: str =
         label = stage if stage in {"github", "broker", "exchange"} else "exchange"
         raise PrivateConfigurationError("identity_" + label + "_transport_failed") from None
 
+def _claim_shape_diagnostic(value: str) -> dict:
+    """Names/booleans only, for a rejected exchange; NEVER an authorization gate."""
+    try:
+        segment = value.split(".")[1]
+        payload = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
+        expected = {
+            "iss": "https://token.actions.githubusercontent.com",
+            "aud": "urn:engineering-worker-pool:continuity:v1",
+            "repository": "ericson-j-santos/engineering-worker-pool",
+            "repository_id": "1384155635",
+            "repository_owner": "ericson-j-santos",
+            "repository_owner_id": "60470500",
+            "actor": "ericson-j-santos", "actor_id": "60470500",
+            "event_name": "push",
+            "ref": "refs/heads/feat/hosted-cold-checkpoint-resume-20261020",
+            "ref_type": "branch", "runner_environment": "github-hosted",
+            "sha": os.environ["GITHUB_SHA"], "workflow_sha": os.environ["GITHUB_SHA"],
+            "workflow_ref": "ericson-j-santos/engineering-worker-pool/.github/workflows/"
+                            "native-live-continuity.yml@refs/heads/feat/hosted-cold-checkpoint-resume-20261020",
+            "run_id": os.environ["GITHUB_RUN_ID"],
+            "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+        }
+        result = {
+            "authorization_evidence": False,
+            "mismatch_names": sorted(k for k, v in expected.items() if payload.get(k) != v),
+            "job_workflow_ref_present": "job_workflow_ref" in payload,
+            "job_workflow_sha_present": "job_workflow_sha" in payload,
+            "job_workflow_ref_matches_workflow": payload.get("job_workflow_ref") == expected["workflow_ref"],
+            "job_workflow_sha_matches_source": payload.get("job_workflow_sha") == expected["sha"],
+            "audience_is_singleton_expected": payload.get("aud") == [expected["aud"]],
+        }
+        if all(type(payload.get(k)) is int for k in ("iat", "nbf", "exp")):
+            result.update({
+                "token_lifetime_seconds": payload["exp"] - payload["iat"],
+                "token_age_seconds": int(time.time()) - payload["iat"],
+                "not_valid_yet": payload["nbf"] > time.time(),
+                "expired": payload["exp"] <= time.time(),
+            })
+        return result
+    except (KeyError, ValueError, TypeError, IndexError):
+        return {"authorization_evidence": False, "shape_invalid": True}
+
+
 def hydrate_github(directory: Path = PRIVATE_ROOT) -> dict:
     try:
         base = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
@@ -221,8 +266,13 @@ def hydrate_github(directory: Path = PRIVATE_ROOT) -> dict:
         if not re.fullmatch(r"[1-9][0-9]{0,19}", run_id) or not re.fullmatch(r"[0-9a-f]{40}", head):
             raise PrivateConfigurationError("github_context_invalid")
         body = json.dumps({"purpose": "native-continuity-runtime-v1", "run_id": run_id}).encode("utf-8")
-        result = _json_request(urllib.request.Request("https://" + BROKER_HOST + "/bootstrap", data=body,
-            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"}, method="POST"), maximum=16384, stage="broker")
+        try:
+            result = _json_request(urllib.request.Request("https://" + BROKER_HOST + "/bootstrap", data=body,
+                headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"}, method="POST"), maximum=16384, stage="broker")
+        except PrivateConfigurationError as exc:
+            if str(exc) == "identity_broker_http_403":
+                exc.claim_shape_diagnostic = _claim_shape_diagnostic(token)
+            raise
         expected = {"repository_id": "1384155635", "sha": head, "run_id": run_id, "run_attempt": run_attempt}
         if result.get("version") != 1 or result.get("identity") != expected:
             raise PrivateConfigurationError("github_identity_readback_mismatch")
