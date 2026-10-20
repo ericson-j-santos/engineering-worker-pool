@@ -2,17 +2,7 @@ name: Hosted checkpoint continuity rehearsal
 run-name: Hosted continuity · PR ${{ github.event.pull_request.number }} · ${{ github.run_attempt }}
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - 'app/**'
-      - 'requirements*.txt'
-      - tests/test_hosted_rehearsal_workflow.py
-      - scripts/hosted_rehearsal.py
-      - tests/test_hosted_rehearsal.py
-      - config/hosted-rehearsal-gateway.json
-      - .github/workflows/hosted-continuity-rehearsal.yml
-      - docs/HOSTED_CONTINUITY_REHEARSAL.md
+  workflow_call:
 
 permissions:
   contents: read

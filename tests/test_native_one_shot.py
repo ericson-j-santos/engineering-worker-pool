@@ -19,6 +19,7 @@ from app.native_one_shot import (
     NativeExecutorBlocked,
     NativeOneShotExecutor,
     ReceiptStore,
+    TaskManifest,
 )
 from app.s3_git_bundle_artifact import (
     S3ArtifactConfig,
@@ -897,6 +898,123 @@ def test_fenced_concrete_s3_transport_resumes_in_independent_workspace(tmp_path)
     assert len(client.objects) == 2
     assert client.put_calls == 3
     assert resume_api.task["state"] == "validating"
+
+
+def test_fenced_concrete_s3_handoff_reaches_validator_in_independent_clone(tmp_path):
+    builder, manifest, api, builder_adapter, root, _fixture_transport = fenced_setup(
+        tmp_path,
+    )
+    validator_root = tmp_path / "s3-validator"
+    # Clone before the result exists: the produced objects must arrive via S3.
+    git(tmp_path, "clone", "--quiet", "--no-hardlinks", str(root), str(validator_root))
+    git(validator_root, "remote", "remove", "origin")
+    git(validator_root, "checkout", "--detach", manifest["workspace_sha"])
+    assert (root / ".git").resolve() != (validator_root / ".git").resolve()
+
+    client = InMemoryArtifactS3()
+    transport = S3GitBundleArtifactTransport(
+        S3ArtifactConfig(
+            bucket="durable-artifacts", region="us-east-2",
+            key_prefix="worker/checkpoints",
+        ),
+        client,
+    )
+    builder.artifact_transport = transport
+    built = builder.run(manifest, role="builder", worker_id="fixture-builder")
+    produced = built["produced_sha"]
+    assert built["lease_generation"] == 1
+    assert builder_adapter.calls == ["build"]
+    checkpoint = dict(api.latest_checkpoint)
+    assert checkpoint["stage"] == "builder_result"
+    assert checkpoint["effect_state"] == "confirmed"
+    assert checkpoint["next_action"] == "submit_validation"
+    artifact = DurableArtifact.parse({
+        name: checkpoint[name]
+        for name in ("artifact_kind", "artifact_ref", "artifact_sha256")
+    })
+    published_objects = dict(client.objects)
+    assert len(published_objects) == 2  # Fixed preflight probe plus one CAS result.
+
+    publication_manifest = TaskManifest.parse(manifest)
+    recovered = transport.materialize(
+        task_id=TASK, manifest=publication_manifest,
+        workspace=LocalWorkspace(validator_root), artifact=artifact,
+    )
+    assert recovered.produced_sha == produced
+    validator_manifest = {
+        **manifest,
+        "workspace_sha": produced,
+        "before_sha256": {
+            "src/task.py": hashlib.sha256(
+                (validator_root / "src" / "task.py").read_bytes()
+            ).hexdigest(),
+        },
+    }
+    assert validator_manifest["workspace_sha"] != manifest["workspace_sha"]
+    assert validator_manifest["before_sha256"] != manifest["before_sha256"]
+    validator_adapter = Adapter()
+    validator = NativeOneShotExecutor(
+        api=api,
+        workspace=LocalWorkspace(validator_root),
+        receipts=ReceiptStore(tmp_path / "s3-validator-state"),
+        adapters={validator_adapter.descriptor.adapter_id: validator_adapter},
+        command_registries={validator_adapter.descriptor.adapter_id: {
+            "fixture.build": lambda: None,
+            "fixture.validate": lambda: "valid",
+        }},
+        boundary=ExecutionBoundary(
+            "s3-validator", "native-one-shot-test", produced, True, True,
+        ),
+        artifact_transport=transport,
+        fenced_adapter_ids=frozenset({validator_adapter.descriptor.adapter_id}),
+    )
+
+    checked = validator.run(
+        validator_manifest, role="validator", worker_id="fixture-validator",
+    )
+
+    assert checked["result"] == "NATIVE_ONE_SHOT_VALIDATED"
+    assert checked["lease_generation"] == 2
+    assert checked["attempt_id"] == "attempt-2"
+    assert validator_adapter.calls == ["validate"]
+    assert api.task["state"] == "completed"
+    assert api.latest_checkpoint["stage"] == "validator_result"
+    assert api.latest_checkpoint["sequence"] == 1
+    assert {
+        name: api.latest_checkpoint[name] for name in artifact.checkpoint_fields()
+    } == artifact.checkpoint_fields()
+    complete = next(call for call in api.calls if call[0] == "complete")
+    assert complete[1] == {"lease_generation": 2, "attempt_id": "attempt-2"}
+    assert LocalWorkspace(validator_root).head() == produced
+    assert LocalWorkspace(validator_root).status() == ""
+    assert git(validator_root, "remote") == ""
+    assert client.objects == published_objects
+
+    # The validator's different checkout context must not rewrite publication.
+    value = next(
+        value for value in client.objects.values()
+        if hashlib.sha256(value).hexdigest() == artifact.artifact_sha256
+    )
+    header, bundle, decoded = transport._decode(
+        value, artifact.artifact_sha256, publication_manifest, produced,
+    )
+    assert header["task_manifest"] == manifest
+    assert header["lease_generation"] == 1
+    assert header["attempt_id"] == "attempt-1"
+    assert header["effect_id"] == checkpoint["effect_id"]
+    assert decoded.produced_sha == produced
+    transport._validate_bundle_header(bundle, manifest["workspace_sha"], produced)
+
+    before = len(api.calls)
+    before_puts = client.put_calls
+    replay = validator.run(
+        validator_manifest, role="validator", worker_id="fixture-validator",
+    )
+    assert replay["replayed"] is True
+    assert api.calls[before:] == [("get", TASK), ("checkpoint_get", TASK)]
+    assert validator_adapter.calls == ["validate"]
+    assert client.put_calls == before_puts
+    assert client.objects == published_objects
 
 
 def test_fenced_validator_verifies_artifact_checkpoints_and_completes(tmp_path):

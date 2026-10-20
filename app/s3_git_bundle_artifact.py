@@ -548,7 +548,8 @@ class S3GitBundleArtifactTransport:
     @classmethod
     def _decode(
         cls, value: bytes, digest: str, manifest: TaskManifest,
-        produced_sha: str | None = None,
+        produced_sha: str | None = None, *,
+        allow_result_workspace: bool = False,
     ) -> tuple[dict[str, Any], bytes, AdapterResult]:
         _require(type(value) is bytes and hashlib.sha256(value).hexdigest() == digest
                  and value.startswith(MAGIC)
@@ -577,7 +578,6 @@ class S3GitBundleArtifactTransport:
                  }
                  and header["schema_version"] == 1
                  and header["artifact_kind"] == ARTIFACT_KIND
-                 and header["task_manifest"] == _task_manifest_value(manifest)
                  and type(header["lease_generation"]) is int
                  and not isinstance(header["lease_generation"], bool)
                  and header["lease_generation"] >= 1
@@ -610,6 +610,25 @@ class S3GitBundleArtifactTransport:
         cls._result_value(result)
         _require(produced_sha is None or result.produced_sha == produced_sha,
                  "artifact_result_invalid")
+        expected_manifest = _task_manifest_value(manifest)
+        if header["task_manifest"] != expected_manifest:
+            # Publication remains immutable.  Only verification may receive a
+            # manifest describing the produced checkout instead of its input.
+            _require(allow_result_workspace and produced_sha is not None
+                     and manifest.workspace_sha == result.produced_sha,
+                     "artifact_manifest_invalid")
+            try:
+                publication = TaskManifest.parse(header["task_manifest"])
+            except NativeExecutorBlocked:
+                _blocked("artifact_manifest_invalid")
+            publication_value = _task_manifest_value(publication)
+            _require(publication_value == header["task_manifest"]
+                     and set(manifest.before_sha256) == set(publication.before_sha256)
+                     and {
+                         **expected_manifest,
+                         "workspace_sha": publication.workspace_sha,
+                         "before_sha256": publication_value["before_sha256"],
+                     } == publication_value, "artifact_manifest_invalid")
         return header, bundle, result
 
     @staticmethod
@@ -694,14 +713,29 @@ class S3GitBundleArtifactTransport:
                  "artifact_task_mismatch")
         digest = self._descriptor_digest(artifact)
         value = self._download(self._key(digest))
-        _header, bundle, result = self._decode(
-            value, digest, manifest, produced_sha,
+        header, bundle, result = self._decode(
+            value, digest, manifest, produced_sha, allow_result_workspace=True,
         )
+        publication = header["task_manifest"]
         self._validate_bundle_header(
-            bundle, manifest.workspace_sha, produced_sha,
+            bundle, publication["workspace_sha"], produced_sha,
         )
         _require(workspace.status() == "" and workspace.head() == produced_sha,
                  "artifact_workspace_invalid")
+        if publication != _task_manifest_value(manifest):
+            # The result manifest must describe these exact checkout bytes,
+            # including unchanged paths from the original adapter scope.
+            for relative, expected in manifest.before_sha256.items():
+                path = workspace.root / _safe_relative_path(relative)
+                try:
+                    _require(path.is_file() and not path.is_symlink()
+                             and path.stat().st_nlink == 1
+                             and path.resolve().is_relative_to(workspace.root),
+                             "artifact_workspace_invalid")
+                    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+                except OSError:
+                    _blocked("artifact_workspace_invalid")
+                _require(actual == expected, "artifact_workspace_invalid")
         with tempfile.TemporaryDirectory(prefix="cwp-verify-") as name:
             directory = Path(name)
             hooks = directory / "hooks"
@@ -711,7 +745,7 @@ class S3GitBundleArtifactTransport:
             self._verify_bundle(workspace, path, produced_sha, hooks)
             _require(self._git(workspace, hooks, "remote").stdout.strip() == "",
                      "artifact_workspace_invalid")
-            for ancestor_sha in (manifest.base_sha, manifest.workspace_sha):
+            for ancestor_sha in (manifest.base_sha, publication["workspace_sha"]):
                 ancestor = self._git(
                     workspace, hooks, "merge-base", "--is-ancestor",
                     ancestor_sha, produced_sha, allowed_codes=(0, 1),
