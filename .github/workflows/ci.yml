@@ -71,6 +71,10 @@ jobs:
         run: python -m compileall -q app tests scripts/local_worker_e2e.py scripts/structured_worker_e2e.py scripts/structured_acceptance.py scripts/native_gateway_preflight_e2e.py
       - name: Test
         run: python -m pytest -q
+      - name: Install pinned GitHub OIDC verifier
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix services/continuity_identity
+      - name: Verify private identity admission controls
+        run: node --test services/continuity_identity/identity.test.mjs
       - name: Verify fail-closed governed merge policy
         run: node --test tests/test_governed_auto_merge.cjs
 

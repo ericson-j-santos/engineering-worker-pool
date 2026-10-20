@@ -1,6 +1,6 @@
 """Immutable, per-task eligibility preflight (not a claim or reconciliation).
 
-Reads the existing Worker Pool SQLite database through a mode=ro connection.
+Reads the existing Worker Pool through a database-enforced read-only connection.
 The coordinator's background reconciler is independent and may change state
 concurrently; this endpoint never requests reconciliation or mutates records.
 """
@@ -45,6 +45,8 @@ def read_task_diagnostics(
     heartbeat_ttl_seconds: int,
     progress_stall_seconds: int,
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    _connection_factory: Callable[[], Any] | None = None,
+    _read_mode: str = "sqlite_mode_ro",
 ) -> dict[str, Any]:
     """Read one task, current lane and worker eligibility without any DB writes.
 
@@ -60,10 +62,14 @@ def read_task_diagnostics(
     try:
         # SQLite's mode=ro prevents implicit DB creation and ALL SQL writes.
         # Unlike WorkerPoolStore._db, this does not set journal_mode=WAL.
-        uri = Path(db_path).resolve().as_uri() + "?mode=ro"
-        db = sqlite3.connect(uri, uri=True, timeout=5, isolation_level=None)
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA query_only=ON")
+        if _connection_factory is None:
+            uri = Path(db_path).resolve().as_uri() + "?mode=ro"
+            db = sqlite3.connect(uri, uri=True, timeout=5, isolation_level=None)
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA query_only=ON")
+        else:
+            # Trusted application wiring only; never a request-supplied factory.
+            db = _connection_factory()
         db.execute("BEGIN")
         task = db.execute(
             """SELECT task_id,repository,issue_number,state,base_sha,produced_sha,
@@ -99,7 +105,7 @@ def read_task_diagnostics(
         db.rollback()  # End the read transaction. No writes can have occurred.
     except TaskDiagnosticNotFound:
         raise
-    except (OSError, sqlite3.Error) as exc:
+    except (OSError, sqlite3.Error, RuntimeError) as exc:
         raise TaskDiagnosticUnavailable("task_diagnostics_unavailable") from exc
     finally:
         if db is not None:
@@ -164,7 +170,7 @@ def read_task_diagnostics(
         })
     return {
         "schema_version": "1.0.0",
-        "read_mode": "sqlite_mode_ro",
+        "read_mode": _read_mode,
         "observed_at": now.isoformat().replace("+00:00", "Z"),
         "task": {
             "task_id": task["task_id"],

@@ -5,3 +5,5 @@ __pycache__/
 data/
 artifacts/
 .env
+.tmp/
+services/continuity_identity/node_modules/

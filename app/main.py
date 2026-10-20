@@ -25,6 +25,8 @@ from app.work import WorkOrchestrator
 
 SERVICE_NAME = "codex-worker-pool"
 DB_PATH = Path(os.getenv("CODEX_WORKER_POOL_DB", "./data/codex-worker-pool.db"))
+DATABASE_BACKEND = os.getenv("CODEX_WORKER_POOL_BACKEND", "sqlite").strip().lower()
+authority = None
 TOKEN_FILE = os.getenv("CODEX_WORKER_POOL_API_TOKEN_FILE", "").strip()
 RECONCILIATION_TOKEN_FILE = os.getenv(
     "CODEX_WORKER_POOL_RECONCILIATION_TOKEN_FILE", ""
@@ -39,21 +41,36 @@ FENCED_CUTOVER_ATTESTED = (
     os.getenv("CODEX_WORKER_POOL_FENCED_CUTOVER_ATTESTED", "").strip() == "1"
 )
 
-store = WorkerPoolStore(
-    DB_PATH,
-    heartbeat_ttl_seconds=HEARTBEAT_TTL_SECONDS,
-    default_lease_seconds=LEASE_SECONDS,
-    default_max_attempts=MAX_ATTEMPTS,
-    progress_stall_seconds=PROGRESS_STALL_SECONDS,
-    expected_rules_sha=EXPECTED_RULES_SHA,
-)
+store_options = {
+    "heartbeat_ttl_seconds": HEARTBEAT_TTL_SECONDS,
+    "default_lease_seconds": LEASE_SECONDS,
+    "default_max_attempts": MAX_ATTEMPTS,
+    "progress_stall_seconds": PROGRESS_STALL_SECONDS,
+    "expected_rules_sha": EXPECTED_RULES_SHA,
+}
+if DATABASE_BACKEND == "sqlite":
+    store = WorkerPoolStore(DB_PATH, **store_options)
+    work_orchestrator = WorkOrchestrator(DB_PATH, store)
+elif DATABASE_BACKEND == "postgres":
+    from app.postgres_authority import (
+        AuthorityUnavailable, PostgresAuthority,
+        PostgresWorkerPoolStore, PostgresWorkOrchestrator,
+    )
+    authority = PostgresAuthority.from_file(
+        Path(os.getenv("CODEX_WORKER_POOL_DATABASE_URL_FILE", "")),
+        schema=os.getenv("CODEX_WORKER_POOL_DB_SCHEMA", "worker_pool"),
+        authority_id=os.getenv("CODEX_WORKER_POOL_AUTHORITY_ID", ""),
+    )
+    store = PostgresWorkerPoolStore(authority, **store_options)
+    work_orchestrator = PostgresWorkOrchestrator(authority, store)
+else:
+    raise ValueError("worker_pool_backend_invalid")
 if FENCED_CUTOVER_ATTESTED:
     store.enable_fenced_cutover(
         correlation_id="runtime-fenced-cutover-attestation",
         legacy_claimers_drained=True,
         shared_queue_exclusive=True,
     )
-work_orchestrator = WorkOrchestrator(DB_PATH, store)
 reconciliation_controller = ReconciliationController(
     store,
     interval_seconds=RECONCILE_INTERVAL_SECONDS,
@@ -344,11 +361,26 @@ def health(response: Response) -> dict[str, Any]:
         "reconciliation_auth_configured": reconciliation_auth_configured,
         "fenced_cutover_enabled": fenced_cutover["enabled"],
         "expected_rules_sha_configured": rules_sha_configured,
-        "db_path_configured": bool(str(DB_PATH)),
+        "db_path_configured": DATABASE_BACKEND == "sqlite" and bool(str(DB_PATH)),
+        "storage_backend": DATABASE_BACKEND,
+        "authority_id": authority.authority_id if authority is not None else None,
         "progress_stall_seconds": PROGRESS_STALL_SECONDS,
         "reconciliation": reconciliation_controller.status(),
         "contract_version": CONTRACT_VERSION,
     }
+
+
+if authority is not None:
+    @app.exception_handler(AuthorityUnavailable)
+    async def authority_unavailable_handler(_request, exc):
+        return _error_response(503, str(exc))
+
+
+@app.get("/v1/authority", dependencies=[Depends(require_auth)])
+def shared_authority() -> dict[str, Any]:
+    if authority is None:
+        raise HTTPException(status_code=503, detail="shared_authority_not_configured")
+    return authority.verify_schema()
 
 
 @app.get("/v1/contract", dependencies=[Depends(require_auth)])
@@ -445,6 +477,11 @@ def task_diagnostics(task_id: str) -> dict[str, Any]:
             expected_rules_sha=store.expected_rules_sha,
             heartbeat_ttl_seconds=store.heartbeat_ttl_seconds,
             progress_stall_seconds=store.progress_stall_seconds,
+            **({
+                "_connection_factory": authority.read_connection,
+                "_read_mode": "postgres_read_only",
+                "clock": authority.clock,
+            } if authority is not None else {}),
         )
     except ValueError:
         raise HTTPException(status_code=422, detail="invalid_task_id") from None
