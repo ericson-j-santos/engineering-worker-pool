@@ -89,7 +89,10 @@ class WorkOrchestrator:
 
     @staticmethod
     def _public_task(task: dict[str, Any]) -> dict[str, Any]:
-        return {key: value for key, value in task.items() if key != "lease_token"}
+        result = {key: value for key, value in task.items() if key != "lease_token"}
+        if "fencing_required" in result:
+            result["fencing_required"] = bool(result["fencing_required"])
+        return result
 
     def _row(self, work_id: str) -> dict[str, Any]:
         db = self._db()
