@@ -486,18 +486,30 @@ def execute_json(command: list[str], *, timeout: int, cwd: Path) -> dict:
                             text=True, timeout=timeout)
     if result.returncode != 0:
         details = {"result": "GOVERNED_PHASE_FAILED", "exit_code": result.returncode}
-        try:
-            payload = json.loads(result.stdout.strip().splitlines()[-1])
-            for key in ("result", "phase", "reason"):
-                value = payload.get(key)
-                if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_]{1,100}", value):
-                    details["gateway_" + key] = value
-            nested = json.loads(str(payload.get("stdout", "")).strip().splitlines()[-1])
-            reason = nested.get("reason")
-            if isinstance(reason, str) and re.fullmatch(r"[A-Za-z0-9_]{1,100}", reason):
-                details["inner_reason"] = reason
-        except (ValueError, TypeError, AttributeError, IndexError):
-            pass
+        # Launcher failures are structured on stderr; Gateway receipts use stdout.
+        # Preserve only bounded diagnostic fields, never entire subprocess streams.
+        for stream in (result.stdout, result.stderr):
+            try:
+                payload = json.loads(stream.strip().splitlines()[-1])
+                if not isinstance(payload, dict):
+                    continue
+                for key in ("result", "phase", "reason"):
+                    value = payload.get(key)
+                    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_]{1,100}", value):
+                        details["gateway_" + key] = value
+                if (payload.get("action") == "session_launcher"
+                        and payload.get("result") == "SESSION_LAUNCH_BLOCKED"
+                        and payload.get("gateway_exit_code") == result.returncode):
+                    error = payload.get("error")
+                    if isinstance(error, str):
+                        # The canonical Launcher has already applied cg.redact.
+                        details["launcher_error"] = re.sub(r"[\x00-\x1f\x7f]", " ", error)[:300]
+                nested = json.loads(str(payload.get("stdout", "")).strip().splitlines()[-1])
+                reason = nested.get("reason")
+                if isinstance(reason, str) and re.fullmatch(r"[A-Za-z0-9_]{1,100}", reason):
+                    details["inner_reason"] = reason
+            except (ValueError, TypeError, AttributeError, IndexError):
+                continue
         print(json.dumps(details, sort_keys=True), flush=True)
         raise RehearsalError("governed_command_failed")
     lines = [line for line in result.stdout.splitlines() if line.strip()]
@@ -531,6 +543,11 @@ def run_governed(phase: str) -> None:
             re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}", branch) is not None and
             ".." not in branch, "branch_invalid")
     rules, policy = canonical_governance(source_root)
+    print("REHEARSAL_SOURCE_DIAGNOSTIC " + canonical({
+        "source_sha": ctx["source_sha"],
+        "source_owner_matches_process": source_root.stat().st_uid == os.geteuid(),
+        "gitdir_owner_matches_process": (source_root / ".git").stat().st_uid == os.geteuid(),
+    }).decode().strip(), flush=True)
     launch = execute_json(
         [sys.executable, "-B", str(rules / "session_launcher.py"), "--policy", str(policy),
          "--repo", str(ROOT), "--session-prefix", "rehearsal-" + phase,

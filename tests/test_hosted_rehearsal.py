@@ -148,6 +148,7 @@ class GovernanceTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.source = Path(temporary.name).resolve()
+        (self.source / ".git").mkdir()
         self.rules = self.source / ".rehearsal-rules"
         (self.rules / ".git").mkdir(parents=True)
         (self.rules / ".git" / "HEAD").write_text(module.RULES_SHA + "\n")
@@ -279,6 +280,25 @@ class GovernanceTests(unittest.TestCase):
                            stdout="", stderr="Ran 7 tests in 0.001s\n\nOK\n")
             with self.assertRaises(module.RehearsalError):
                 module.validated_test_count(dict(payload, **update))
+
+    def test_launcher_failure_preserves_bounded_stderr_diagnostic(self):
+        receipt = {"action":"session_launcher", "result":"SESSION_LAUNCH_BLOCKED",
+                   "gateway_exit_code":28, "phase":"validate_session_source",
+                   "error":"fixture source unavailable\nread-only diagnostic",
+                   "snapshot":"fixture-not-for-logs"}
+        result = module.subprocess.CompletedProcess(
+            ["python", "launcher"], 28, stdout="not a receipt\n",
+            stderr=json.dumps(receipt) + "\n")
+        with patch.object(module.subprocess, "run", return_value=result), \
+                patch("builtins.print") as emitted:
+            with self.assertRaisesRegex(module.RehearsalError, "governed_command_failed"):
+                module.execute_json(["python", "launcher"], timeout=1, cwd=ROOT)
+        diagnostic = json.loads(emitted.call_args.args[0])
+        self.assertEqual(diagnostic["gateway_result"], "SESSION_LAUNCH_BLOCKED")
+        self.assertEqual(diagnostic["gateway_phase"], "validate_session_source")
+        self.assertEqual(diagnostic["launcher_error"],
+                         "fixture source unavailable read-only diagnostic")
+        self.assertNotIn("fixture-not-for-logs", emitted.call_args.args[0])
 
 if __name__ == "__main__":
     unittest.main()
