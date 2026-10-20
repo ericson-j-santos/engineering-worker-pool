@@ -5,6 +5,9 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
+      - 'app/**'
+      - 'requirements*.txt'
+      - tests/test_hosted_rehearsal_workflow.py
       - scripts/hosted_rehearsal.py
       - tests/test_hosted_rehearsal.py
       - config/hosted-rehearsal-gateway.json
