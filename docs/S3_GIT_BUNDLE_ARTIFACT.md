@@ -34,6 +34,22 @@ exemplo identidade da instância ou variáveis protegidas do processo. Valores
 secretos não pertencem ao manifesto, à referência CAS, à linha de comando, aos
 logs ou ao repositório.
 
+### Perfil mínimo para preflight em host restrito
+
+O preflight do armazenamento e o transporte Git cercado não precisam instalar o
+serviço FastAPI completo. Em um ambiente virtual isolado, o host pode instalar
+somente `requirements-s3-artifact.txt`. Esse perfil contém o mesmo pin de `boto3`
+do `requirements.txt` e evita puxar dependências nativas que não participam do
+smoke. Ele é apropriado para qualificar armazenamento em um host com pouca memória;
+não qualifica nem inicia o Worker Pool completo.
+
+No Windows, mantenha o ambiente virtual fora do checkout Git e execute a criação,
+a instalação e o smoke somente por uma sessão validada e pelo Command Gateway.
+Use instalação binária fail-closed (`--only-binary=:all:`) para que a ausência de
+wheel compatível bloqueie a preparação em vez de iniciar compilação local. A
+credencial continua vindo do mecanismo protegido do runtime; nunca de argumento,
+arquivo versionado ou ambiente global.
+
 Endpoints genéricos vindos de `AWS_ENDPOINT_URL` ou de configuração compartilhada
 do botocore são ignorados. Somente o endpoint S3 específico, lido e validado pelas
 variáveis da tabela, pode substituir o endpoint derivado da região.
