@@ -247,5 +247,131 @@ class AsgiProtocolControls(unittest.IsolatedAsyncioTestCase):
                     await task
 
 
+    async def test_b_handoff_waits_for_controls_and_durable_receipt(self):
+        started, finish = asyncio.Event(), asyncio.Event()
+        calls, checkpoint_sent, validation_sent = [], [], []
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            config = self.config(root, "b")
+            checkpoint_route = "/v1/tasks/" + config["task_id"] + "/checkpoints"
+            validation_route = "/v1/tasks/" + config["task_id"] + "/validation"
+            async def app(scope, receive, send):
+                calls.append(scope["path"])
+                if scope["path"] == validation_route:
+                    self.assertEqual(m.read_private_json(root / "barrier.json"),
+                                     {"controls": "finished"})
+                await send({"type": "http.response.start",
+                            "status": 201 if scope["path"] == checkpoint_route else 200})
+                await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+            payload = {"worker_id": m.worker_id(config["identity"], "builder-b"),
+                       "lease_generation": 2, "stage": "builder_result",
+                       "next_action": "submit_validation", "effect_state": "confirmed"}
+            async def receive():
+                return {"type": "http.request", "body": json.dumps(payload).encode(),
+                        "more_body": False}
+            async def checkpoint_send(message):
+                checkpoint_sent.append(message)
+            async def validation_send(message):
+                validation_sent.append(message)
+            async def controlled_thread(function, *args):
+                self.assertIs(function, m.b_fence_controls)
+                started.set()
+                await finish.wait()
+                return {"controls": "finished"}
+            gate = m.ContinuityGate(app, config)
+            checkpoint_task = validation_task = None
+            with patch.object(m.asyncio, "to_thread", side_effect=controlled_thread):
+                try:
+                    checkpoint_task = asyncio.create_task(gate(
+                        {"type": "http", "method": "POST", "path": checkpoint_route},
+                        receive, checkpoint_send))
+                    await asyncio.wait_for(started.wait(), timeout=2)
+                    # A client can independently observe the committed checkpoint.
+                    # Even an early handoff must not reach the application yet.
+                    validation_task = asyncio.create_task(gate(
+                        {"type": "http", "method": "POST", "path": validation_route},
+                        receive, validation_send))
+                    await asyncio.sleep(0)
+                    self.assertEqual(calls, [checkpoint_route])
+                    self.assertEqual(checkpoint_sent, [])
+                    self.assertFalse(validation_task.done())
+                    finish.set()
+                    await asyncio.wait_for(
+                        asyncio.gather(checkpoint_task, validation_task), timeout=2)
+                    self.assertEqual(calls, [checkpoint_route, validation_route])
+                    self.assertEqual(checkpoint_sent[0]["status"], 201)
+                    self.assertEqual(validation_sent[0]["status"], 200)
+                finally:
+                    finish.set()
+                    for task in (checkpoint_task, validation_task):
+                        if task is not None and not task.done():
+                            task.cancel()
+                    await asyncio.gather(
+                        *(task for task in (checkpoint_task, validation_task)
+                          if task is not None), return_exceptions=True)
+
+    async def test_b_failed_controls_or_receipt_never_release_handoff(self):
+        for failure_stage in ("controls", "receipt"):
+            with self.subTest(failure_stage=failure_stage), tempfile.TemporaryDirectory() as name:
+                root = Path(name)
+                config = self.config(root, "b")
+                calls = []
+                async def app(scope, receive, send):
+                    calls.append(scope["path"])
+                    await send({"type": "http.response.start", "status": 201})
+                    await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+                payload = {"worker_id": m.worker_id(config["identity"], "builder-b"),
+                           "lease_generation": 2, "stage": "builder_result",
+                           "next_action": "submit_validation", "effect_state": "confirmed"}
+                async def receive():
+                    return {"type": "http.request", "body": json.dumps(payload).encode(),
+                            "more_body": False}
+                async def send(_message):
+                    pass
+                async def controls(*_args):
+                    if failure_stage == "controls":
+                        raise m.HarnessBlocked("fixture_controls_failed")
+                    return {"controls": "finished"}
+                def write_receipt(*_args):
+                    raise m.HarnessBlocked("fixture_receipt_failed")
+                gate = m.ContinuityGate(app, config)
+                checkpoint_route = "/v1/tasks/" + config["task_id"] + "/checkpoints"
+                with patch.object(m.asyncio, "to_thread", side_effect=controls), \
+                        patch.object(m, "protected_json", side_effect=write_receipt):
+                    with self.assertRaisesRegex(m.HarnessBlocked, "fixture_.*_failed"):
+                        await gate(
+                            {"type": "http", "method": "POST", "path": checkpoint_route},
+                            receive, send)
+                handoff = asyncio.create_task(gate(
+                    {"type": "http", "method": "POST",
+                     "path": "/v1/tasks/" + config["task_id"] + "/validation"}, receive, send))
+                try:
+                    await asyncio.sleep(0)
+                    self.assertFalse(handoff.done())
+                    self.assertEqual(calls, [checkpoint_route])
+                    self.assertFalse((root / "barrier.json").exists())
+                finally:
+                    if not handoff.done():
+                        handoff.cancel()
+                    await asyncio.gather(handoff, return_exceptions=True)
+
+    async def test_b_handoff_before_checkpoint_is_rejected(self):
+        calls = []
+        async def app(*_args):
+            calls.append("unexpected_application_call")
+        async def receive():
+            return {"type": "http.request", "body": b"{}", "more_body": False}
+        async def send(_message):
+            pass
+        with tempfile.TemporaryDirectory() as name:
+            config = self.config(Path(name), "b")
+            gate = m.ContinuityGate(app, config)
+            with self.assertRaisesRegex(m.HarnessBlocked, "consumer_handoff_before_checkpoint"):
+                await gate(
+                    {"type": "http", "method": "POST",
+                     "path": "/v1/tasks/" + config["task_id"] + "/validation"}, receive, send)
+            self.assertEqual(calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()
