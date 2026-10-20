@@ -126,7 +126,35 @@ def identity():
     return {"run": run, "attempt": attempt, "sha": sha, "rules_sha": RULES_SHA}
 
 
-SYNC_REF = "origin/feat/hosted-cold-checkpoint-resume-20261020"
+def launcher_sync_ref():
+    """Resolve the trusted Actions event, never a task or a historical branch.
+
+    The canonical Launcher still fetches this branch and requires its remote
+    commit to equal expected-head. A concurrent push therefore blocks rather
+    than silently changing the immutable candidate.
+    """
+    require(os.environ.get("GITHUB_ACTIONS") == "true"
+            and os.environ.get("GITHUB_REPOSITORY") == REPOSITORY,
+            "launcher_event_untrusted")
+    event = os.environ.get("GITHUB_EVENT_NAME")
+    ref = os.environ.get("GITHUB_REF", "")
+    if event == "pull_request":
+        require(re.fullmatch(r"refs/pull/[1-9][0-9]*/merge", ref) is not None,
+                "launcher_event_ref_invalid")
+        branch = os.environ.get("GITHUB_HEAD_REF", "")
+    elif event == "push":
+        # Only this legacy push lane is enabled in the existing workflow.
+        require(ref == "refs/heads/feat/hosted-cold-checkpoint-resume-20261020",
+                "launcher_event_ref_invalid")
+        branch = ref.removeprefix("refs/heads/")
+    else:
+        raise RuntimeError("launcher_event_untrusted")
+    require(0 < len(branch) <= 240 and ".." not in branch
+            and all(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", part)
+                    and not part.endswith((".", ".lock"))
+                    for part in branch.split("/")),
+            "launcher_branch_invalid")
+    return "origin/" + branch
 
 
 def launcher_arguments(repo, policy, rules_scripts, session, correlation, expected_sha):
@@ -136,7 +164,7 @@ def launcher_arguments(repo, policy, rules_scripts, session, correlation, expect
         sys.executable, "-B", str(rules_scripts / "session_launcher.py"),
         "--repo", str(repo), "--policy", str(policy), "--session-id", session,
         "--correlation-id", correlation, "--expected-head", expected_sha,
-        "--sync-ref", SYNC_REF,
+        "--sync-ref", launcher_sync_ref(),
     ]
 
 
