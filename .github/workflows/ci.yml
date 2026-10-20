@@ -97,6 +97,11 @@ jobs:
         timeout-minutes: 2
         run: python scripts/native_gateway_preflight_e2e.py --rules-scripts _rules_native/scripts
 
+      - name: Verify remote composition and read-only result replay
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        timeout-minutes: 2
+        run: python scripts/remote_native_composition_e2e.py --rules-scripts _rules_native/scripts
+
       - name: Start local-only coding model
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         timeout-minutes: 3
