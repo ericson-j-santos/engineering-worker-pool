@@ -1,4 +1,182 @@
-(target.root, "remote") == ""
+from __future__ import annotations
+
+import hashlib
+import io
+import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import pytest
+
+from app.native_one_shot import (
+    AdapterResult,
+    DurableArtifact,
+    LocalWorkspace,
+    NativeExecutorBlocked,
+    TaskManifest,
+)
+from app.s3_git_bundle_artifact import (
+    ARTIFACT_KIND,
+    ARTIFACT_REF_PREFIX,
+    S3ArtifactConfig,
+    S3GitBundleArtifactTransport,
+)
+
+
+TASK = "cwp-" + "1" * 24
+
+
+class FakeS3Error(RuntimeError):
+    def __init__(self, message, *, code=None, status=None):
+        super().__init__(message)
+        self.response = {
+            "Error": {"Code": code} if code is not None else {},
+            "ResponseMetadata": (
+                {"HTTPStatusCode": status} if status is not None else {}
+            ),
+        }
+
+
+class FakeS3:
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+        self.put_calls = 0
+        self.head_calls = 0
+        self.timeout_after_store = False
+        self.timeout_before_store = False
+        self.head_fails = False
+        self.deny_put = False
+        self.deny_get = False
+        self.lock = threading.Lock()
+
+    def head_bucket(self, **kwargs):
+        self.head_calls += 1
+        if self.head_fails:
+            raise FakeS3Error("secret-bearing-provider-message")
+        assert kwargs == {"Bucket": "durable-artifacts"}
+        return {}
+
+    def put_object(self, **kwargs):
+        with self.lock:
+            self.put_calls += 1
+            key = kwargs["Key"]
+            assert kwargs["Bucket"] == "durable-artifacts"
+            assert kwargs["IfNoneMatch"] == "*"
+            assert kwargs["ContentLength"] == len(kwargs["Body"])
+            if self.deny_put:
+                raise FakeS3Error(
+                    "secret-bearing-access-denied", code="AccessDenied", status=403,
+                )
+            if self.timeout_before_store:
+                self.timeout_before_store = False
+                raise FakeS3Error("secret-bearing-timeout")
+            if key in self.objects:
+                raise FakeS3Error(
+                    "precondition failed", code="PreconditionFailed", status=412,
+                )
+            self.objects[key] = bytes(kwargs["Body"])
+            if self.timeout_after_store:
+                self.timeout_after_store = False
+                raise FakeS3Error("secret-bearing-timeout")
+            return {"ETag": "untrusted"}
+
+    def get_object(self, **kwargs):
+        key = kwargs["Key"]
+        if self.deny_get:
+            raise FakeS3Error(
+                "secret-bearing-access-denied", code="AccessDenied", status=403,
+            )
+        if key not in self.objects:
+            raise FakeS3Error("not found")
+        value = self.objects[key]
+        return {"ContentLength": len(value), "Body": io.BytesIO(value)}
+
+
+def git(root: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args], cwd=root, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 0, (args, result.stdout, result.stderr)
+    return result.stdout.strip()
+
+
+def repositories(tmp_path: Path) -> tuple[LocalWorkspace, LocalWorkspace, str, str]:
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    git(source, "init", "-q")
+    git(source, "config", "user.name", "Fixture")
+    git(source, "config", "user.email", "fixture@example.invalid")
+    (source / "code.txt").write_text("base\n", encoding="utf-8")
+    git(source, "add", "code.txt")
+    git(source, "commit", "-q", "-m", "base")
+    base = git(source, "rev-parse", "HEAD")
+
+    git(tmp_path, "clone", "-q", str(source), str(target))
+    git(target, "remote", "remove", "origin")
+    git(target, "checkout", "-q", "--detach", base)
+
+    git(source, "remote", "remove", "origin") if git(source, "remote") else None
+    (source / "code.txt").write_text("result\n", encoding="utf-8")
+    git(source, "add", "code.txt")
+    git(source, "commit", "-q", "-m", "result")
+    produced = git(source, "rev-parse", "HEAD")
+    return LocalWorkspace(source), LocalWorkspace(target), base, produced
+
+
+def fixture_values(tmp_path: Path, *, maximum: int = 64 * 1024 * 1024):
+    source, target, base, produced = repositories(tmp_path)
+    before = hashlib.sha256(b"base\n").hexdigest()
+    manifest = TaskManifest.parse({
+        "schema_version": 1,
+        "task_id": TASK,
+        "repository": "example/product",
+        "base_sha": base,
+        "workspace_sha": base,
+        "adapter_id": "fixture.adapter",
+        "adapter_contract_sha256": "a" * 64,
+        "before_sha256": {"code.txt": before},
+    })
+    result = AdapterResult(
+        produced, ("code.txt",), ("build",), "b" * 64,
+    )
+    client = FakeS3()
+    transport = S3GitBundleArtifactTransport(
+        S3ArtifactConfig(
+            bucket="durable-artifacts", region="us-east-2",
+            key_prefix="worker/checkpoints", max_artifact_bytes=maximum,
+        ),
+        client,
+    )
+    return transport, client, source, target, manifest, result
+
+
+def publish(transport, source, manifest, result):
+    return transport.publish(
+        task_id=TASK, manifest=manifest, lease_generation=7,
+        attempt_id="attempt-7", effect_id="effect-7",
+        workspace=source, result=result,
+    )
+
+
+def test_roundtrip_between_independent_workspaces(tmp_path):
+    transport, client, source, target, manifest, result = fixture_values(tmp_path)
+    transport.preflight()
+
+    artifact = publish(transport, source, manifest, result)
+    transport.verify(
+        task_id=TASK, manifest=manifest, workspace=source,
+        produced_sha=result.produced_sha, artifact=artifact,
+    )
+    recovered = transport.materialize(
+        task_id=TASK, manifest=manifest, workspace=target, artifact=artifact,
+    )
+
+    assert recovered == result
+    assert target.head() == result.produced_sha
+    assert target.status() == ""
+    assert git(target.root, "remote") == ""
     assert artifact.artifact_kind == ARTIFACT_KIND
     assert artifact.artifact_ref == ARTIFACT_REF_PREFIX + artifact.artifact_sha256
     assert len(client.objects) == 2

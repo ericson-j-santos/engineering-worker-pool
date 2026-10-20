@@ -1,4 +1,8 @@
-name": "codex-worker-pool",
+{
+  "schema_version": 1,
+  "contract_name": "engineering-worker-pool",
+  "contract_version": "v1",
+  "service_name": "codex-worker-pool",
   "compatibility_policy": {
     "within_v1": "backward-compatible additive changes only",
     "breaking_change_requires": "new major contract path/version",

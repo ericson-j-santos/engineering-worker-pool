@@ -7,7 +7,7 @@ Este diretório define o contrato público estável do Worker Pool. Ele é indep
 - contrato: `engineering-worker-pool`
 - versão: `v1`
 - endpoint de descoberta: `GET /v1/contract`
-- autenticação das operações `/v1/**`: Bearer [REDACTED] provisionado em runtime fora do Git
+- autenticação das operações `/v1/**`: Bearer token provisionado em runtime fora do Git
 
 ## Compatibilidade
 

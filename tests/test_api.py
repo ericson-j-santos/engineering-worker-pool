@@ -1,4 +1,194 @@
-       "lease_token": validation_lease,
+from __future__ import annotations
+
+import importlib
+import sys
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+
+def load_app(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    reconciliation_token_value: str = "test-reconciliation-token-value",
+):
+    service_root = Path(__file__).resolve().parents[1]
+    if str(service_root) not in sys.path:
+        sys.path.insert(0, str(service_root))
+    token_file = tmp_path / "api-token"
+    token_file.write_text("test-token-value\n", encoding="utf-8")
+    reconciliation_token_file = tmp_path / "reconciliation-token"
+    reconciliation_token_file.write_text(
+        f"{reconciliation_token_value}\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("CODEX_WORKER_POOL_DB", str(tmp_path / "pool.db"))
+    monkeypatch.setenv("CODEX_WORKER_POOL_API_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv(
+        "CODEX_WORKER_POOL_RECONCILIATION_TOKEN_FILE",
+        str(reconciliation_token_file),
+    )
+    monkeypatch.setenv("CODEX_WORKER_POOL_HEARTBEAT_TTL_SECONDS", "60")
+    monkeypatch.setenv("CODEX_WORKER_POOL_LEASE_SECONDS", "30")
+    monkeypatch.setenv("CODEX_WORKER_POOL_MAX_ATTEMPTS", "2")
+    monkeypatch.setenv("CODEX_WORKER_POOL_PROGRESS_STALL_SECONDS", "30")
+    monkeypatch.setenv("CODEX_WORKER_POOL_EXPECTED_RULES_SHA", "a" * 40)
+    sys.modules.pop("app.main", None)
+    module = importlib.import_module("app.main")
+    return module, TestClient(module.app), {"Authorization": "Bearer test-token-value"}
+
+
+def test_health_and_auth_fail_closed(tmp_path: Path, monkeypatch) -> None:
+    _module, client, headers = load_app(tmp_path, monkeypatch)
+
+    health = client.get("/health")
+    assert health.status_code == 200
+    assert health.json()["auth_configured"] is True
+    assert health.json()["reconciliation_auth_configured"] is True
+    assert health.json()["expected_rules_sha_configured"] is True
+    assert health.json()["progress_stall_seconds"] == 30
+
+    denied = client.get("/v1/snapshot")
+    assert denied.status_code == 401
+
+    allowed = client.get("/v1/snapshot", headers=headers)
+    assert allowed.status_code == 200
+    assert allowed.json()["progress_stall_seconds"] == 30
+
+    watchdog = client.post(
+        "/v1/watchdog/recover",
+        headers={**headers, "X-Correlation-Id": "watchdog-empty"},
+    )
+    assert watchdog.status_code == 200
+    assert watchdog.json() == {
+        "rerouted": 0,
+        "blocked": 0,
+        "failed": 0,
+        "correlation_id": "watchdog-empty",
+    }
+
+
+def test_fenced_admission_requires_separate_reconciliation_authority(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _module, client, headers = load_app(
+        tmp_path,
+        monkeypatch,
+        reconciliation_token_value="test-token-value",
+    )
+    health = client.get("/health")
+    assert health.status_code == 200
+    assert health.json()["reconciliation_auth_configured"] is False
+
+    payload = {
+        "repository": "example/fenced-readiness",
+        "issue_number": 19,
+        "request_id": "fenced-readiness",
+        "correlation_id": "fenced-readiness",
+        "base_sha": "1" * 40,
+        "fencing_required": True,
+    }
+    rejected = client.post("/v1/tasks", headers=headers, json=payload)
+    assert rejected.status_code == 503
+    assert rejected.json()["detail"] == (
+        "reconciliation_auth_not_configured_or_not_separated"
+    )
+
+    payload["request_id"] = "legacy-readiness"
+    payload["fencing_required"] = False
+    legacy = client.post("/v1/tasks", headers=headers, json=payload)
+    assert legacy.status_code == 201
+
+
+def test_api_e2e_builder_validator_replay(tmp_path: Path, monkeypatch) -> None:
+    _module, client, headers = load_app(tmp_path, monkeypatch)
+
+    for worker_id, role in (("desktop-builder", "builder"), ("noteri-validator", "validator")):
+        response = client.post(
+            "/v1/workers",
+            headers=headers,
+            json={
+                "worker_id": worker_id,
+                "host": worker_id.split("-")[0],
+                "role": role,
+                "profile": "NORMAL",
+                "capacity_score": 80,
+                "controller_version": "0.2.51",
+                "rules_sha": "a" * 40,
+                "gateway_ok": True,
+                "state_validated": True,
+                "worktree_root": f"C:/dev/chatgpt-workers/{worker_id}",
+                "correlation_id": f"corr-{worker_id}",
+            },
+        )
+        assert response.status_code == 200
+
+    payload = {
+        "repository": "ericson-j-santos/reqsys-v2-enterprise-real",
+        "issue_number": 1769,
+        "request_id": "api-e2e-1769",
+        "correlation_id": "api-e2e",
+        "priority": 10,
+        "base_sha": "1" * 40,
+        "max_attempts": 2,
+    }
+    first = client.post("/v1/tasks", headers=headers, json=payload)
+    replay = client.post("/v1/tasks", headers=headers, json=payload)
+    assert first.status_code == 201
+    assert replay.status_code == 200
+    assert first.json()["created"] is True
+    assert replay.json()["created"] is False
+    task_id = first.json()["task"]["task_id"]
+    assert replay.json()["task"]["task_id"] == task_id
+
+    build_claim = client.post(
+        "/v1/claims",
+        headers=headers,
+        json={"worker_id": "desktop-builder", "correlation_id": "build-claim"},
+    )
+    assert build_claim.status_code == 200
+    assert build_claim.json()["claimed"] is True
+    build_lease = build_claim.json()["lease"]["lease_token"]
+
+    start = client.post(
+        f"/v1/tasks/{task_id}/start",
+        headers=headers,
+        json={
+            "worker_id": "desktop-builder",
+            "lease_token": build_lease,
+            "correlation_id": "build-start",
+        },
+    )
+    assert start.status_code == 200
+    assert start.json()["state"] == "running"
+
+    handoff = client.post(
+        f"/v1/tasks/{task_id}/validation",
+        headers=headers,
+        json={
+            "worker_id": "desktop-builder",
+            "lease_token": build_lease,
+            "correlation_id": "handoff",
+            "produced_sha": "b" * 40,
+        },
+    )
+    assert handoff.status_code == 200
+    assert handoff.json()["state"] == "validating"
+
+    validator_claim = client.post(
+        "/v1/claims",
+        headers=headers,
+        json={"worker_id": "noteri-validator", "correlation_id": "validator-claim"},
+    )
+    assert validator_claim.status_code == 200
+    validation_lease = validator_claim.json()["lease"]["lease_token"]
+
+    complete = client.post(
+        f"/v1/tasks/{task_id}/complete",
+        headers=headers,
+        json={
+            "worker_id": "noteri-validator",
+            "lease_token": validation_lease,
             "correlation_id": "complete",
         },
     )
@@ -243,7 +433,7 @@ def test_fenced_claim_and_checkpoint_api_are_opt_in_and_idempotent(
     )
     assert worker_denied.status_code == 401
     reconciliation_headers = {
-        "Authorization": "Bearer [REDACTED]"
+        "Authorization": "Bearer test-reconciliation-token-value"
     }
     reconciled = client.post(
         reconciliation_path, headers=reconciliation_headers, json=reconcile_payload

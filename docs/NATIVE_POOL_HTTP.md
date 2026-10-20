@@ -6,7 +6,7 @@ O módulo `app/native_pool_http.py` implementa `WorkerApi` para o
 - **Origem**: somente `http://127.0.0.1:<porta numérica explícita>`.
   Sem URL de manifesto, DNS, proxy, redirect ou transporte arbitrário no caminho
   operacional. Um cliente injetado é permitido somente ao harness isolado.
-- **Autenticação**: Bearer [REDACTED] a cada operação de arquivo privado POSIX, dono
+- **Autenticação**: Bearer lido a cada operação de arquivo privado POSIX, dono
   do processo, sem links simbólicos, arquivos com múltiplos hard links ou
   permissões para terceiros. Nenhum segredo em log/exception/artifact.
   **Windows bloqueado por padrão** até existir atestação real da ACL NTFS;

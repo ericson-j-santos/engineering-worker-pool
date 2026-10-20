@@ -22,7 +22,7 @@ def load_runtime(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("CODEX_WORKER_POOL_PROGRESS_STALL_SECONDS", "300")
     sys.modules.pop("app.main", None)
     module = importlib.import_module("app.main")
-    return module, TestClient(module.app), {"Authorization": "Bearer [REDACTED]"}
+    return module, TestClient(module.app), {"Authorization": "Bearer contract-test-token"}
 
 
 def manifest() -> dict:

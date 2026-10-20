@@ -1,4 +1,211 @@
-   task_id, "native-validator", lease_b["lease_token"],
+"""Live isolated API contract plus negative controls for native exact-claim client."""
+from __future__ import annotations
+
+import importlib
+import json
+import os
+import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+
+from app.native_one_shot import NativeExecutorBlocked
+from app.native_pool_http import LocalWorkerApi
+
+RULES = "a" * 40
+BASE = "b" * 40
+REPO = "ericson-j-santos/reqsys-v2-enterprise-real"
+
+
+def token_file(tmp_path: Path, value: str = "isolated-worker-token-value") -> Path:
+    path = tmp_path / "pool-token"
+    path.write_text(value + "\n", encoding="ascii")
+    path.chmod(0o600)
+    return path
+
+
+def isolated_server(tmp_path: Path, monkeypatch, token: Path):
+    reconciliation_token = tmp_path / "reconciliation-token"
+    reconciliation_token.write_text(
+        "isolated-reconciliation-token-value\n", encoding="ascii"
+    )
+    reconciliation_token.chmod(0o600)
+    monkeypatch.setenv("CODEX_WORKER_POOL_DB", str(tmp_path / "pool.db"))
+    monkeypatch.setenv("CODEX_WORKER_POOL_API_TOKEN_FILE", str(token))
+    monkeypatch.setenv(
+        "CODEX_WORKER_POOL_RECONCILIATION_TOKEN_FILE",
+        str(reconciliation_token),
+    )
+    monkeypatch.setenv("CODEX_WORKER_POOL_EXPECTED_RULES_SHA", RULES)
+    monkeypatch.setenv("CODEX_WORKER_POOL_HEARTBEAT_TTL_SECONDS", "600")
+    monkeypatch.setenv("CODEX_WORKER_POOL_LEASE_SECONDS", "300")
+    monkeypatch.setenv("CODEX_WORKER_POOL_RECONCILE_INTERVAL_SECONDS", "10")
+    sys.modules.pop("app.main", None)
+    module = importlib.import_module("app.main")
+    return module, TestClient(module.app, base_url="http://127.0.0.1:18097")
+
+
+def test_exact_claim_real_isolated_api_and_independent_readback(tmp_path, monkeypatch):
+    token = token_file(tmp_path)
+    _module, app = isolated_server(tmp_path, monkeypatch, token)
+    headers = {"Authorization": "Bearer " + token.read_text().strip()}
+    with app:
+        assert app.get("/health").status_code == 200
+        for worker_id, role in (("native-builder", "builder"),
+                                ("native-validator", "validator")):
+            registered = app.post("/v1/workers", headers=headers, json={
+                "worker_id": worker_id, "host": "isolated",
+                "role": role, "profile": "NORMAL",
+                "gateway_ok": True, "state_validated": True,
+                "rules_sha": RULES, "worktree_root": str(tmp_path / worker_id),
+                "correlation_id": "native-http-register-" + role,
+            })
+            assert registered.status_code == 200
+        created = app.post("/v1/tasks", headers=headers, json={
+            "repository": REPO, "issue_number": 8,
+            "request_id": "native-http-contract", "base_sha": BASE,
+            "correlation_id": "native-http-create",
+        })
+        assert created.status_code == 201
+        task_id = created.json()["task"]["task_id"]
+        with LocalWorkerApi(port=18097, token_file=token, client=app) as api:
+            assert api.get_task(task_id)["state"] == "queued"
+            claim = api.claim_exact("native-builder", task_id, "native-http-claim-b")
+            assert claim["claimed"] is True and claim["task"]["task_id"] == task_id
+            builder_token = claim["lease"]["lease_token"]
+            api.start(task_id, "native-builder", builder_token, "native-http-start")
+            assert api.get_task(task_id)["state"] == "running"
+            api.submit_validation(
+                task_id, "native-builder", builder_token, "c" * 40,
+                "native-http-validation",
+            )
+            validator = api.claim_exact("native-validator", task_id, "native-http-claim-v")
+            assert validator["claimed"] is True
+            api.complete(task_id, "native-validator",
+                         validator["lease"]["lease_token"], "native-http-complete")
+            readback = api.get_task(task_id)
+            assert readback["state"] == "completed"
+            assert readback["produced_sha"] == "c" * 40
+            assert "lease_token" not in readback
+            assert api.claim_exact("native-builder", task_id, "native-http-replay")[
+                "claimed"] is False
+        # A distinct wrong client token must not rotate the server's secret.
+        bad_token = tmp_path / "incorrect-client-token"
+        bad_token.write_text("incorrect-but-valid-token\n", encoding="ascii")
+        bad_token.chmod(0o600)
+        assert token.read_text(encoding="ascii").strip() == "isolated-worker-token-value"
+        with LocalWorkerApi(port=18097, token_file=bad_token, client=app) as unauth:
+            with pytest.raises(NativeExecutorBlocked, match="worker_auth_rejected"):
+                unauth.get_task(task_id)
+        assert app.get(f"/v1/tasks/{task_id}", headers=headers).json()["state"] == "completed"
+
+
+def test_fenced_exact_http_checkpoint_and_stale_generation(tmp_path, monkeypatch):
+    token = token_file(tmp_path)
+    module, app = isolated_server(tmp_path, monkeypatch, token)
+    headers = {"Authorization": "Bearer " + token.read_text().strip()}
+    with app:
+        module.store.enable_fenced_cutover(
+            correlation_id="native-http-cutover",
+            legacy_claimers_drained=True,
+            shared_queue_exclusive=True,
+        )
+        for worker_id, role in (("native-builder", "builder"),
+                                ("native-validator", "validator")):
+            response = app.post("/v1/workers", headers=headers, json={
+                "worker_id": worker_id, "host": "isolated",
+                "role": role, "profile": "NORMAL",
+                "gateway_ok": True, "state_validated": True,
+                "rules_sha": RULES, "worktree_root": str(tmp_path / worker_id),
+                "correlation_id": "native-fenced-register-" + role,
+            })
+            assert response.status_code == 200
+        created = app.post("/v1/tasks", headers=headers, json={
+            "repository": REPO, "issue_number": 18,
+            "request_id": "native-http-fenced", "base_sha": BASE,
+            "correlation_id": "native-fenced-create",
+            "fencing_required": True,
+        })
+        assert created.status_code == 201
+        task_id = created.json()["task"]["task_id"]
+
+        with LocalWorkerApi(port=18097, token_file=token, client=app) as api:
+            assert api.claim_exact(
+                "native-builder", task_id, "native-fenced-legacy-negative",
+            )["claimed"] is False
+            builder = api.claim_fenced_exact(
+                "native-builder", task_id, "native-fenced-claim-builder",
+            )
+            lease_a = builder["lease"]
+            assert lease_a["lease_generation"] == 1
+            assert builder["recovery_context"] == {
+                "latest_checkpoint": None, "effects": [],
+            }
+            fence_a = {
+                "lease_generation": lease_a["lease_generation"],
+                "attempt_id": lease_a["attempt_id"],
+            }
+            api.start(
+                task_id, "native-builder", lease_a["lease_token"],
+                "native-fenced-start", **fence_a,
+            )
+            effect_id = "native-artifact-http"
+            pending = api.record_checkpoint(
+                task_id, "native-builder", lease_a["lease_token"],
+                lease_a["lease_generation"], lease_a["attempt_id"],
+                "native-builder-artifact-pending", 1, "artifact_publish",
+                "publish_artifact", "native-fenced-checkpoint-pending",
+                effect_id=effect_id, effect_state="pending",
+            )
+            assert pending["effect_state"] == "pending"
+            confirmed = api.record_checkpoint(
+                task_id, "native-builder", lease_a["lease_token"],
+                lease_a["lease_generation"], lease_a["attempt_id"],
+                "native-builder-result", 2, "builder_result",
+                "submit_validation", "native-fenced-checkpoint-confirmed",
+                artifact_kind="git_bundle.v1",
+                artifact_ref="artifact://fixture/bundle",
+                artifact_sha256="d" * 64,
+                effect_id=effect_id,
+                effect_state="confirmed",
+                effect_result_ref="artifact://fixture/bundle",
+            )
+            assert confirmed == api.get_latest_checkpoint(task_id)
+            api.submit_validation(
+                task_id, "native-builder", lease_a["lease_token"], "c" * 40,
+                "native-fenced-validation", **fence_a,
+            )
+
+            validator = api.claim_fenced_exact(
+                "native-validator", task_id, "native-fenced-claim-validator",
+            )
+            lease_b = validator["lease"]
+            assert lease_b["lease_generation"] == 2
+            assert validator["recovery_context"]["latest_checkpoint"][
+                "checkpoint_id"] == "native-builder-result"
+            with pytest.raises(NativeExecutorBlocked, match="worker_http_unverified"):
+                api.fail(
+                    task_id, "native-builder", lease_a["lease_token"],
+                    "native-fenced-stale-fail", "adapter_failed", **fence_a,
+                )
+            active = api.get_task(task_id)
+            assert active["state"] == "validating"
+            assert active["leased_by"] == "native-validator"
+
+            api.record_checkpoint(
+                task_id, "native-validator", lease_b["lease_token"],
+                lease_b["lease_generation"], lease_b["attempt_id"],
+                "native-validator-result", 1, "validator_result", "complete",
+                "native-fenced-validator-checkpoint",
+                artifact_kind="git_bundle.v1",
+                artifact_ref="artifact://fixture/bundle",
+                artifact_sha256="d" * 64,
+            )
+            api.complete(
+                task_id, "native-validator", lease_b["lease_token"],
                 "native-fenced-complete",
                 lease_generation=lease_b["lease_generation"],
                 attempt_id=lease_b["attempt_id"],
@@ -85,7 +292,7 @@ def test_missing_permissive_and_symlink_token_block(tmp_path):
      "worker_task_readback_invalid"),
 ])
 def test_status_contract_and_identity_fail_closed(tmp_path, status, data, code):
-    token=[REDACTED]
+    token = token_file(tmp_path)
     calls = []
     def handler(request):
         calls.append(request)
@@ -104,7 +311,7 @@ def test_status_contract_and_identity_fail_closed(tmp_path, status, data, code):
 
 
 def test_transport_failure_never_retries_mutation(tmp_path):
-    token=[REDACTED]
+    token = token_file(tmp_path)
     calls = []
     def handler(request):
         calls.append(request)
@@ -129,7 +336,7 @@ def test_transport_failure_never_retries_mutation(tmp_path):
 def test_checkpoint_transport_ambiguity_uses_readback_without_post_replay(
     tmp_path, readback_stage, accepted,
 ):
-    token=[REDACTED]
+    token = token_file(tmp_path)
     task_id = "cwp-" + "1" * 24
     calls = []
     stored = None
@@ -180,7 +387,7 @@ def test_checkpoint_transport_ambiguity_uses_readback_without_post_replay(
 
 
 def test_reject_unbounded_or_wrong_claim_without_claim_replay(tmp_path):
-    token=[REDACTED]
+    token = token_file(tmp_path)
     calls = []
     def handler(request):
         calls.append(request)
