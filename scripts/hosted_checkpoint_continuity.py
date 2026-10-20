@@ -126,6 +126,33 @@ def identity():
     return {"run": run, "attempt": attempt, "sha": sha, "rules_sha": RULES_SHA}
 
 
+SYNC_REF = "origin/feat/hosted-cold-checkpoint-resume-20261020"
+
+
+def launcher_arguments(repo, policy, rules_scripts, session, correlation, expected_sha):
+    require(isinstance(expected_sha, str) and re.fullmatch("[0-9a-f]{40}", expected_sha),
+            "launcher_source_invalid")
+    return [
+        sys.executable, "-B", str(rules_scripts / "session_launcher.py"),
+        "--repo", str(repo), "--policy", str(policy), "--session-id", session,
+        "--correlation-id", correlation, "--expected-head", expected_sha,
+        "--sync-ref", SYNC_REF,
+    ]
+
+
+def launcher_failure(returncode, stderr):
+    """Expose only the canonical stage/code, never arbitrary command output."""
+    phase = "unavailable"
+    try:
+        value = json.loads(stderr.strip().splitlines()[-1])
+        candidate = value.get("phase")
+        if isinstance(candidate, str) and re.fullmatch("[a-z_]{1,64}", candidate):
+            phase = candidate
+    except (ValueError, AttributeError, IndexError, TypeError):
+        pass
+    return {"result": "HOSTED_LAUNCHER_BLOCKED", "exit_code": int(returncode),
+            "phase": phase, "stderr_sha256": digest(stderr.encode())}
+
 def gateway_session(root, rules_scripts, actor, expected_sha):
     """Use the actual pinned Launcher/Gateway, with a disposable test policy."""
     require(git(rules_scripts.parent, "rev-parse", "HEAD") == RULES_SHA,
@@ -155,13 +182,13 @@ def gateway_session(root, rules_scripts, actor, expected_sha):
     path.write_text(json.dumps(policy), encoding="utf-8")
     session = "hosted-cold-" + actor
     correlation = "hosted-cold-" + os.environ["GITHUB_RUN_ID"] + "-" + actor
-    command = [
-        sys.executable, "-B", str(rules_scripts / "session_launcher.py"),
-        "--repo", str(ROOT), "--policy", str(path), "--session-id", session,
-        "--correlation-id", correlation, "--expected-head", expected_sha,
-    ]
+    command = launcher_arguments(
+        ROOT, path, rules_scripts, session, correlation, expected_sha,
+    )
     launched = subprocess.run(command, capture_output=True, text=True, timeout=60)
-    require(launched.returncode == 0, "session_launcher_blocked")
+    if launched.returncode:
+        print(json.dumps(launcher_failure(launched.returncode, launched.stderr), sort_keys=True))
+        raise RuntimeError("session_launcher_blocked")
     receipt = json.loads(launched.stdout.strip().splitlines()[-1])
     require(receipt.get("result") == "SESSION_LAUNCH_OK"
             and receipt.get("state_validated") is True
