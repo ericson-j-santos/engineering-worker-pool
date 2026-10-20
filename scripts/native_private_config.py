@@ -20,6 +20,35 @@ BROKER_HOST = "br-royal-butterfly-b4as4z27-continuityidentity.compute.c-6.us-eas
 S3_ENDPOINT = "https://br-royal-butterfly-b4as4z27.storage.c-6.us-east-2.aws.neon.tech"
 S3_BUCKET = "engineering-continuity-artifacts"
 S3_PREFIX = "engineering-worker-pool/checkpoints/live-v1"
+DEFAULT_IDENTITY_PROFILE = "engineering-worker-pool-branch-v1"
+IDENTITY_PROFILES = {
+    "engineering-worker-pool-branch-v1": {
+        "repository": "ericson-j-santos/engineering-worker-pool",
+        "repository_id": "1384155635",
+        "actor": "ericson-j-santos",
+        "actor_id": "60470500",
+        "event_name": "push",
+        "ref": "refs/heads/feat/hosted-cold-checkpoint-resume-20261020",
+        "workflow_ref": "ericson-j-santos/engineering-worker-pool/.github/workflows/native-live-continuity.yml@refs/heads/feat/hosted-cold-checkpoint-resume-20261020",
+    },
+    "reqsys-handoff-v1": {
+        "repository": "ericson-j-santos/reqsys-v2-enterprise-real",
+        "repository_id": "1228361750",
+        "actor": "github-actions[bot]",
+        "actor_id": "41898282",
+        "event_name": "workflow_dispatch",
+        "ref": "refs/heads/main",
+        "workflow_ref": "ericson-j-santos/reqsys-v2-enterprise-real/.github/workflows/codex-worker-pool-handoff.yml@refs/heads/main",
+    },
+}
+
+def identity_expectation() -> dict[str, str]:
+    profile = os.environ.get("EWP_IDENTITY_PROFILE", DEFAULT_IDENTITY_PROFILE)
+    try:
+        return dict(IDENTITY_PROFILES[profile])
+    except KeyError:
+        raise PrivateConfigurationError("identity_profile_invalid") from None
+
 RUNTIME_KEYS = frozenset({
     "authority_id", "schema", "database_url", "aws_access_key_id",
     "aws_secret_access_key", "s3_endpoint", "s3_region", "s3_bucket", "s3_prefix",
@@ -205,20 +234,15 @@ def _claim_shape_diagnostic(value: str) -> dict:
     try:
         segment = value.split(".")[1]
         payload = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
+        principal = identity_expectation()
         expected = {
             "iss": "https://token.actions.githubusercontent.com",
             "aud": "urn:engineering-worker-pool:continuity:v1",
-            "repository": "ericson-j-santos/engineering-worker-pool",
-            "repository_id": "1384155635",
+            **principal,
             "repository_owner": "ericson-j-santos",
             "repository_owner_id": "60470500",
-            "actor": "ericson-j-santos", "actor_id": "60470500",
-            "event_name": "push",
-            "ref": "refs/heads/feat/hosted-cold-checkpoint-resume-20261020",
             "ref_type": "branch", "runner_environment": "github-hosted",
             "sha": os.environ["GITHUB_SHA"], "workflow_sha": os.environ["GITHUB_SHA"],
-            "workflow_ref": "ericson-j-santos/engineering-worker-pool/.github/workflows/"
-                            "native-live-continuity.yml@refs/heads/feat/hosted-cold-checkpoint-resume-20261020",
             "run_id": os.environ["GITHUB_RUN_ID"],
             "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
         }
@@ -273,7 +297,8 @@ def hydrate_github(directory: Path = PRIVATE_ROOT) -> dict:
             if str(exc) == "identity_broker_http_403":
                 exc.claim_shape_diagnostic = _claim_shape_diagnostic(token)
             raise
-        expected = {"repository_id": "1384155635", "sha": head, "run_id": run_id, "run_attempt": run_attempt}
+        expected = {"repository_id": identity_expectation()["repository_id"],
+                    "sha": head, "run_id": run_id, "run_attempt": run_attempt}
         if result.get("version") != 1 or result.get("identity") != expected:
             raise PrivateConfigurationError("github_identity_readback_mismatch")
         receipt = store_configuration("runtime", result.get("runtime"), directory)
