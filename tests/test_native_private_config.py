@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import pytest
 from scripts.native_private_config import (
-    PrivateConfigurationError, read_private, store_configuration, validate_url,
+    PrivateConfigurationError, identity_expectation, read_private, store_configuration, validate_url,
 )
 
 URL = "postgresql://neondb_owner:fixture@ep-fixture.neon.tech/neondb?sslmode=verify-full&sslrootcert=system"
@@ -84,3 +84,26 @@ def test_identity_http_failure_reports_only_stage_and_status(monkeypatch, stage)
         _json_request(urllib.request.Request("https://example.invalid/identity"),
                       maximum=1024, stage=stage)
     assert str(captured.value) == "identity_" + stage + "_http_403"
+
+
+def test_identity_expectation_is_closed_and_profile_specific(monkeypatch):
+    monkeypatch.delenv("EWP_IDENTITY_PROFILE", raising=False)
+    default = identity_expectation()
+    assert default["repository"] == "ericson-j-santos/engineering-worker-pool"
+    assert default["repository_id"] == "1384155635"
+    assert default["event_name"] == "push"
+
+    monkeypatch.setenv("EWP_IDENTITY_PROFILE", "reqsys-handoff-v1")
+    reqsys = identity_expectation()
+    assert reqsys["repository"] == "ericson-j-santos/reqsys-v2-enterprise-real"
+    assert reqsys["repository_id"] == "1228361750"
+    assert reqsys["actor"] == "github-actions[bot]"
+    assert reqsys["event_name"] == "workflow_dispatch"
+    assert reqsys["ref"] == "refs/heads/main"
+    assert reqsys["workflow_ref"].endswith(
+        "/.github/workflows/codex-worker-pool-handoff.yml@refs/heads/main"
+    )
+
+    monkeypatch.setenv("EWP_IDENTITY_PROFILE", "unknown")
+    with pytest.raises(PrivateConfigurationError, match="identity_profile_invalid"):
+        identity_expectation()

@@ -5,11 +5,30 @@ export const AUDIENCE = "urn:engineering-worker-pool:continuity:v1";
 const jwks = createRemoteJWKSet(new URL(ISSUER + "/.well-known/jwks"), {
   timeoutDuration: 5000, cooldownDuration: 30000, cacheMaxAge: 300000,
 });
-const REPOSITORY = "ericson-j-santos/engineering-worker-pool";
-const REPOSITORY_ID = "1384155635";
+const OWNER = "ericson-j-santos";
 const OWNER_ID = "60470500";
-const REF = "refs/heads/feat/hosted-cold-checkpoint-resume-20261020";
-const WORKFLOW = REPOSITORY + "/.github/workflows/native-live-continuity.yml@" + REF;
+export const PRINCIPALS = Object.freeze({
+  "engineering-worker-pool-branch-v1": Object.freeze({
+    repository: "ericson-j-santos/engineering-worker-pool",
+    repository_id: "1384155635",
+    actor: "ericson-j-santos",
+    actor_id: "60470500",
+    event_name: "push",
+    ref: "refs/heads/feat/hosted-cold-checkpoint-resume-20261020",
+    workflow_ref: "ericson-j-santos/engineering-worker-pool/.github/workflows/native-live-continuity.yml@refs/heads/feat/hosted-cold-checkpoint-resume-20261020",
+    sha_policy: "environment_allowlist",
+  }),
+  "reqsys-handoff-v1": Object.freeze({
+    repository: "ericson-j-santos/reqsys-v2-enterprise-real",
+    repository_id: "1228361750",
+    actor: "github-actions[bot]",
+    actor_id: "41898282",
+    event_name: "workflow_dispatch",
+    ref: "refs/heads/main",
+    workflow_ref: "ericson-j-santos/reqsys-v2-enterprise-real/.github/workflows/codex-worker-pool-handoff.yml@refs/heads/main",
+    sha_policy: "verified_current_main",
+  }),
+});
 const HEAD = /^[0-9a-f]{40}$/;
 const UINT = /^[1-9][0-9]{0,19}$/;
 const PRIVATE_ENDPOINT = "https://br-royal-butterfly-b4as4z27.storage.c-6.us-east-2.aws.neon.tech";
@@ -22,24 +41,41 @@ const HEADERS = {
 function response(status, body) {
   return new Response(JSON.stringify(body), { status, headers: HEADERS });
 }
-export function admittedClaims(payload, allowedShas, nowSeconds = Date.now() / 1000) {
-  if (!Array.isArray(allowedShas) || allowedShas.length < 1 || allowedShas.length > 4 ||
-      !allowedShas.every(s => typeof s === "string" && HEAD.test(s))) return false;
-  const required = {
-    iss: ISSUER, aud: AUDIENCE, repository: REPOSITORY, repository_id: REPOSITORY_ID,
-    repository_owner: "ericson-j-santos", repository_owner_id: OWNER_ID,
-    actor: "ericson-j-santos", actor_id: OWNER_ID, event_name: "push",
-    ref: REF, ref_type: "branch", workflow_ref: WORKFLOW,
-    runner_environment: "github-hosted",
-  };
-  for (const [key, value] of Object.entries(required)) if (payload[key] !== value) return false;
-  if (typeof payload.sub !== "string" || payload.sub.length < 1 || payload.sub.length > 512) return false;
+function principalForClaims(payload) {
+  const matches = Object.entries(PRINCIPALS).filter(([, principal]) => {
+    const required = {
+      iss: ISSUER, aud: AUDIENCE,
+      repository: principal.repository, repository_id: principal.repository_id,
+      repository_owner: OWNER, repository_owner_id: OWNER_ID,
+      actor: principal.actor, actor_id: principal.actor_id,
+      event_name: principal.event_name, ref: principal.ref, ref_type: "branch",
+      workflow_ref: principal.workflow_ref, runner_environment: "github-hosted",
+    };
+    if (Object.entries(required).some(([key, value]) => payload[key] !== value)) return false;
+    return payload.sub === "repo:" + principal.repository + ":ref:" + principal.ref;
+  });
+  return matches.length === 1 ? matches[0] : null;
+}
+
+export function admittedClaims(
+  payload, allowedShas, nowSeconds = Date.now() / 1000, verifiedSourceSha = null
+) {
+  const matched = principalForClaims(payload);
+  if (!matched) return false;
+  const [, principal] = matched;
   if (!UINT.test(String(payload.run_id)) || !UINT.test(String(payload.run_attempt))) return false;
-  if (!HEAD.test(payload.sha || "") || payload.workflow_sha !== payload.sha ||
-      !allowedShas.includes(payload.sha)) return false;
+  if (!HEAD.test(payload.sha || "") || payload.workflow_sha !== payload.sha) return false;
+  if (principal.sha_policy === "environment_allowlist") {
+    if (!Array.isArray(allowedShas) || allowedShas.length < 1 || allowedShas.length > 8 ||
+        !allowedShas.every(s => typeof s === "string" && HEAD.test(s)) ||
+        new Set(allowedShas).size !== allowedShas.length ||
+        !allowedShas.includes(payload.sha)) return false;
+  } else if (principal.sha_policy === "verified_current_main") {
+    if (verifiedSourceSha !== payload.sha) return false;
+  } else return false;
   const jobProvenancePresent = payload.job_workflow_ref !== undefined ||
     payload.job_workflow_sha !== undefined;
-  if (jobProvenancePresent && (payload.job_workflow_ref !== WORKFLOW ||
+  if (jobProvenancePresent && (payload.job_workflow_ref !== principal.workflow_ref ||
       payload.job_workflow_sha !== payload.sha)) return false;
   if (![payload.iat, payload.nbf, payload.exp].every(Number.isSafeInteger)) return false;
   if (payload.iat > nowSeconds || payload.nbf > nowSeconds ||
@@ -78,6 +114,43 @@ export async function verifiedGithubToken(token, keySet = jwks) {
   });
   return payload;
 }
+
+async function boundedGithubJson(url, maximum, fetcher = fetch) {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:" || parsed.hostname !== "api.github.com" ||
+      parsed.port || parsed.username || parsed.password || parsed.search || parsed.hash)
+    throw new Error("github_source_invalid");
+  const result = await fetcher(parsed, {
+    method: "GET", redirect: "error", cache: "no-store",
+    headers: {
+      accept: "application/vnd.github+json",
+      "x-github-api-version": "2022-11-28",
+      "user-agent": "engineering-worker-pool-continuity-identity/1",
+    },
+  });
+  if (!result || result.status !== 200) throw new Error("github_source_unavailable");
+  const raw = await result.text();
+  if (raw.length < 2 || raw.length > maximum) throw new Error("github_source_invalid");
+  const value = JSON.parse(raw);
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("github_source_invalid");
+  return value;
+}
+
+export async function verifiedCurrentMainSha(principal, payload, fetcher = fetch) {
+  if (!principal || principal.sha_policy !== "verified_current_main" ||
+      principal.repository !== "ericson-j-santos/reqsys-v2-enterprise-real" ||
+      principal.ref !== "refs/heads/main") throw new Error("github_source_profile_invalid");
+  if (!HEAD.test(payload?.sha || "") || payload.workflow_sha !== payload.sha) return null;
+  const root = "https://api.github.com/repos/ericson-j-santos/reqsys-v2-enterprise-real";
+  const ref = await boundedGithubJson(root + "/git/ref/heads/main", 65536, fetcher);
+  if (ref.ref !== principal.ref || ref.object?.type !== "commit" ||
+      ref.object?.sha !== payload.sha) return null;
+  const commit = await boundedGithubJson(root + "/git/commits/" + payload.sha, 131072, fetcher);
+  if (commit.sha !== payload.sha || commit.verification?.verified !== true ||
+      commit.verification?.reason !== "valid") return null;
+  return payload.sha;
+}
 async function boundedJson(request) {
   const declared = request.headers.get("content-length");
   if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > 512)) throw new Error("request_invalid");
@@ -99,6 +172,7 @@ async function boundedJson(request) {
 }
 export function createHandler({ verify = verifiedGithubToken,
   shas = () => (process.env.EWP_ALLOWED_SHAS || "").split(",").filter(Boolean),
+  verifySource = verifiedCurrentMainSha,
   configuration = () => validatedRuntimeConfiguration(process.env.EWP_RUNTIME_CONFIG_JSON || ""),
   now = () => Date.now() / 1000 } = {}) {
   return async request => {
@@ -112,10 +186,18 @@ export function createHandler({ verify = verifiedGithubToken,
     if (!auth.startsWith("Bearer ") || auth.length > 16384 || auth.length < 20 ||
         /[\r\n]/.test(auth)) return response(401, { error: "unauthorized" });
     let payload;
-    try {
-      payload = await verify(auth.slice(7));
-      if (!admittedClaims(payload, shas(), now())) return response(403, { error: "identity_not_admitted" });
-    } catch { return response(401, { error: "unauthorized" }); }
+    try { payload = await verify(auth.slice(7)); }
+    catch { return response(401, { error: "unauthorized" }); }
+    const matched = principalForClaims(payload);
+    if (!matched) return response(403, { error: "identity_not_admitted" });
+    const [, principal] = matched;
+    let verifiedSourceSha = null;
+    if (principal.sha_policy === "verified_current_main") {
+      try { verifiedSourceSha = await verifySource(principal, payload); }
+      catch { return response(503, { error: "source_verification_unavailable" }); }
+    }
+    if (!admittedClaims(payload, shas(), now(), verifiedSourceSha))
+      return response(403, { error: "identity_not_admitted" });
     try {
       const body = await boundedJson(request);
       if (!body || Object.keys(body).sort().join() !== "purpose,run_id" ||
