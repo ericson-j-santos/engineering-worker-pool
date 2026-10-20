@@ -124,7 +124,27 @@ checkpoint inicial, raiz real do repositório e ausência de remotos. Git é
 executado sem shell, com hooks e configuração global/sistêmica desativados. Um
 workspace sujo, conteúdo ignorado ou filtro vindo de `.gitattributes` ou
 `.git/info/attributes` impede a materialização. Ao final, HEAD, limpeza e paths
-alterados precisam coincidir com o resultado assinado pelo envelope.
+alterados precisam coincidir com o resultado vinculado ao envelope.
+
+### Manifesto da publicação e manifesto do Validator
+
+O envelope conserva o manifesto usado pelo Builder: `workspace_sha` e
+`before_sha256` descrevem o checkout inicial. Esse manifesto continua obrigatório
+em `materialize()`, inclusive para recuperar o resultado em outro clone. Ele
+não deve ser substituído nem regravado com os dados do checkout produzido.
+
+O Validator recebe um manifesto cujo `workspace_sha` é o `produced_sha` e cujos
+hashes descrevem os arquivos desse resultado. Somente `verify()` aceita essa
+diferença de contexto. A tarefa, repositório, base, adaptador, contrato, versão
+e conjunto de caminhos devem continuar iguais aos da publicação. O transporte
+confere todos os hashes recebidos contra arquivos regulares do checkout limpo,
+confinados ao repositório, sem symlinks ou múltiplos links físicos.
+
+O prerequisite do bundle e a ancestralidade continuam vinculados ao
+`workspace_sha` original do envelope. O SHA do resultado, a integridade do
+envelope/bundle, os paths alterados e a ausência de remotos também são conferidos.
+A verificação não publica outro objeto, não altera o descritor CAS e não concede
+posse de tarefa; o fence e o checkpoint continuam sob a autoridade do Worker Pool.
 
 ## Evidência disponível e gates pendentes
 
@@ -139,6 +159,17 @@ política de menor privilégio ou recuperação entre máquinas reais.
 fenced publica pelo transporte concreto e outro executor, em clone independente
 sem remote nem hardlinks, retoma o checkpoint, materializa o mesmo SHA e não
 repete o adapter nem a publicação.
+
+A regressão Builder→Validator usa o transporte concreto com cliente S3 em
+memória. O clone do Validator é criado antes do resultado existir; o bundle é
+materializado usando o manifesto de publicação e depois validado com o manifesto
+do resultado. O teste exige conclusão na geração seguinte, descritor e envelope
+imutáveis e replay sem nova publicação nem nova execução do adaptador. Os controles
+do transporte rejeitam divergência de identidade, base, contrato, SHA, caminhos e
+hashes, além de impedir o uso do manifesto do Validator para materialização.
+Esses casos integram a suíte normal de `pytest`; sua aprovação deve ser conferida
+no mesmo SHA entregue. A API de tarefa é uma fixture nessa regressão, portanto
+ela não qualifica autoridade persistente comum nem acesso a um provedor S3 real.
 
 Antes do primeiro uso físico ainda são obrigatórios:
 

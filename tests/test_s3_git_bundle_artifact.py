@@ -5,6 +5,7 @@ import io
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -181,6 +182,67 @@ def test_roundtrip_between_independent_workspaces(tmp_path):
     assert artifact.artifact_ref == ARTIFACT_REF_PREFIX + artifact.artifact_sha256
     assert len(client.objects) == 2
     assert client.head_calls == 0
+
+
+def test_result_manifest_cannot_replace_publication_manifest_for_materialize(tmp_path):
+    transport, client, source, target, manifest, result = fixture_values(tmp_path)
+    artifact = publish(transport, source, manifest, result)
+    published_objects = dict(client.objects)
+    receiver = replace(
+        manifest,
+        workspace_sha=result.produced_sha,
+        before_sha256={"code.txt": hashlib.sha256(b"result\n").hexdigest()},
+    )
+
+    transport.verify(
+        task_id=TASK, manifest=receiver, workspace=source,
+        produced_sha=result.produced_sha, artifact=artifact,
+    )
+    with pytest.raises(NativeExecutorBlocked, match="artifact_manifest_invalid"):
+        transport.materialize(
+            task_id=TASK, manifest=receiver, workspace=target, artifact=artifact,
+        )
+
+    assert target.head() == manifest.workspace_sha
+    assert (target.root / "code.txt").read_bytes() == b"base\n"
+    assert target.status() == ""
+    assert client.objects == published_objects
+
+
+@pytest.mark.parametrize("change,code", [
+    ({"schema_version": 2}, "artifact_manifest_invalid"),
+    ({"task_id": "cwp-" + "2" * 24}, "artifact_manifest_invalid"),
+    ({"repository": "example/other"}, "artifact_manifest_invalid"),
+    ({"base_sha": "f" * 40}, "artifact_manifest_invalid"),
+    ({"adapter_id": "fixture.other"}, "artifact_manifest_invalid"),
+    ({"adapter_contract_sha256": "f" * 64}, "artifact_manifest_invalid"),
+    ({"workspace_sha": "f" * 40}, "artifact_manifest_invalid"),
+    ({"before_sha256": {}}, "artifact_manifest_invalid"),
+    ({"before_sha256": {"other.txt": hashlib.sha256(b"result\n").hexdigest()}},
+     "artifact_manifest_invalid"),
+    ({"before_sha256": {"code.txt": hashlib.sha256(b"base\n").hexdigest()}},
+     "artifact_workspace_invalid"),
+])
+def test_result_manifest_drift_cannot_validate_published_artifact(tmp_path, change, code):
+    transport, client, source, _target, manifest, result = fixture_values(tmp_path)
+    artifact = publish(transport, source, manifest, result)
+    published_objects = dict(client.objects)
+    receiver = replace(
+        manifest,
+        workspace_sha=result.produced_sha,
+        before_sha256={"code.txt": hashlib.sha256(b"result\n").hexdigest()},
+    )
+    receiver = replace(receiver, **change)
+
+    with pytest.raises(NativeExecutorBlocked, match=code):
+        transport.verify(
+            task_id=receiver.task_id, manifest=receiver, workspace=source,
+            produced_sha=result.produced_sha, artifact=artifact,
+        )
+
+    assert source.head() == result.produced_sha
+    assert source.status() == ""
+    assert client.objects == published_objects
 
 
 def test_bundle_is_incremental_v2_with_exact_checkpoint_and_head(tmp_path):
