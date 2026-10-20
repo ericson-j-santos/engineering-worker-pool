@@ -141,6 +141,7 @@ export async function verifiedCurrentMainSha(principal, payload, fetcher = fetch
   if (!principal || principal.sha_policy !== "verified_current_main" ||
       principal.repository !== "ericson-j-santos/reqsys-v2-enterprise-real" ||
       principal.ref !== "refs/heads/main") throw new Error("github_source_profile_invalid");
+  if (!HEAD.test(payload?.sha || "") || payload.workflow_sha !== payload.sha) return null;
   const root = "https://api.github.com/repos/ericson-j-santos/reqsys-v2-enterprise-real";
   const ref = await boundedGithubJson(root + "/git/ref/heads/main", 65536, fetcher);
   if (ref.ref !== principal.ref || ref.object?.type !== "commit" ||

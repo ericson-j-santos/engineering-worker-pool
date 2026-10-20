@@ -272,3 +272,13 @@ test("historical profile still requires environment SHA allowlist", () => {
   assert.equal(admittedClaims(claims, [], now, sha), false);
   assert.equal(admittedClaims(claims, ["d".repeat(40)], now, sha), false);
 });
+
+
+test("invalid ReqSys source SHA is rejected before any GitHub request", async () => {
+  let calls = 0;
+  const invalid = { ...reqsysClaims, sha: "../main", workflow_sha: "../main" };
+  assert.equal(await verifiedCurrentMainSha(
+    PRINCIPALS["reqsys-handoff-v1"], invalid, async () => { calls++; throw new Error("must not call"); }
+  ), null);
+  assert.equal(calls, 0);
+});
