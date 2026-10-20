@@ -68,7 +68,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python scripts/build_continuity_identity.py > "$BUILD_METADATA"
+          python scripts/build_continuity_identity.py > "$RUNNER_TEMP/continuity-identity-build.json"
           python - <<'PY'
           import hashlib
           import json
@@ -76,7 +76,7 @@ jobs:
           import stat
           from pathlib import Path
 
-          metadata = json.loads(Path(os.environ["BUILD_METADATA"]).read_text())
+          metadata = json.loads((Path(os.environ["RUNNER_TEMP"]) / "continuity-identity-build.json").read_text())
           bundle = Path(".tmp/continuity-identity.zip")
           payload = bundle.read_bytes()
           assert metadata["result"] == "IDENTITY_BUNDLE_BUILT"
@@ -109,7 +109,7 @@ jobs:
           import json
           import os
           from pathlib import Path
-          value = json.loads(Path(os.environ["BUILD_METADATA"]).read_text())
+          value = json.loads((Path(os.environ["RUNNER_TEMP"]) / "continuity-identity-build.json").read_text())
           print("## Continuity identity bundle")
           print(f"- Source SHA: `{os.environ['EXPECTED_SHA']}`")
           print(f"- Bundle SHA-256: `{value['sha256']}`")
