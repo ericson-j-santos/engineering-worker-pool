@@ -180,7 +180,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise PrivateConfigurationError("identity_redirect_rejected")
 
-def _json_request(request: urllib.request.Request, *, maximum: int) -> dict:
+def _json_request(request: urllib.request.Request, *, maximum: int, stage: str = "exchange") -> dict:
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
     try:
         with opener.open(request, timeout=10) as response:
@@ -191,8 +191,12 @@ def _json_request(request: urllib.request.Request, *, maximum: int) -> dict:
         if not isinstance(payload, dict):
             raise PrivateConfigurationError("identity_response_invalid")
         return payload
+    except urllib.error.HTTPError as exc:
+        label = stage if stage in {"github", "broker", "exchange"} else "exchange"
+        raise PrivateConfigurationError("identity_" + label + "_http_" + str(exc.code)) from None
     except (urllib.error.URLError, ValueError, UnicodeError, OSError):
-        raise PrivateConfigurationError("identity_exchange_failed") from None
+        label = stage if stage in {"github", "broker", "exchange"} else "exchange"
+        raise PrivateConfigurationError("identity_" + label + "_transport_failed") from None
 
 def hydrate_github(directory: Path = PRIVATE_ROOT) -> dict:
     try:
@@ -208,7 +212,7 @@ def hydrate_github(directory: Path = PRIVATE_ROOT) -> dict:
         query = [(k, v) for k, v in query if k != "audience"]
         query.append(("audience", "urn:engineering-worker-pool:continuity:v1"))
         endpoint = urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(query)))
-        token = _json_request(urllib.request.Request(endpoint, headers={"Authorization": "Bearer " + bearer}), maximum=20000).get("value")
+        token = _json_request(urllib.request.Request(endpoint, headers={"Authorization": "Bearer " + bearer}), maximum=20000, stage="github").get("value")
         if not isinstance(token, str) or not 20 < len(token) < 16384:
             raise PrivateConfigurationError("github_identity_invalid")
         run_id = os.environ["GITHUB_RUN_ID"]
@@ -218,7 +222,7 @@ def hydrate_github(directory: Path = PRIVATE_ROOT) -> dict:
             raise PrivateConfigurationError("github_context_invalid")
         body = json.dumps({"purpose": "native-continuity-runtime-v1", "run_id": run_id}).encode("utf-8")
         result = _json_request(urllib.request.Request("https://" + BROKER_HOST + "/bootstrap", data=body,
-            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"}, method="POST"), maximum=16384)
+            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"}, method="POST"), maximum=16384, stage="broker")
         expected = {"repository_id": "1384155635", "sha": head, "run_id": run_id, "run_attempt": run_attempt}
         if result.get("version") != 1 or result.get("identity") != expected:
             raise PrivateConfigurationError("github_identity_readback_mismatch")

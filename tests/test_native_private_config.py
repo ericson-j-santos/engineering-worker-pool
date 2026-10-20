@@ -65,3 +65,22 @@ def test_private_schema_rejects_extra_keys(tmp_path):
     with pytest.raises(PrivateConfigurationError):
         store_configuration("admin", {"database_url": URL, "extra": "not-allowed"}, tmp_path / "private")
     assert not (tmp_path / "private").exists()
+
+@pytest.mark.parametrize("stage", ["github", "broker"])
+def test_identity_http_failure_reports_only_stage_and_status(monkeypatch, stage):
+    import io
+    import urllib.error
+    import urllib.request
+    from scripts.native_private_config import _json_request
+
+    class Opener:
+        def open(self, request, timeout):
+            raise urllib.error.HTTPError(
+                request.full_url, 403, "untrusted private response",
+                {}, io.BytesIO(b"private response body must remain unread"))
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *args: Opener())
+    with pytest.raises(PrivateConfigurationError) as captured:
+        _json_request(urllib.request.Request("https://example.invalid/identity"),
+                      maximum=1024, stage=stage)
+    assert str(captured.value) == "identity_" + stage + "_http_403"

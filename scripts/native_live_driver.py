@@ -221,6 +221,7 @@ def execute(args, public, evidence_directory):
     keys = {
         "result", "run_key", "source_sha", "rules_sha", "task_id",
         "producer_runner", "receiver_runner", "generation", "manifest_sha256",
+        "original_manifest_sha256",
         "artifact_sha256", "produced_sha", "lease_generations",
         "checkpoint_committed_before_kill", "executor_tree_terminated",
         "local_api_closed", "executor_a_tree_terminated", "api_a_terminated",
