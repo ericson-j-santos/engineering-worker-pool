@@ -3,7 +3,11 @@ on:
   push:
     branches: [feat/hosted-cold-checkpoint-resume-20261020]
   pull_request:
+    types: [opened, synchronize, reopened]
     paths:
+      - 'app/**'
+      - 'requirements*.txt'
+      - tests/test_hosted_rehearsal_workflow.py
       - scripts/hosted_checkpoint_continuity.py
       - scripts/hosted_rehearsal.py
       - tests/test_hosted_checkpoint_continuity.py

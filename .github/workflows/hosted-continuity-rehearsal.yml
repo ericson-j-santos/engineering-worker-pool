@@ -1,7 +1,6 @@
 name: Hosted checkpoint continuity rehearsal
 run-name: Hosted continuity · PR ${{ github.event.pull_request.number }} · ${{ github.run_attempt }}
 
-# The consolidated caller is the only automatic trigger for this scenario.
 on:
   workflow_call:
 
@@ -20,12 +19,18 @@ jobs:
       github.event.pull_request.user.login == 'ericson-j-santos' &&
       github.actor == 'ericson-j-santos'
     runs-on: ubuntu-24.04
+    container:
+      image: python:3.12.15-bookworm
+      volumes:
+        - /workspace
     timeout-minutes: 6
     outputs:
       capsule: ${{ steps.proof.outputs.capsule }}
       capsule_sha256: ${{ steps.proof.outputs.capsule_sha256 }}
     env:
       PYTHONDONTWRITEBYTECODE: "1"
+      REQSYS_WORKSPACE_ROOT: /workspace
+      REQSYS_GATEWAY_STATE_DIR: /workspace/.reqsys-command-gateway-posix
       REHEARSAL_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
       - name: Checkout immutable candidate without stored credentials
@@ -40,20 +45,27 @@ jobs:
           ref: a430688c499077f5472841560f224c40766b0b78
           path: .rehearsal-rules
           persist-credentials: false
-      - name: Configure Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-        with:
-          python-version: "3.12"
       - name: Governed producer, interruption and checkpoint
         id: proof
+        env:
+          # Trust only this mounted source for the governed step.
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: safe.directory
+          GIT_CONFIG_VALUE_0: ${{ github.workspace }}
         run: python -B scripts/hosted_rehearsal.py run-produce
 
   resume:
     needs: produce
     runs-on: ubuntu-24.04
+    container:
+      image: python:3.12.15-bookworm
+      volumes:
+        - /workspace
     timeout-minutes: 6
     env:
       PYTHONDONTWRITEBYTECODE: "1"
+      REQSYS_WORKSPACE_ROOT: /workspace
+      REQSYS_GATEWAY_STATE_DIR: /workspace/.reqsys-command-gateway-posix
       REHEARSAL_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
       REHEARSAL_CAPSULE: ${{ needs.produce.outputs.capsule }}
       REHEARSAL_CAPSULE_SHA256: ${{ needs.produce.outputs.capsule_sha256 }}
@@ -70,9 +82,10 @@ jobs:
           ref: a430688c499077f5472841560f224c40766b0b78
           path: .rehearsal-rules
           persist-credentials: false
-      - name: Configure Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-        with:
-          python-version: "3.12"
       - name: Governed independent resume and stale-generation rejection
+        env:
+          # Trust only this mounted source for the governed step.
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: safe.directory
+          GIT_CONFIG_VALUE_0: ${{ github.workspace }}
         run: python -B scripts/hosted_rehearsal.py run-resume

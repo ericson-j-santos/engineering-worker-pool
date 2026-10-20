@@ -26,6 +26,28 @@ errado deve ser recusado antes de qualquer claim. A política temporária é uma
 fixture restrita do ensaio, seguindo o precedente do E2E nativo existente; não
 substitui nem amplia a política operacional POSIX de `/workspace`.
 
+## Cadeia consolidada e política canônica do cenário Store
+
+No evento de PR, o workflow chama primeiro o cenário Store por referência local
+ao mesmo commit: produtor Store, receptor Store, produtor HTTP e receptor HTTP.
+O workflow Store aceita somente `workflow_call`; seus filtros de aplicação,
+dependências e controles ficam no chamador. Falha ou skip indevido do Store
+bloqueia o HTTP. O push da branch continua um preflight HTTP separado, não prova
+a execução dos quatro jobs. O CI geral permanece um gate independente.
+
+A reconciliação incorpora o script e os testes da PR #35 na revisão
+`07e8ebe1f91d384f7d8c32519f11065f6f46b379`. O cenário Store usa diretamente a
+política POSIX canônica, sete arquivos de governança verificados e confiança
+Git limitada ao caminho exato da etapa. O cenário HTTP conserva sua fixture
+restrita descrita acima; não atribuir a ele a homologação da política Store.
+
+`tests/test_hosted_rehearsal_workflow.py` protege a cobertura de filtros e os
+vínculos de política, caminhos e confiança Git. Os controles de coordenação
+existentes continuam exigindo ambos os cenários e detectando disparo duplicado.
+Toda alteração exige nova prova dos quatro jobs no SHA resultante.
+Outputs e variáveis de ambiente podem aparecer nos logs: somente dados sintéticos
+são permitidos. Esta consolidação não cria autoridade durável nem transporte privado.
+
 ## Segurança e transporte
 
 O serviço escuta apenas loopback e usa banco temporário. Há duas credenciais
