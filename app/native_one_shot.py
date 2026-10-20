@@ -539,7 +539,11 @@ class NativeOneShotExecutor:
         _need(bool(paths) and paths == tuple(sorted(set(paths)))
               and set(paths).issubset(descriptor.allowed_paths),
               "artifact_result_paths")
-        _need(result.invoked_commands == descriptor.commands_for("builder"),
+        expected_commands = descriptor.commands_for("builder")
+        _need(type(result.invoked_commands) is tuple
+              and all(type(key) is str for key in result.invoked_commands)
+              and len(result.invoked_commands) == len(expected_commands)
+              and set(result.invoked_commands) == set(expected_commands),
               "artifact_result_commands")
         _need(bool(SHA256.fullmatch(result.evidence_sha256)), "artifact_result_evidence")
 

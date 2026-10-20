@@ -1,0 +1,12 @@
+{
+  "name": "engineering-continuity-identity",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test identity.test.mjs"
+  },
+  "dependencies": {
+    "jose": "6.2.13"
+  }
+}
