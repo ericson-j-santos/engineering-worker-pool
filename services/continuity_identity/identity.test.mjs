@@ -55,6 +55,10 @@ const drifts = {
   old: { iat: now - 601 }, long: { exp: now + 1000 },
   missingSubject: { sub: "" }, reusable: { job_workflow_ref: "other" },
   reusableSha: { job_workflow_sha: sha }, nonInteger: { iat: 1.5 },
+  partialExactJobRef: { job_workflow_ref: claims.workflow_ref },
+  foreignJobRef: { job_workflow_ref: "other", job_workflow_sha: sha },
+  divergentJobSha: { job_workflow_ref: claims.workflow_ref, job_workflow_sha: "a".repeat(40) },
+  nullJobRef: { job_workflow_ref: null, job_workflow_sha: sha },
 };
 for (const [name, mutation] of Object.entries(drifts)) {
   test("reject identity drift before reading credentials: " + name, async () => {
@@ -114,4 +118,22 @@ test("real RSA verification and forged/expired tokens", async () => {
   await assert.rejects(verifiedGithubToken(await sign({ ...claims, aud: "other" }), keys));
   const none = Buffer.from('{"alg":"none","typ":"JWT"}').toString("base64url") + "." + parts[1] + ".";
   await assert.rejects(verifiedGithubToken(none, keys));
+});
+
+test("signed direct workflow provenance must match the admitted workflow and SHA", async () => {
+  const { publicKey, privateKey } = await generateKeyPair("RS256");
+  const jwk = await exportJWK(publicKey);
+  const keys = createLocalJWKSet({ keys: [{ ...jwk, kid: "direct-job", alg: "RS256" }] });
+  const direct = { ...claims, job_workflow_ref: claims.workflow_ref, job_workflow_sha: sha };
+  const signed = await new SignJWT(direct)
+    .setProtectedHeader({ alg: "RS256", typ: "JWT", kid: "direct-job" }).sign(privateKey);
+  let reads = 0;
+  const handler = createHandler({
+    verify: value => verifiedGithubToken(value, keys),
+    shas: () => [sha], configuration: () => { reads++; return config; }, now: () => now,
+  });
+  const result = await handler(request(undefined, "Bearer " + signed));
+  assert.equal(result.status, 200);
+  assert.equal(reads, 1);
+  assert.equal((await result.json()).identity.sha, sha);
 });

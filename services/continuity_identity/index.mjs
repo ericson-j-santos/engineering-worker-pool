@@ -37,7 +37,10 @@ export function admittedClaims(payload, allowedShas, nowSeconds = Date.now() / 1
   if (!UINT.test(String(payload.run_id)) || !UINT.test(String(payload.run_attempt))) return false;
   if (!HEAD.test(payload.sha || "") || payload.workflow_sha !== payload.sha ||
       !allowedShas.includes(payload.sha)) return false;
-  if (payload.job_workflow_ref !== undefined || payload.job_workflow_sha !== undefined) return false;
+  const jobProvenancePresent = payload.job_workflow_ref !== undefined ||
+    payload.job_workflow_sha !== undefined;
+  if (jobProvenancePresent && (payload.job_workflow_ref !== WORKFLOW ||
+      payload.job_workflow_sha !== payload.sha)) return false;
   if (![payload.iat, payload.nbf, payload.exp].every(Number.isSafeInteger)) return false;
   if (payload.iat > nowSeconds || payload.nbf > nowSeconds ||
       payload.exp <= nowSeconds || nowSeconds - payload.iat > 600 ||
