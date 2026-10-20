@@ -1,38 +1,25 @@
 name: Continuity identity bundle
-run-name: Continuity identity bundle · ${{ github.event_name }} · ${{ github.event.pull_request.head.sha || github.sha }}
 
 on:
-  pull_request:
-    paths:
-      - "services/continuity_identity/**"
-      - "scripts/build_continuity_identity.py"
-      - ".github/workflows/continuity-identity-bundle.yml"
-      - "tests/test_continuity_identity_bundle_workflow.py"
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
       - "services/continuity_identity/**"
       - "scripts/build_continuity_identity.py"
       - ".github/workflows/continuity-identity-bundle.yml"
-  workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: continuity-identity-bundle-${{ github.event.pull_request.head.sha || github.sha }}
-  cancel-in-progress: false
-
 jobs:
   build:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
-      EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      BUILD_METADATA: ${{ runner.temp }}/continuity-identity-build.json
+      EXPECTED_SHA: ${{ github.sha }}
     steps:
-      - name: Checkout immutable source
+      - name: Checkout immutable main source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ env.EXPECTED_SHA }}
@@ -68,15 +55,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python scripts/build_continuity_identity.py > "$RUNNER_TEMP/continuity-identity-build.json"
-          python - <<'PY'
+          metadata="$RUNNER_TEMP/continuity-identity-build.json"
+          python scripts/build_continuity_identity.py > "$metadata"
+          METADATA="$metadata" python - <<'PY'
           import hashlib
           import json
           import os
           import stat
           from pathlib import Path
 
-          metadata = json.loads((Path(os.environ["RUNNER_TEMP"]) / "continuity-identity-build.json").read_text())
+          metadata = json.loads(Path(os.environ["METADATA"]).read_text())
           bundle = Path(".tmp/continuity-identity.zip")
           payload = bundle.read_bytes()
           assert metadata["result"] == "IDENTITY_BUNDLE_BUILT"
@@ -100,20 +88,3 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
-
-      - name: Publish non-secret summary
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
-          import json
-          import os
-          from pathlib import Path
-          value = json.loads((Path(os.environ["RUNNER_TEMP"]) / "continuity-identity-build.json").read_text())
-          print("## Continuity identity bundle")
-          print(f"- Source SHA: `{os.environ['EXPECTED_SHA']}`")
-          print(f"- Bundle SHA-256: `{value['sha256']}`")
-          print(f"- Bytes: {value['bytes']}")
-          print("- Secrets/configuration included: no")
-          print("- Deployment performed: no")
-          PY

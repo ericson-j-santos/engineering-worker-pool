@@ -4,19 +4,20 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "continuity-identity-bundle.yml"
 
 
-def test_identity_bundle_workflow_is_narrow_pinned_and_non_deploying() -> None:
+def test_identity_bundle_workflow_is_main_only_pinned_and_non_deploying() -> None:
     content = WORKFLOW.read_text(encoding="utf-8")
 
-    assert "pull_request:" in content
     assert "push:" in content
-    assert "branches: [main]" in content
-    assert "workflow_dispatch:" in content
+    assert "branches:\n      - main" in content
+    assert "pull_request:" not in content
+    assert "workflow_dispatch:" not in content
     assert '"services/continuity_identity/**"' in content
     assert '"scripts/build_continuity_identity.py"' in content
 
     assert "permissions:\n  contents: read" in content
     assert "runs-on: ubuntu-24.04" in content
     assert "timeout-minutes: 5" in content
+    assert 'EXPECTED_SHA: ${{ github.sha }}' in content
     assert "persist-credentials: false" in content
     assert 'ref: ${{ env.EXPECTED_SHA }}' in content
 
@@ -35,9 +36,6 @@ def test_identity_bundle_workflow_is_narrow_pinned_and_non_deploying() -> None:
     assert "if-no-files-found: error" in content
     assert "retention-days: 1" in content
     assert "compression-level: 0" in content
-    assert "Secrets/configuration included: no" in content
-    assert "Deployment performed: no" in content
-
     assert "secrets." not in content
     assert "deploy_function" not in content
     assert "EWP_RUNTIME_CONFIG_JSON" not in content
