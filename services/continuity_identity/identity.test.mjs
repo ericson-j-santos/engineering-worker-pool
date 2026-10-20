@@ -42,6 +42,7 @@ test("exact admitted identity and idempotent exchange", async () => {
 });
 const drifts = {
   issuer: { iss: "https://attacker.invalid" }, audience: { aud: "other" },
+  subject: { sub: "repo:ericson-j-santos/engineering-worker-pool:ref:refs/heads/main" },
   audienceArray: { aud: [AUDIENCE, "other"] }, repo: { repository: "attacker/repo" },
   repoId: { repository_id: "1" }, owner: { repository_owner: "other" },
   ownerId: { repository_owner_id: "1" }, actor: { actor: "other" },
@@ -136,4 +137,68 @@ test("signed direct workflow provenance must match the admitted workflow and SHA
   assert.equal(result.status, 200);
   assert.equal(reads, 1);
   assert.equal((await result.json()).identity.sha, sha);
+});
+
+
+const reqsysSha = "c".repeat(40);
+const reqsysClaims = {
+  iss: ISSUER, aud: AUDIENCE,
+  sub: "repo:ericson-j-santos/reqsys-v2-enterprise-real:ref:refs/heads/main",
+  repository: "ericson-j-santos/reqsys-v2-enterprise-real", repository_id: "1228361750",
+  repository_owner: "ericson-j-santos", repository_owner_id: "60470500",
+  actor: "github-actions[bot]", actor_id: "41898282", event_name: "workflow_dispatch",
+  ref: "refs/heads/main", ref_type: "branch",
+  workflow_ref: "ericson-j-santos/reqsys-v2-enterprise-real/.github/workflows/codex-worker-pool-handoff.yml@refs/heads/main",
+  workflow_sha: reqsysSha, sha: reqsysSha, runner_environment: "github-hosted",
+  run_id: "98765", run_attempt: "1", iat: now - 10, nbf: now - 10, exp: now + 290,
+};
+
+test("exact ReqSys handoff identity is admitted without broadening the EWP profile", async () => {
+  assert.equal(admittedClaims(reqsysClaims, [reqsysSha], now), true);
+  assert.equal(admittedClaims(reqsysClaims, [sha], now), false);
+  let reads = 0;
+  const handler = createHandler({
+    verify: async () => reqsysClaims, shas: () => [reqsysSha],
+    configuration: () => { reads++; return config; }, now: () => now,
+  });
+  const result = await handler(request(
+    { purpose: "native-continuity-runtime-v1", run_id: reqsysClaims.run_id }
+  ));
+  assert.equal(result.status, 200);
+  assert.equal((await result.json()).identity.repository_id, "1228361750");
+  assert.equal(reads, 1);
+});
+
+test("cross-profile claim splicing is rejected before reading credentials", async () => {
+  const mutations = [
+    { workflow_ref: claims.workflow_ref },
+    { repository: claims.repository, repository_id: claims.repository_id },
+    { actor: claims.actor, actor_id: claims.actor_id },
+    { event_name: claims.event_name },
+    { ref: claims.ref },
+    { sub: claims.sub },
+  ];
+  for (const mutation of mutations) {
+    let reads = 0;
+    const handler = createHandler({
+      verify: async () => ({ ...reqsysClaims, ...mutation }),
+      shas: () => [reqsysSha], configuration: () => { reads++; return config; }, now: () => now,
+    });
+    const result = await handler(request(
+      { purpose: "native-continuity-runtime-v1", run_id: reqsysClaims.run_id }
+    ));
+    assert.equal(result.status, 403);
+    assert.equal(reads, 0);
+  }
+});
+
+test("ReqSys reusable workflow provenance, when present, is exact", async () => {
+  const direct = {
+    ...reqsysClaims,
+    job_workflow_ref: reqsysClaims.workflow_ref,
+    job_workflow_sha: reqsysSha,
+  };
+  assert.equal(admittedClaims(direct, [reqsysSha], now), true);
+  assert.equal(admittedClaims({ ...direct, job_workflow_ref: claims.workflow_ref }, [reqsysSha], now), false);
+  assert.equal(admittedClaims({ ...direct, job_workflow_sha: sha }, [reqsysSha], now), false);
 });
