@@ -109,9 +109,9 @@ def checkpoint(pool, task, worker, lease, identifier="cp-1", **extra):
         next_action="continue", **fence(lease), **extra)
 
 
-def wait_expired(authority, lease, maximum=12):
+def wait_expired(authority, expires_at, maximum=12):
     deadline = time.monotonic() + maximum
-    expires = parse_iso(lease.lease_expires_at)
+    expires = parse_iso(expires_at)
     while authority.clock() <= expires:
         assert time.monotonic() < deadline, "lease_expiry_not_observed"
         time.sleep(0.1)
@@ -261,7 +261,7 @@ def test_real_checkpoint_survives_facade_loss_and_rejects_stale_fence(scope):
     task = enqueue(scope)
     a, b, v = register(scope, "a"), register(scope, "b"), register(scope, "v", "validator")
     pool_a = independent(scope)
-    _row, lease_a = claim(pool_a, task, a, seconds=5)
+    _row, lease_a = claim(pool_a, task, a)
     pool_a.start_task(task_id=task, worker_id=a, correlation_id="contract-start-a",
                       **fence(lease_a))
     saved, created = checkpoint(pool_a, task, a, lease_a)
@@ -274,8 +274,15 @@ def test_real_checkpoint_survives_facade_loss_and_rejects_stale_fence(scope):
             task_id=task, worker_id=a, correlation_id="contract-divergent",
             checkpoint_id="cp-1", sequence=1, stage="analysis",
             next_action="different", **fence(lease_a))
+    # Finish remote setup under the normal lease before requesting a short,
+    # real expiry. Regional network latency must not expire the setup itself.
+    renewed = pool_a.renew_lease(
+        task_id=task, worker_id=a, correlation_id="contract-expiry-a",
+        lease_seconds=5, **fence(lease_a))
+    assert renewed["lease_generation"] == lease_a.lease_generation
+    assert renewed["attempt_id"] == lease_a.attempt_id
     del pool_a  # No database file or state is transported to the next facade.
-    wait_expired(scope["authority"], lease_a)
+    wait_expired(scope["authority"], renewed["lease_expires_at"])
     controller = ReconciliationController(independent(scope))
     result = asyncio.run(controller.run_once())
     assert result is not None
@@ -321,14 +328,19 @@ def test_real_unknown_effect_does_not_become_automatic_retry(scope):
     task = enqueue(scope)
     a, b = register(scope, "unknown-a"), register(scope, "unknown-b")
     pool = scope["pool"]
-    _row, lease = claim(pool, task, a, seconds=3)
+    _row, lease = claim(pool, task, a)
     pool.start_task(task_id=task, worker_id=a, correlation_id="contract-start", **fence(lease))
     pool.record_checkpoint(
         task_id=task, worker_id=a, correlation_id="contract-unknown",
         checkpoint_id="unknown", sequence=1, stage="publish",
         next_action="reconcile destination", effect_id="synthetic-effect",
         effect_state="unknown", **fence(lease))
-    wait_expired(scope["authority"], lease)
+    renewed = pool.renew_lease(
+        task_id=task, worker_id=a, correlation_id="contract-expiry-unknown",
+        lease_seconds=5, **fence(lease))
+    assert renewed["lease_generation"] == lease.lease_generation
+    assert renewed["attempt_id"] == lease.attempt_id
+    wait_expired(scope["authority"], renewed["lease_expires_at"])
     asyncio.run(ReconciliationController(independent(scope)).run_once())
     observed = independent(scope).get_task(task)
     assert observed["state"] == "blocked"
