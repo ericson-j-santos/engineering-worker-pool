@@ -511,3 +511,24 @@ def test_claim_with_unverified_role_or_expiry_never_becomes_eligible(
         assert calls[0].url.path == "/v1/claims/exact"
     finally:
         client.close()
+
+
+@pytest.mark.parametrize("configured", [None, 90])
+def test_trusted_request_timeout_reaches_the_http_transport(tmp_path, configured):
+    observed = []
+    def handle(request):
+        observed.append(request.extensions["timeout"])
+        return httpx.Response(200, json={"contract": "fixture"})
+    token = token_file(tmp_path)
+    options = {} if configured is None else {"timeout_seconds": configured}
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        with LocalWorkerApi(port=18097, token_file=token, client=client, **options) as api:
+            assert api._request("GET", "/v1/contract") == {"contract": "fixture"}
+    expected = 8 if configured is None else configured
+    assert observed == [{key: expected for key in ("connect", "read", "write", "pool")}]
+
+
+@pytest.mark.parametrize("invalid", [True, 0, 121, float("nan"), float("inf"), "90", None])
+def test_unbounded_or_untyped_request_timeout_is_rejected(tmp_path, invalid):
+    with pytest.raises(NativeExecutorBlocked, match="worker_timeout_invalid"):
+        LocalWorkerApi(port=18097, token_file=tmp_path / "unused", timeout_seconds=invalid)

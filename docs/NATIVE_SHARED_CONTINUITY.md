@@ -79,10 +79,21 @@ de produto nem autoriza cutover de produto.
    tentativas/checkpoints/efeito e materializa novamente S3 em uma BASE nova.
 
 A camada ASGI é somente instrumentação de teste em torno das rotas existentes.
-Não contém fila, leasing ou resolução de checkpoint alternativos. O timeout
-fixo de 8 segundos de LocalWorkerApi permanece; os controles de B são
-síncronos e falham se não concluírem dentro desse orçamento. Não há avanço
-artificial de relógio ou endpoint remoto para o Worker Pool.
+Não contém fila, leasing ou resolução de checkpoint alternativos. Além de
+reter a resposta do checkpoint, a fachada B aguarda a conclusão dos controles
+e a gravação do recibo antes de encaminhar qualquer handoff `/validation`
+da tarefa. Uma falha não abre essa barreira. Isso preserva a ordenação mesmo
+quando o cliente recupera uma confirmação de checkpoint por leitura.
+
+`LocalWorkerApi` conserva o prazo padrão de 8 segundos. Uma configuração
+confiável pode solicitar um prazo finito entre 1 e 120 segundos; o runtime
+do ensaio solicita 90 segundos para suportar a resposta retida. As chamadas
+HTTP dos controles negativos continuam com 8 segundos. A lease de A continua
+em 45 segundos e expira pelo relógio real PostgreSQL; somente a fachada B
+usa 120 segundos para permitir os controles e a validação remotos. O limite
+do ator continua em 240 segundos. Esses orçamentos não renovam a lease:
+cada efeito e handoff continua exigindo posse válida no instante da transação.
+Não há avanço artificial de relógio ou endpoint remoto para o Worker Pool.
 
 ## Execução governada e contexto
 

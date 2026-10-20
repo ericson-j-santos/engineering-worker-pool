@@ -34,6 +34,8 @@ SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 MAX_DOCUMENT = 64 * 1024
 LEASE_SECONDS = 45
+CONSUMER_LEASE_SECONDS = 120
+RUNTIME_API_TIMEOUT_SECONDS = 90
 DEADLINE_SECONDS = 240
 BRANCH = "feat/hosted-cold-checkpoint-resume-20261020"
 
@@ -499,8 +501,15 @@ class ContinuityGate:
     def __init__(self, app, config: Mapping[str, Any]):
         self.app, self.config = app, config
         self.gated = False
+        self.validation_ready = asyncio.Event()
 
     async def __call__(self, scope, receive, send):
+        validation_route = "/v1/tasks/" + self.config["task_id"] + "/validation"
+        if (self.config["role"] == "b" and scope["type"] == "http"
+                and scope.get("method") == "POST"
+                and scope.get("path") == validation_route):
+            require(self.gated, "consumer_handoff_before_checkpoint")
+            await self.validation_ready.wait()
         route = "/v1/tasks/" + self.config["task_id"] + "/checkpoints"
         if scope["type"] != "http" or scope.get("method") != "POST" or scope.get("path") != route:
             await self.app(scope, receive, send)
@@ -560,6 +569,7 @@ class ContinuityGate:
         else:
             controls = await asyncio.to_thread(b_fence_controls, self.config)
             protected_json(Path(self.config["barrier"]), controls)
+            self.validation_ready.set()
             for message in messages:
                 await send(message)
 
@@ -604,7 +614,8 @@ def facade_environment(config: Mapping[str, Any]) -> dict[str, str]:
         "CODEX_WORKER_POOL_API_TOKEN_FILE": config["token_file"],
         "CODEX_WORKER_POOL_RECONCILIATION_TOKEN_FILE": config["reconciliation_file"],
         "CODEX_WORKER_POOL_EXPECTED_RULES_SHA": config["identity"]["rules_sha"],
-        "CODEX_WORKER_POOL_LEASE_SECONDS": str(LEASE_SECONDS),
+        "CODEX_WORKER_POOL_LEASE_SECONDS": str(
+            LEASE_SECONDS if config["role"] == "a" else CONSUMER_LEASE_SECONDS),
         "CODEX_WORKER_POOL_HEARTBEAT_TTL_SECONDS": "300",
         "CODEX_WORKER_POOL_MAX_ATTEMPTS": "5",
         "CODEX_WORKER_POOL_PROGRESS_STALL_SECONDS": "300",
@@ -647,6 +658,7 @@ def native_run(config: Mapping[str, Any], source: Path, manifest: Mapping[str, A
         correlation_id=identity["run_key"] + "-" + label,
         token_file=Path(config["token_file"]), api_port=config["port"],
         receipt_root=receipts, runner_name=identity["runner"],
+        api_timeout_seconds=RUNTIME_API_TIMEOUT_SECONDS,
     )
 
 

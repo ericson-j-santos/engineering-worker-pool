@@ -233,6 +233,7 @@ def run_synthetic_once(
     source_repo: Path, manifest: dict[str, Any], role: str,
     worker_id: str, session_id: str, correlation_id: str,
     token_file: Path, api_port: int, receipt_root: Path, runner_name: str,
+    api_timeout_seconds: float = 8,
 ) -> dict[str, Any]:
     """Launch, inspect, attest, register, and run one fixed synthetic native role.
 
@@ -260,6 +261,8 @@ def run_synthetic_once(
           "native_runtime_rules_invalid")
     _need(type(api_port) is int and 1 <= api_port <= 65535,
           "worker_port_invalid")
+    _need(type(api_timeout_seconds) in (int, float)
+          and 1 <= api_timeout_seconds <= 120, "worker_timeout_invalid")
     source = _physical(Path(source_repo), directory=True)
     gateway, policy_file = _authority(
         launcher, policy_path, trusted_launcher_sha256,
@@ -332,7 +335,8 @@ def run_synthetic_once(
     # Preserve the existing no-remotes/content guards before registration too.
     local_workspace.validate_before_claim(parsed, adapter.descriptor)
     transport = S3GitBundleArtifactTransport.from_environment()
-    with LocalWorkerApi(port=api_port, token_file=Path(token_file)) as api:
+    with LocalWorkerApi(port=api_port, token_file=Path(token_file),
+                        timeout_seconds=api_timeout_seconds) as api:
         _register_attested_worker(
             api, worker_id=worker_id, runner_name=runner_name, role=role,
             trusted_rules_sha=trusted_rules_sha, workspace=workspace, registry=registry,

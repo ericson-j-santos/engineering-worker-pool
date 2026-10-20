@@ -178,8 +178,12 @@ def composed(tmp_path, monkeypatch):
     return args, state, events
 
 
-def test_composition_requires_attestation_before_provider_api_registration_and_run(composed):
+@pytest.mark.parametrize("configured_timeout", [None, 90])
+def test_composition_requires_attestation_before_provider_api_registration_and_run(
+        composed, configured_timeout):
     args, state, events = composed
+    if configured_timeout is not None:
+        args["api_timeout_seconds"] = configured_timeout
     result = runtime.run_synthetic_once(**args)
     ordered = [
         "launcher", "inspect", "attest", "workspace-validate", "transport",
@@ -188,7 +192,10 @@ def test_composition_requires_attestation_before_provider_api_registration_and_r
     assert [item for item in events if item != "allowed"] == ordered
     assert state.launch_args["expected_head"] == BASE
     assert "sync_ref" not in state.launch_args
-    assert state.api_args == {"port": 18097, "token_file": args["token_file"]}
+    assert state.api_args == {
+        "port": 18097, "token_file": args["token_file"],
+        "timeout_seconds": 8 if configured_timeout is None else configured_timeout,
+    }
     assert state.executor_args["boundary"].expected_head == BASE
     assert state.executor_args["fenced_adapter_ids"] == frozenset({runtime.SYNTHETIC_PROFILE})
     assert result["runtime_command_count"] == 0
