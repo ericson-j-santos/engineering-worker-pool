@@ -57,6 +57,11 @@ jobs:
           persist-credentials: false
       - name: Governed producer, interruption and checkpoint
         id: proof
+        env:
+          # Trust only this mounted source for the governed step.
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: safe.directory
+          GIT_CONFIG_VALUE_0: ${{ github.workspace }}
         run: python -B scripts/hosted_rehearsal.py run-produce
 
   resume:
@@ -88,4 +93,9 @@ jobs:
           path: .rehearsal-rules
           persist-credentials: false
       - name: Governed independent resume and stale-generation rejection
+        env:
+          # Trust only this mounted source for the governed step.
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: safe.directory
+          GIT_CONFIG_VALUE_0: ${{ github.workspace }}
         run: python -B scripts/hosted_rehearsal.py run-resume

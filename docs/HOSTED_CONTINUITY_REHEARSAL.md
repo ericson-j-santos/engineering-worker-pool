@@ -63,6 +63,14 @@ O ensaio usa a política POSIX canônica verificada antes do bootstrap e registr
 como política operacional deste caminho. Os controles de bootstrap, snapshot,
 shell/inline, nomes sensíveis, HEAD e worktree continuam obrigatórios.
 
+Como o contêiner e a fonte montada podem ter proprietários diferentes, cada
+etapa governada recebe uma única configuração Git `safe.directory` via
+`GIT_CONFIG_COUNT/KEY_0/VALUE_0`, vinculada ao `GITHUB_WORKSPACE` físico exato.
+Essa configuração existe apenas no ambiente da etapa. Antes do Launcher,
+o código confere chave, contagem e caminho, rejeitando curingas e outras
+fontes. O Launcher continua como primeiro subprocesso, validando remoto,
+SHA e sessão pela política canônica antes de executar o ensaio.
+
 O acionamento aceita somente PR do proprietário no mesmo repositório público;
 forks, outros atores, host físico e contexto divergente são rejeitados.
 O processo filho não recebe tarefa, comando ou destino arbitrário. O teste usa

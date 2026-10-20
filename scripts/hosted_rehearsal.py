@@ -531,6 +531,10 @@ def run_governed(phase: str) -> None:
             "/workspace/.reqsys-command-gateway-posix", "canonical_path_environment_required")
     source_root = physical_directory(Path(os.environ.get("GITHUB_WORKSPACE", "")))
     require(ROOT == source_root, "actions_workspace_mismatch")
+    require(os.environ.get("GIT_CONFIG_COUNT") == "1"
+            and os.environ.get("GIT_CONFIG_KEY_0") == "safe.directory"
+            and os.environ.get("GIT_CONFIG_VALUE_0") == str(source_root),
+            "git_source_trust_binding_required")
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
     pr = event.get("pull_request", {})
     require(pr.get("head", {}).get("repo", {}).get("full_name") == REPOSITORY and

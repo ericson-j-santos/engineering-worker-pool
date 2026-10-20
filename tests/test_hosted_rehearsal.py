@@ -178,7 +178,9 @@ class GovernanceTests(unittest.TestCase):
             "GITHUB_RUN_ID":"12345", "GITHUB_RUN_ATTEMPT":"1",
             "REHEARSAL_EXPECTED_SHA":self.sha, "GITHUB_WORKSPACE":str(self.source),
             "GITHUB_EVENT_PATH":str(self.event), "REQSYS_WORKSPACE_ROOT":"/workspace",
-            "REQSYS_GATEWAY_STATE_DIR":"/workspace/.reqsys-command-gateway-posix"}
+            "REQSYS_GATEWAY_STATE_DIR":"/workspace/.reqsys-command-gateway-posix",
+            "GIT_CONFIG_COUNT":"1", "GIT_CONFIG_KEY_0":"safe.directory",
+            "GIT_CONFIG_VALUE_0":str(self.source)}
 
     @contextmanager
     def configured(self, changes=None):
@@ -236,7 +238,11 @@ class GovernanceTests(unittest.TestCase):
             module.physical_directory(alias)
         for changes in ({"REQSYS_WORKSPACE_ROOT":"/tmp"},
                         {"REQSYS_GATEWAY_STATE_DIR":"/tmp/state"},
-                        {"GITHUB_WORKSPACE":str(alias)}):
+                        {"GITHUB_WORKSPACE":str(alias)},
+                        {"GIT_CONFIG_COUNT":""}, {"GIT_CONFIG_COUNT":"0"},
+                        {"GIT_CONFIG_COUNT":"2"}, {"GIT_CONFIG_KEY_0":"core.bare"},
+                        {"GIT_CONFIG_VALUE_0":"*"},
+                        {"GIT_CONFIG_VALUE_0":str(self.source/"different-source")}):
             with self.subTest(changes=changes), self.configured(changes), \
                     patch.object(module, "execute_json") as command:
                 with self.assertRaises(module.RehearsalError):
