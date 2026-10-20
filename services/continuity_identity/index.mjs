@@ -145,9 +145,9 @@ export async function verifiedCurrentMainSha(principal, payload, fetcher = fetch
   const ref = await boundedGithubJson(root + "/git/ref/heads/main", 65536, fetcher);
   if (ref.ref !== principal.ref || ref.object?.type !== "commit" ||
       ref.object?.sha !== payload.sha) return null;
-  const commit = await boundedGithubJson(root + "/commits/" + payload.sha, 262144, fetcher);
-  if (commit.sha !== payload.sha || commit.commit?.verification?.verified !== true ||
-      commit.commit?.verification?.reason !== "valid") return null;
+  const commit = await boundedGithubJson(root + "/git/commits/" + payload.sha, 131072, fetcher);
+  if (commit.sha !== payload.sha || commit.verification?.verified !== true ||
+      commit.verification?.reason !== "valid") return null;
   return payload.sha;
 }
 async function boundedJson(request) {

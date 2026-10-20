@@ -218,7 +218,7 @@ test("ReqSys source verification binds OIDC SHA to current signed main commit", 
       ref: "refs/heads/main", object: { type: "commit", sha: reqsysSha },
     });
     return githubResponse({
-      sha: reqsysSha, commit: { verification: { verified: true, reason: "valid" } },
+      sha: reqsysSha, verification: { verified: true, reason: "valid" },
     });
   };
   const principal = PRINCIPALS["reqsys-handoff-v1"];
@@ -243,7 +243,7 @@ test("ReqSys source mismatch and unsigned current main fail closed", async () =>
       ref: "refs/heads/main", object: { type: "commit", sha: reqsysSha },
     });
     return githubResponse({
-      sha: reqsysSha, commit: { verification: { verified: false, reason: "unsigned" } },
+      sha: reqsysSha, verification: { verified: false, reason: "unsigned" },
     });
   }), null);
 });
