@@ -160,6 +160,20 @@ def execute(args, public, evidence_directory):
         "state_validated": boundary.state_validated,
         "gateway_sha256": GATEWAY_SHA, "policy_sha256": POLICY_SHA,
         "rules_sha": RULES_SHA}
+    # psycopg-binary embeds OpenSSL with build-time default trust paths.
+    # Select the existing Ubuntu CA bundle explicitly, preserving verify-full,
+    # sslrootcert=system and required channel binding for every child process.
+    certificate_bundle = Path("/etc/ssl/certs/ca-certificates.crt")
+    certificate_stat = certificate_bundle.lstat()
+    require(certificate_bundle.is_file() and not certificate_bundle.is_symlink()
+            and certificate_stat.st_uid == 0
+            and certificate_stat.st_mode & 0o022 == 0,
+            "native_ca_bundle_not_qualified")
+    env["SSL_CERT_FILE"] = str(certificate_bundle)
+    env.pop("SSL_CERT_DIR", None)
+    public["tls_trust"] = {
+        "source": "ubuntu_system_ca_bundle",
+        "bundle_sha256": hashlib.sha256(certificate_bundle.read_bytes()).hexdigest()}
     broker_controls(BROKER_HOST, _NoRedirect)
     public["identity_anonymous_rejected"] = True
     public["identity"] = hydrate_github()["identity"]
