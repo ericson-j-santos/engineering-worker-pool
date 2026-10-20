@@ -1,7 +1,7 @@
 """Real TLS + persistent authority process, not a private-cloud/VM failover proof.
 
 All keys, tokens, lanes and tasks are disposable fixtures. No existing service,
-credential or DB is used. Worker A has no access to the authority's DB path.
+credential or DB is used. Worker A receives no DB-path configuration and performs no direct DB I/O.
 """
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ from app.native_remote_runtime import (
 RULES = "a" * 40
 BASE = "b" * 40
 TOKEN = "disposable-tls-fixture-token-not-operational"
+RECONCILIATION_TOKEN = "disposable-reconciliation-fixture-not-operational"
 
 
 def bounded_wait(predicate, seconds=15):
@@ -68,6 +69,10 @@ def tls_authority(tmp_path):
     token = tmp_path / "fixture-token"
     token.write_text(TOKEN, encoding="ascii")
     token.chmod(0o600)
+    reconciliation_token = tmp_path / "fixture-reconciliation"
+    reconciliation_token.write_text(RECONCILIATION_TOKEN, encoding="ascii")
+    reconciliation_token.chmod(0o600)
+    assert RECONCILIATION_TOKEN != TOKEN
     db = tmp_path / "authority.db"
     # Keep a bound listener open across process start; only our child inherits it.
     listener = socket.socket()
@@ -82,6 +87,7 @@ def tls_authority(tmp_path):
         PYTHONPATH=str(ROOT), PYTHONDONTWRITEBYTECODE="1",
         CODEX_WORKER_POOL_DB=str(db),
         CODEX_WORKER_POOL_API_TOKEN_FILE=str(token),
+        CODEX_WORKER_POOL_RECONCILIATION_TOKEN_FILE=str(reconciliation_token),
         CODEX_WORKER_POOL_EXPECTED_RULES_SHA=RULES,
         CODEX_WORKER_POOL_HEARTBEAT_TTL_SECONDS="600",
         CODEX_WORKER_POOL_LEASE_SECONDS="4",
@@ -176,6 +182,7 @@ def test_real_tls_authority_survives_worker_process_loss(tmp_path):
         # A only receives HTTPS + credential references, never CODEX_WORKER_POOL_DB.
         child_env = dict(env)
         child_env.pop("CODEX_WORKER_POOL_DB")
+        child_env.pop("CODEX_WORKER_POOL_RECONCILIATION_TOKEN_FILE")
         worker = subprocess.Popen(
             [sys.executable, "-B", str(Path(__file__).resolve()), "--fixture-worker",
              route.origin, str(ca), str(token), task_id, str(receipt)],
@@ -267,6 +274,26 @@ def test_real_tls_certificate_and_authentication_negative_controls(tmp_path):
                             token_provider=PosixWorkerTokenFile(token)) as wrong_host:
             with pytest.raises(NativeExecutorBlocked, match="^worker_transport_unverified$"):
                 wrong_host.get_task(task_id)
+        # Exercise the original 503 gate without weakening it: both a missing
+        # recovery identity and reusing the API identity must reject before enqueue.
+        reconciliation = tmp_path / "fixture-reconciliation"
+        rejected_intent = {
+            "repository": "fixture/rejected-recovery", "issue_number": 1,
+            "request_id": "tls-recovery-identity-control", "base_sha": BASE,
+            "correlation_id": "tls-recovery-identity-control", "fencing_required": True,
+        }
+        try:
+            for invalid_value in ("", TOKEN):
+                reconciliation.write_text(invalid_value, encoding="ascii")
+                refused = admin.post("/v1/tasks", json=rejected_intent)
+                assert refused.status_code == 503
+                assert refused.json() == {
+                    "detail": "reconciliation_auth_not_configured_or_not_separated",
+                }
+        finally:
+            reconciliation.write_text(RECONCILIATION_TOKEN, encoding="ascii")
+        assert token.read_text(encoding="ascii") == TOKEN
+        assert reconciliation.read_text(encoding="ascii") == RECONCILIATION_TOKEN
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as independent:
             assert independent.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
         assert server.poll() is None

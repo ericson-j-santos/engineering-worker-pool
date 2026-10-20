@@ -65,8 +65,15 @@ checkpoint, then is killed by the test parent. The authority stays running and
 the existing reconciler recovers the expired lease. B resumes the same task with
 generation 2, rejects A's old generation, and the validator completes generation
 3. Independent HTTPS and read-only SQLite reads assert one task and final state.
-The worker never exports the database or a snapshot. Bad trust roots, hostname
+The worker never exports the database or a snapshot. Its configuration omits
+the database and reconciliation-token paths; the fixture is not an OS-level
+security sandbox and does not claim different operating-system identities.
+Bad trust roots, hostname
 and bearer authentication must leave the empty control database unchanged.
+The authority uses a separate disposable reconciliation credential. Controls
+empty that credential and then replace it with the API credential: both must
+return the existing 503 gate without enqueueing; the distinct value is restored.
+This reproduces the initial fixture failure without changing the server guard.
 
 This is a real TLS/API/process-loss test in one disposable CI machine. It is NOT
 loss of a VM, automatic selection of physical hosts, deployment-level Gateway
