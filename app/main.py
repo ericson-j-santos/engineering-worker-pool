@@ -303,7 +303,6 @@ class Requeue(BaseModel):
 
 class WorkCreate(TaskCreate):
     merge_policy: Literal["governed"] = "governed"
-    fencing_required: Literal[False] = False
 
 
 class EvidenceRecord(BaseModel):
@@ -493,9 +492,12 @@ def task_diagnostics(task_id: str) -> dict[str, Any]:
 
 @app.post("/v1/work", dependencies=[Depends(require_auth)], status_code=201)
 def create_work(payload: WorkCreate, response: Response) -> dict[str, Any]:
-    work, created = work_orchestrator.create_work(
-        **payload.model_dump(exclude={"fencing_required"})
-    )
+    if payload.fencing_required and not _reconciliation_auth_ready():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="reconciliation_auth_not_configured_or_not_separated",
+        )
+    work, created = work_orchestrator.create_work(**payload.model_dump())
     if not created:
         response.status_code = status.HTTP_200_OK
     _audit(
