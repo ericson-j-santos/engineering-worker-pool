@@ -350,3 +350,27 @@ def test_fixed_validation_script_uses_explicit_failure_even_with_optimization(tm
         exec(code, {"__name__": "__main__"})
     finally:
         os.chdir(previous)
+
+
+def test_recovered_builder_accepts_actual_execution_order_without_rewriting_it():
+    from app.native_one_shot import AdapterResult, NativeOneShotExecutor
+    executed = ("ci.fix", "ci.stage", "ci.commit")
+    result = AdapterResult(PRODUCED, (runtime.SOURCE_PATH,), executed, "2" * 64)
+    NativeOneShotExecutor._validate_recovered_result(result, runtime.SYNTHETIC_DESCRIPTOR)
+    assert result.invoked_commands == executed
+
+
+def test_recovered_builder_rejects_missing_extra_duplicate_or_malformed_commands():
+    from app.native_one_shot import AdapterResult, NativeOneShotExecutor
+    for commands in (
+        ("ci.fix", "ci.stage"),
+        ("ci.fix", "ci.stage", "ci.commit", "ci.other"),
+        ("ci.fix", "ci.stage", "ci.commit", "ci.commit"),
+        ("ci.fix", "ci.fix", "ci.commit"),
+        ["ci.fix", "ci.stage", "ci.commit"],
+        ("ci.fix", "ci.stage", None),
+    ):
+        result = AdapterResult(PRODUCED, (runtime.SOURCE_PATH,), commands, "2" * 64)
+        with pytest.raises(NativeExecutorBlocked, match="^artifact_result_commands$"):
+            NativeOneShotExecutor._validate_recovered_result(
+                result, runtime.SYNTHETIC_DESCRIPTOR)
