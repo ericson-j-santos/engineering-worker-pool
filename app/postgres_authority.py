@@ -57,6 +57,40 @@ def _need(condition: bool, code: str) -> None:
         raise AuthorityUnavailable(code)
 
 
+def _connection_failure_kind(exc: BaseException) -> str:
+    """Classify locally; never return driver text, DSNs or exception objects."""
+    message = str(exc).lower()
+    state = getattr(exc, "sqlstate", None)
+    if any(marker in message for marker in (
+            "unsupported startup parameter", "invalid startup parameter",
+            "invalid connection option", "unrecognized configuration parameter",
+            "unrecognized connection option")):
+        return "unsupported_startup"
+    if "channel binding" in message or "channel_binding" in message:
+        return "channel_binding"
+    if (isinstance(state, str) and state.startswith("28")) or any(
+            marker in message for marker in (
+                "password authentication failed", "authentication failed",
+                "no password supplied", "no pg_hba.conf entry", "fe_sendauth")):
+        return "authentication"
+    if any(marker in message for marker in (
+            "could not translate host name", "failed to resolve host",
+            "name or service not known", "temporary failure in name resolution",
+            "nodename nor servname provided", "getaddrinfo")):
+        return "dns"
+    if any(marker in message for marker in (
+            "timeout expired", "connection timeout", "connection timed out",
+            "operation timed out", "connect timeout")):
+        return "timeout"
+    if "certificate" in message or "sslrootcert" in message:
+        return "tls_certificate"
+    if any(marker in message for marker in (
+            "ssl error", "tls error", "ssl connection", "sslmode",
+            "server does not support ssl", "could not establish ssl")):
+        return "tls"
+    return "unknown"
+
+
 def read_private_connection_file(path: Path) -> str:
     """Read a stable owner-only POSIX file, without weakening the Windows gate."""
     _need(os.name == "posix" and hasattr(os, "O_NOFOLLOW"),
@@ -361,8 +395,9 @@ class PostgresAuthority:
                 **self._parameters, autocommit=True, row_factory=dict_row,
                 connect_timeout=self.connect_timeout, prepare_threshold=None,
                 application_name="engineering-worker-pool")
-        except psycopg.Error:
-            raise AuthorityUnavailable("authority_connection_unavailable") from None
+        except psycopg.Error as exc:
+            kind = _connection_failure_kind(exc)
+            raise AuthorityUnavailable("authority_connection_unavailable:" + kind) from None
 
     def _verify_identity(self, raw) -> None:
         row = raw.execute(

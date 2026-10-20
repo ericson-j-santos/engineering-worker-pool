@@ -192,3 +192,48 @@ def test_write_transaction_pins_isolation_before_lock_and_server_clock(monkeypat
     db.close()
     assert configured._local.writer is None
     assert events[-2:] == [("rollback", None), ("close", None)]
+
+
+def test_connection_failure_diagnostics_never_expose_driver_text(monkeypatch):
+    import traceback
+    from types import SimpleNamespace
+
+    class SyntheticDriverError(Exception):
+        sqlstate = None
+
+    failure = None
+    def refuse(**_kwargs):
+        raise failure
+
+    monkeypatch.setattr(module, "psycopg", SimpleNamespace(
+        Error=SyntheticDriverError, connect=refuse))
+    monkeypatch.setattr(module, "dict_row", object(), raising=False)
+    configured = authority(monkeypatch)
+    secret = "SYNTHETIC_PRIVATE_VALUE_DO_NOT_EMIT"
+    samples = (
+        ("could not translate host name", None, "dns"),
+        ("connection timeout expired", None, "timeout"),
+        ("password authentication failed", None, "authentication"),
+        ("authorization rejected", "28000", "authentication"),
+        ("SSL error: certificate verify failed", None, "tls_certificate"),
+        ('root certificate file "system" does not exist', None, "tls_certificate"),
+        ("server certificate does not match host name", None, "tls_certificate"),
+        ("SSL error: handshake failure", None, "tls"),
+        ("channel binding required but unavailable", None, "channel_binding"),
+        ("unsupported startup parameter: options", None, "unsupported_startup"),
+        ('invalid connection option "channel_binding"', None, "unsupported_startup"),
+        ("unclassified server response", None, "unknown"),
+    )
+    for message, state, expected in samples:
+        failure = SyntheticDriverError(
+            "postgresql://fixture:" + secret + "@private.invalid/db " + message)
+        failure.sqlstate = state
+        with pytest.raises(module.AuthorityUnavailable) as caught:
+            configured._connect()
+        assert caught.value.args == ("authority_connection_unavailable:" + expected,)
+        assert caught.value.__cause__ is None
+        assert caught.value.__suppress_context__ is True
+        rendered = "".join(traceback.format_exception(caught.value, chain=True))
+        assert secret not in rendered
+        assert "postgresql://" not in rendered
+        assert "SyntheticDriverError" not in rendered
