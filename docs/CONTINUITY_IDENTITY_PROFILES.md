@@ -19,6 +19,15 @@ proveniência reutilizável coerente quando presente, token recente e sujeito
 `repo:<repository>:ref:<ref>` exato. Misturar campos de perfis diferentes
 falha antes da leitura da configuração privada.
 
+O perfil histórico continua exigindo que o SHA esteja em `EWP_ALLOWED_SHAS`.
+O perfil ReqSys usa uma regra diferente porque a `main` avança: antes de ler
+a configuração privada, o broker consulta exclusivamente a API pública oficial
+do GitHub, exige que `refs/heads/main` seja exatamente o SHA assinado no OIDC
+e que o endpoint do commit reporte `verification.verified=true` e
+`reason=valid`. Redirect, erro HTTP, resposta grande/malformada, SHA divergente
+ou commit não verificado falham fechados. Essa leitura não usa token GitHub nem
+confia em branch protection local.
+
 ## Cliente
 
 `scripts/native_private_config.py` usa
@@ -28,8 +37,10 @@ O handoff ReqSys deve definir explicitamente
 `EWP_IDENTITY_PROFILE=reqsys-handoff-v1`.
 
 A variável não concede acesso por si só: o broker autentica o JWT OIDC e aplica
-a allowlist compilada. Um SHA continua inelegível até estar presente na
-configuração protegida `EWP_ALLOWED_SHAS` do Function.
+a allowlist compilada. Para o perfil histórico, o SHA ainda precisa estar em
+`EWP_ALLOWED_SHAS`. Para o ReqSys, o SHA precisa ser o `main` corrente e
+verificado pela API GitHub no instante do bootstrap; a configuração de runtime
+do Function não precisa ser regravada a cada avanço legítimo da `main`.
 
 ## Deploy
 

@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair, exportJWK, createLocalJWKSet, SignJWT } from "jose";
-import { ISSUER, AUDIENCE, admittedClaims, validatedRuntimeConfiguration,
-  verifiedGithubToken, createHandler } from "./index.mjs";
+import { ISSUER, AUDIENCE, PRINCIPALS, admittedClaims, validatedRuntimeConfiguration,
+  verifiedGithubToken, verifiedCurrentMainSha, createHandler } from "./index.mjs";
 const sha = "b".repeat(40);
 const now = Math.floor(Date.now() / 1000);
 const claims = {
@@ -154,11 +154,12 @@ const reqsysClaims = {
 };
 
 test("exact ReqSys handoff identity is admitted without broadening the EWP profile", async () => {
-  assert.equal(admittedClaims(reqsysClaims, [reqsysSha], now), true);
-  assert.equal(admittedClaims(reqsysClaims, [sha], now), false);
+  assert.equal(admittedClaims(reqsysClaims, [], now, reqsysSha), true);
+  assert.equal(admittedClaims(reqsysClaims, [reqsysSha], now), false);
   let reads = 0;
   const handler = createHandler({
-    verify: async () => reqsysClaims, shas: () => [reqsysSha],
+    verify: async () => reqsysClaims, shas: () => [],
+    verifySource: async () => reqsysSha,
     configuration: () => { reads++; return config; }, now: () => now,
   });
   const result = await handler(request(
@@ -182,7 +183,8 @@ test("cross-profile claim splicing is rejected before reading credentials", asyn
     let reads = 0;
     const handler = createHandler({
       verify: async () => ({ ...reqsysClaims, ...mutation }),
-      shas: () => [reqsysSha], configuration: () => { reads++; return config; }, now: () => now,
+      shas: () => [], verifySource: async () => reqsysSha,
+      configuration: () => { reads++; return config; }, now: () => now,
     });
     const result = await handler(request(
       { purpose: "native-continuity-runtime-v1", run_id: reqsysClaims.run_id }
@@ -198,7 +200,75 @@ test("ReqSys reusable workflow provenance, when present, is exact", async () => 
     job_workflow_ref: reqsysClaims.workflow_ref,
     job_workflow_sha: reqsysSha,
   };
-  assert.equal(admittedClaims(direct, [reqsysSha], now), true);
-  assert.equal(admittedClaims({ ...direct, job_workflow_ref: claims.workflow_ref }, [reqsysSha], now), false);
-  assert.equal(admittedClaims({ ...direct, job_workflow_sha: sha }, [reqsysSha], now), false);
+  assert.equal(admittedClaims(direct, [], now, reqsysSha), true);
+  assert.equal(admittedClaims({ ...direct, job_workflow_ref: claims.workflow_ref }, [], now, reqsysSha), false);
+  assert.equal(admittedClaims({ ...direct, job_workflow_sha: sha }, [], now, reqsysSha), false);
+});
+
+
+function githubResponse(value, status = 200) {
+  return { status, text: async () => JSON.stringify(value) };
+}
+
+test("ReqSys source verification binds OIDC SHA to current signed main commit", async () => {
+  const calls = [];
+  const fetcher = async (url, options) => {
+    calls.push([String(url), options]);
+    if (calls.length === 1) return githubResponse({
+      ref: "refs/heads/main", object: { type: "commit", sha: reqsysSha },
+    });
+    return githubResponse({
+      sha: reqsysSha, commit: { verification: { verified: true, reason: "valid" } },
+    });
+  };
+  const principal = PRINCIPALS["reqsys-handoff-v1"];
+  assert.equal(await verifiedCurrentMainSha(principal, reqsysClaims, fetcher), reqsysSha);
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(([, options]) => options.redirect === "error" && options.cache === "no-store"));
+  assert.ok(calls.every(([url]) => url.startsWith("https://api.github.com/repos/ericson-j-santos/reqsys-v2-enterprise-real/")));
+});
+
+test("ReqSys source mismatch and unsigned current main fail closed", async () => {
+  const principal = PRINCIPALS["reqsys-handoff-v1"];
+  let calls = 0;
+  assert.equal(await verifiedCurrentMainSha(principal, reqsysClaims, async () => {
+    calls++;
+    return githubResponse({
+      ref: "refs/heads/main", object: { type: "commit", sha: "d".repeat(40) },
+    });
+  }), null);
+  assert.equal(calls, 1);
+  assert.equal(await verifiedCurrentMainSha(principal, reqsysClaims, async url => {
+    if (String(url).includes("/git/ref/")) return githubResponse({
+      ref: "refs/heads/main", object: { type: "commit", sha: reqsysSha },
+    });
+    return githubResponse({
+      sha: reqsysSha, commit: { verification: { verified: false, reason: "unsigned" } },
+    });
+  }), null);
+});
+
+test("source verification outage and mismatch never read private configuration", async () => {
+  for (const mode of ["unavailable", "mismatch"]) {
+    let reads = 0;
+    const handler = createHandler({
+      verify: async () => reqsysClaims, shas: () => [],
+      verifySource: async () => {
+        if (mode === "unavailable") throw new Error("synthetic outage");
+        return null;
+      },
+      configuration: () => { reads++; return config; }, now: () => now,
+    });
+    const result = await handler(request(
+      { purpose: "native-continuity-runtime-v1", run_id: reqsysClaims.run_id }
+    ));
+    assert.equal(result.status, mode === "unavailable" ? 503 : 403);
+    assert.equal(reads, 0);
+  }
+});
+
+test("historical profile still requires environment SHA allowlist", () => {
+  assert.equal(admittedClaims(claims, [sha], now), true);
+  assert.equal(admittedClaims(claims, [], now, sha), false);
+  assert.equal(admittedClaims(claims, ["d".repeat(40)], now, sha), false);
 });
