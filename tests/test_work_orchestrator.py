@@ -306,7 +306,10 @@ def test_fenced_work_is_idempotent_and_hidden_from_legacy_claims(
     assert fenced.json()["claimed"] is True
     assert fenced.json()["task"]["fencing_required"] is True
     assert fenced.json()["lease"]["lease_generation"] == 1
-    assert fenced.json()["recovery_context"]["task"]["task_id"] == work["task_id"]
+    assert fenced.json()["recovery_context"] == {
+        "latest_checkpoint": None,
+        "effects": [],
+    }
 
 
 def test_work_replay_rejects_fencing_mode_drift(tmp_path: Path, monkeypatch) -> None:
