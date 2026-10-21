@@ -89,7 +89,10 @@ class WorkOrchestrator:
 
     @staticmethod
     def _public_task(task: dict[str, Any]) -> dict[str, Any]:
-        return {key: value for key, value in task.items() if key != "lease_token"}
+        result = {key: value for key, value in task.items() if key != "lease_token"}
+        if "fencing_required" in result:
+            result["fencing_required"] = bool(result["fencing_required"])
+        return result
 
     def _row(self, work_id: str) -> dict[str, Any]:
         db = self._db()
@@ -164,6 +167,7 @@ class WorkOrchestrator:
         target_branch: str | None = None,
         max_attempts: int | None = None,
         merge_policy: str = "governed",
+        fencing_required: bool = False,
     ) -> tuple[dict[str, Any], bool]:
         if merge_policy not in MERGE_POLICIES:
             raise ValueError("merge_policy inválida")
@@ -176,6 +180,7 @@ class WorkOrchestrator:
             base_sha=base_sha,
             target_branch=target_branch,
             max_attempts=max_attempts,
+            fencing_required=fencing_required,
         )
         work_id = self._work_id(task)
         stamp = iso(self.clock())

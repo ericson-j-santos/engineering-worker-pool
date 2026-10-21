@@ -82,6 +82,11 @@ def test_fenced_continuity_routes_and_models_are_declared() -> None:
     assert data["core_semantics"][
         "fenced_admission_requires_exclusive_cutover_attestation"
     ] is True
+    assert data["core_semantics"]["work_fencing_is_opt_in"] is True
+    assert data["core_semantics"][
+        "fenced_work_requires_separated_reconciliation_auth"
+    ] is True
+    assert data["models"]["WorkCreate"]["optional"] == ["fencing_required"]
     assert data["core_semantics"][
         "mixed_version_claimers_on_one_queue_are_supported"
     ] is False

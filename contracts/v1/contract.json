@@ -56,7 +56,9 @@
     "independent_readback_path": "/v1/tasks/{task_id}",
     "work_orchestrator_flow": "queue->worker->validator->evidence->governed_merge",
     "work_evidence_requires_exact_produced_sha": true,
-    "work_merge_requires_expected_head_sha": true
+    "work_merge_requires_expected_head_sha": true,
+    "work_fencing_is_opt_in": true,
+    "fenced_work_requires_separated_reconciliation_auth": true
   },
   "models": {
     "WorkerRegistration": {
@@ -177,6 +179,9 @@
         "request_id",
         "correlation_id",
         "base_sha"
+      ],
+      "optional": [
+        "fencing_required"
       ]
     },
     "EvidenceRecord": {

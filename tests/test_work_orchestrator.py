@@ -7,13 +7,21 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 
-def load_app(tmp_path: Path, monkeypatch):
+def load_app(tmp_path: Path, monkeypatch, *, reconciliation: bool = False):
     root = Path(__file__).resolve().parents[1]
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
     token_file = tmp_path / "api-token"
     token_file.write_text("work-orchestrator-token\n", encoding="utf-8")
     monkeypatch.setenv("CODEX_WORKER_POOL_DB", str(tmp_path / "pool.db"))
+    if reconciliation:
+        reconciliation_file = tmp_path / "reconciliation-token"
+        reconciliation_file.write_text("work-orchestrator-reconcile-token\n", encoding="utf-8")
+        monkeypatch.setenv(
+            "CODEX_WORKER_POOL_RECONCILIATION_TOKEN_FILE", str(reconciliation_file)
+        )
+    else:
+        monkeypatch.delenv("CODEX_WORKER_POOL_RECONCILIATION_TOKEN_FILE", raising=False)
     monkeypatch.setenv("CODEX_WORKER_POOL_API_TOKEN_FILE", str(token_file))
     monkeypatch.setenv("CODEX_WORKER_POOL_EXPECTED_RULES_SHA", "a" * 40)
     monkeypatch.setenv("CODEX_WORKER_POOL_PROGRESS_STALL_SECONDS", "300")
@@ -226,3 +234,103 @@ def test_work_flow_queue_to_governed_merge_with_replay_and_controls(tmp_path: Pa
     assert independent.json()["phase"] == "merged"
     assert independent.json()["task"]["produced_sha"] == produced_sha
     assert independent.json()["evidence"]["independent_readback"] is True
+
+
+
+def test_work_fencing_requires_separated_reconciliation_authority(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _module, client, headers = load_app(tmp_path, monkeypatch, reconciliation=False)
+    payload = {
+        "repository": "example/fenced-consumer",
+        "issue_number": 3001,
+        "request_id": "work-fenced-no-reconcile",
+        "correlation_id": "work-fenced-negative",
+        "base_sha": "1" * 40,
+        "fencing_required": True,
+    }
+    response = client.post("/v1/work", headers=headers, json=payload)
+    assert response.status_code == 503
+    assert response.json()["detail"] == "reconciliation_auth_not_configured_or_not_separated"
+
+
+def test_fenced_work_is_idempotent_and_hidden_from_legacy_claims(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module, client, headers = load_app(tmp_path, monkeypatch, reconciliation=True)
+    module.store.enable_fenced_cutover(
+        correlation_id="fenced-work-cutover",
+        legacy_claimers_drained=True,
+        shared_queue_exclusive=True,
+    )
+    register_workers(client, headers)
+
+    payload = {
+        "repository": "example/fenced-consumer",
+        "issue_number": 3002,
+        "request_id": "work-fenced-positive",
+        "correlation_id": "work-fenced-create",
+        "base_sha": "2" * 40,
+        "fencing_required": True,
+    }
+    first = client.post("/v1/work", headers=headers, json=payload)
+    replay = client.post("/v1/work", headers=headers, json=payload)
+    assert first.status_code == 201
+    assert replay.status_code == 200
+    assert first.json()["created"] is True
+    assert replay.json()["created"] is False
+
+    work = first.json()["work"]
+    task = work["task"]
+    assert task["fencing_required"] is True
+    assert replay.json()["work"]["task_id"] == work["task_id"]
+
+    legacy = client.post(
+        "/v1/claims",
+        headers=headers,
+        json={"worker_id": "builder-work", "correlation_id": "legacy-must-not-claim"},
+    )
+    assert legacy.status_code == 200
+    assert legacy.json()["claimed"] is False
+
+    fenced = client.post(
+        "/v1/claims/fenced/exact",
+        headers=headers,
+        json={
+            "worker_id": "builder-work",
+            "task_id": work["task_id"],
+            "correlation_id": "fenced-exact-claim",
+        },
+    )
+    assert fenced.status_code == 200
+    assert fenced.json()["claimed"] is True
+    assert fenced.json()["task"]["fencing_required"] is True
+    assert fenced.json()["lease"]["lease_generation"] == 1
+    assert fenced.json()["recovery_context"] == {
+        "latest_checkpoint": None,
+        "effects": [],
+    }
+
+
+def test_work_replay_rejects_fencing_mode_drift(tmp_path: Path, monkeypatch) -> None:
+    module, client, headers = load_app(tmp_path, monkeypatch, reconciliation=True)
+    module.store.enable_fenced_cutover(
+        correlation_id="fenced-work-cutover-drift",
+        legacy_claimers_drained=True,
+        shared_queue_exclusive=True,
+    )
+    payload = {
+        "repository": "example/fenced-consumer",
+        "issue_number": 3003,
+        "request_id": "work-fencing-drift",
+        "correlation_id": "work-fencing-drift",
+        "base_sha": "3" * 40,
+        "fencing_required": True,
+    }
+    assert client.post("/v1/work", headers=headers, json=payload).status_code == 201
+    drift = client.post(
+        "/v1/work",
+        headers=headers,
+        json={**payload, "fencing_required": False},
+    )
+    assert drift.status_code == 409
