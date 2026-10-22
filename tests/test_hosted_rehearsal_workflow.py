@@ -4,6 +4,8 @@ from __future__ import annotations
 import copy
 import fnmatch
 from pathlib import Path
+import subprocess
+import sys
 import unittest
 
 import yaml
@@ -37,6 +39,17 @@ class HostedWorkflowTests(unittest.TestCase):
         # BaseLoader preserves GitHub's literal "on" key and string scalars.
         self.workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
         self.caller = yaml.load(CALLER.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+
+    def test_direct_entrypoint_can_import_project_modules(self):
+        result = subprocess.run(
+            [sys.executable, "-B", str(ROOT / "scripts" / "hosted_rehearsal.py"), "--help"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage:", result.stdout)
 
     def assert_coverage(self, workflow):
         trigger = workflow["on"]["pull_request"]

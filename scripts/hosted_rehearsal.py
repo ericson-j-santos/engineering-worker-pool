@@ -24,6 +24,12 @@ import sys
 import time
 import zlib
 
+# Direct script execution sets sys.path[0] to scripts/, so bind imports to the
+# checked-out candidate root before loading project modules.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from app.secure_file import (
     SecureFileError,
     is_link_or_reparse,
@@ -34,7 +40,6 @@ from app.secure_file import (
 
 REPOSITORY = "ericson-j-santos/engineering-worker-pool"
 RULES_SHA = "a430688c499077f5472841560f224c40766b0b78"
-ROOT = Path(__file__).resolve().parents[1]
 WORK_ROOT = Path("/workspace/.chatgpt-workers")
 POLICY_RELATIVE = "config/command-gateway.policy.posix.json"
 POLICY_SHA256 = "50e2da27bcca6c82ae57cabbb5d8f490108fb363265c5f30fd0dcf78d6828bc5"
@@ -632,5 +637,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.path.insert(0, str(ROOT))
     raise SystemExit(main())
