@@ -23,6 +23,7 @@ from app.native_one_shot import (
     TASK_ID,
     NativeExecutorBlocked,
 )
+from app.secure_file import SecureFileError, open_private_read, validate_private_fd
 
 TOKEN_RE = re.compile(r"[!-~]{16,4096}")
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -76,19 +77,15 @@ class LocalWorkerApi:
 
     def _token(self) -> str:
         # The token source is trusted configuration, never a queue manifest.
-        # Windows ACL attestation is not implemented; block use there instead
-        # of claiming that a POSIX mode check validates NTFS permissions.
-        _need(os.name == "posix" and hasattr(os, "O_NOFOLLOW"),
-              "worker_token_acl_unverified")
         try:
-            fd = os.open(self.token_file, os.O_RDONLY | os.O_NOFOLLOW)
+            fd = open_private_read(self.token_file)
             with os.fdopen(fd, "rb") as source:
-                state = os.fstat(source.fileno())
-                _need(stat.S_ISREG(state.st_mode) and state.st_nlink == 1
-                      and state.st_uid == os.getuid()
-                      and state.st_mode & 0o077 == 0,
-                      "worker_token_permissions")
                 raw = source.read(4097)
+                validate_private_fd(source.fileno())
+        except SecureFileError as exc:
+            code = ("worker_token_permissions" if str(exc) == "file_not_private"
+                    else "worker_token_file_unavailable")
+            raise NativeExecutorBlocked(code) from None
         except OSError:
             raise NativeExecutorBlocked("worker_token_file_unavailable") from None
         _need(16 <= len(raw) <= 4096, "worker_token_invalid")

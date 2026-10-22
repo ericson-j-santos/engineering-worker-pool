@@ -131,7 +131,12 @@ def test_unprotected_token_file_rejected_without_network(tmp_path):
 def test_symlink_token_blocked(tmp_path):
     source = token_file(tmp_path)
     link = tmp_path / "alias.token"
-    link.symlink_to(source)
+    try:
+        link.symlink_to(source)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is unavailable")
+        raise
     with pytest.raises(mod.CanaryBlocked, match="token_file_not_regular"):
         mod.read_token(link)
 

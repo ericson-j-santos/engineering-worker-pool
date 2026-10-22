@@ -26,6 +26,13 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
+from app.secure_file import (
+    SecureFileError,
+    open_exclusive,
+    open_private_read,
+    validate_private_fd,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = Path(__file__).resolve()
 REPOSITORY = "ericson-j-santos/engineering-worker-pool"
@@ -89,26 +96,40 @@ def document(raw: str, expected: str | None = None) -> dict[str, Any]:
 def protected_json(path: Path, value: Mapping[str, Any]) -> None:
     require(not path.exists() and not path.is_symlink(), "receipt_already_exists")
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as stream:
-        stream.write(canonical(dict(value)).decode())
-        stream.flush()
-        os.fsync(stream.fileno())
+    try:
+        fd = open_exclusive(path)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            stream.write(canonical(dict(value)).decode())
+            stream.flush()
+            os.fsync(stream.fileno())
+    except FileExistsError:
+        raise HarnessBlocked("receipt_already_exists") from None
+    except (OSError, SecureFileError):
+        raise HarnessBlocked("private_document_unavailable") from None
 
 
 def read_private_json(path: Path) -> dict[str, Any]:
-    require(os.name == "posix" and hasattr(os, "O_NOFOLLOW"), "posix_required")
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = open_private_read(path)
         with os.fdopen(fd, "rb") as stream:
-            info = os.fstat(stream.fileno())
-            require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
-                    and info.st_uid == os.getuid() and not info.st_mode & 0o077,
-                    "private_document_permissions")
             raw = stream.read(MAX_DOCUMENT + 1)
+            validate_private_fd(stream.fileno())
         return document(raw.decode("utf-8"))
+    except SecureFileError:
+        raise HarnessBlocked("private_document_permissions") from None
     except (OSError, UnicodeError):
         raise HarnessBlocked("private_document_unavailable") from None
+
+
+def current_process_group() -> int:
+    """Return the real POSIX group, or the Win32 process identity for metadata."""
+    getter = getattr(os, "getpgrp", None)
+    return getter() if getter is not None else os.getpid()
+
+
+def require_posix_process_groups() -> None:
+    require(os.name == "posix" and hasattr(os, "getpgrp")
+            and hasattr(os, "killpg"), "posix_process_groups_required")
 
 
 def git(root: Path, *args: str, allowed: tuple[int, ...] = (0,)) -> str:
@@ -560,7 +581,7 @@ class ContinuityGate:
             await asyncio.to_thread(persist_a_checkpoint, self.config, payload)
             protected_json(Path(self.config["barrier"]), {
                 "run_key": identity["run_key"], "task_id": self.config["task_id"],
-                "api_pid": os.getpid(), "pgid": os.getpgrp(),
+                "api_pid": os.getpid(), "pgid": current_process_group(),
                 "checkpoint_id": payload["checkpoint_id"], "lease_generation": 1,
             })
             # Supervisor observes the durable marker, freezes the entire group,
@@ -601,8 +622,8 @@ def port_closed(port: int) -> bool:
 
 def private_token(path: Path) -> None:
     value = secrets.token_hex(32)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w", encoding="ascii") as stream:
+    fd = open_exclusive(path)
+    with os.fdopen(fd, "w", encoding="ascii", newline="") as stream:
         stream.write(value)
         stream.flush()
         os.fsync(stream.fileno())
@@ -705,12 +726,14 @@ def require_builder_resume_commands(receipt: Mapping[str, Any]) -> None:
 
 
 def actor(config_path: Path) -> None:
+    require_posix_process_groups()
     from app.native_runtime import synthetic_manifest
     config = read_private_json(config_path)
     identity = context()
     require(config["identity"] == identity, "actor_identity_drift")
     role, root = config["role"], Path(config["actor_root"])
-    require(role in {"a", "b"} and os.getpid() == os.getpgrp(), "actor_group_invalid")
+    require(role in {"a", "b"} and os.getpid() == current_process_group(),
+            "actor_group_invalid")
     row = read_run(authority(), identity)
     base = source_fixture(root / "builder-source")
     require(base == row["base_sha"], "actor_base_drift")
@@ -805,7 +828,7 @@ def require_owned_tree(group: int, api_pid: int) -> dict[int, dict[str, Any]]:
     inventory = process_inventory()
     members = {pid: row for pid, row in inventory.items()
                if row["pgid"] == group and row["state"] not in {"Z", "X", "x"}}
-    require(group != os.getpgrp() and group in members and api_pid in members
+    require(group != current_process_group() and group in members and api_pid in members
             and members[group]["session"] == group
             and members[api_pid]["session"] == group, "actor_tree_not_owned")
     descendants = {group}
@@ -821,7 +844,8 @@ def require_owned_tree(group: int, api_pid: int) -> dict[int, dict[str, Any]]:
 
 
 def kill_group(process: subprocess.Popen, port: int) -> dict[str, Any]:
-    require(process.pid != os.getpgrp(), "supervisor_kill_refused")
+    require_posix_process_groups()
+    require(process.pid != current_process_group(), "supervisor_kill_refused")
     with contextlib.suppress(ProcessLookupError):
         os.killpg(process.pid, signal.SIGKILL)
     process.wait(timeout=10)

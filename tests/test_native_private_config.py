@@ -14,8 +14,9 @@ def test_private_store_readback_and_replay(tmp_path):
     first = store_configuration("admin", {"database_url": URL}, directory)
     assert first["replayed"] is False
     assert read_private(directory / "admin.url").decode().strip() == URL
-    assert (directory / "admin.url").stat().st_mode & 0o777 == 0o600
-    assert directory.stat().st_mode & 0o777 == 0o700
+    if os.name == "posix":
+        assert (directory / "admin.url").stat().st_mode & 0o777 == 0o600
+        assert directory.stat().st_mode & 0o777 == 0o700
     assert store_configuration("admin", {"database_url": URL}, directory)["replayed"] is True
     with pytest.raises(PrivateConfigurationError, match="conflict"):
         store_configuration("admin", {"database_url": URL.replace("fixture@", "changed@")}, directory)
@@ -40,23 +41,34 @@ def test_private_file_link_and_permission_controls(tmp_path):
     store_configuration("admin", {"database_url": URL}, directory)
     source = directory / "admin.url"
     link = tmp_path / "link"
-    link.symlink_to(source)
-    with pytest.raises((OSError, PrivateConfigurationError)):
-        read_private(link)
+    try:
+        link.symlink_to(source)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != 1314:
+            raise
+    else:
+        with pytest.raises((OSError, PrivateConfigurationError)):
+            read_private(link)
     hard = tmp_path / "hard"
     os.link(source, hard)
     with pytest.raises(PrivateConfigurationError):
         read_private(source)
     hard.unlink()
-    source.chmod(0o644)
-    with pytest.raises(PrivateConfigurationError):
-        read_private(source)
+    if os.name == "posix":
+        source.chmod(0o644)
+        with pytest.raises(PrivateConfigurationError):
+            read_private(source)
 
 def test_private_directory_cannot_be_redirected(tmp_path):
     target = tmp_path / "target"
     target.mkdir(mode=0o700)
     redirected = tmp_path / "redirected"
-    redirected.symlink_to(target, target_is_directory=True)
+    try:
+        redirected.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is unavailable")
+        raise
     with pytest.raises(PrivateConfigurationError):
         store_configuration("admin", {"database_url": URL}, redirected)
     assert list(target.iterdir()) == []

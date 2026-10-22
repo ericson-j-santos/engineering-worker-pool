@@ -80,10 +80,15 @@ def test_unknown_filename_cannot_leak(tmp_path):
 
 def test_symlink_and_directory_rejected(tmp_path):
     root = evidence(tmp_path)
-    (root / "after.py").symlink_to(root / "before.py")
-    with pytest.raises(EvidenceRejected):
-        pack(root, SHA)
-    (root / "after.py").unlink()
+    try:
+        (root / "after.py").symlink_to(root / "before.py")
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != 1314:
+            raise
+    else:
+        with pytest.raises(EvidenceRejected):
+            pack(root, SHA)
+        (root / "after.py").unlink()
     (root / "after.py").mkdir()
     with pytest.raises(EvidenceRejected):
         pack(root, SHA)

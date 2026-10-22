@@ -88,12 +88,23 @@ def repository(tmp_path):
     root = tmp_path / "repo"
     (root / "app").mkdir(parents=True)
     source = "# real surrounding module bytes\n" + BEFORE + "\nOTHER = 17\n"
-    (root / "app/portfolio_bridge.py").write_text(source)
+    (root / "app/portfolio_bridge.py").write_text(
+        source, encoding="utf-8", newline=""
+    )
     worker.git(root, "init", "-b", "worker/structured")
     worker.git(root, "add", ".")
     worker.git(root, "-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "-m", "baseline")
     contract = task(worker.git(root, "rev-parse", "HEAD"), source)
     return root, tmp_path / "state", contract
+
+
+def test_git_symlink_config_must_remain_disabled(tmp_path):
+    root, _state, _contract = repository(tmp_path)
+    worker.git(root, "config", "core.symlinks", "false")
+    worker.clean_git_configuration(root)
+    worker.git(root, "config", "core.symlinks", "true")
+    with pytest.raises(worker.StructuredBlocked, match="^git_configuration_unsafe$"):
+        worker.clean_git_configuration(root)
 
 
 def test_git_repair_patch_independent_checkout_and_replay(tmp_path):
@@ -138,7 +149,12 @@ def test_preconditions_block_before_inference(tmp_path, condition):
     else:
         original = root / contract["path"]
         original.rename(root / "original.py")
-        original.symlink_to(root / "original.py")
+        try:
+            original.symlink_to(root / "original.py")
+        except OSError as error:
+            if getattr(error, "winerror", None) == 1314:
+                pytest.skip("Windows symlink privilege is unavailable")
+            raise
     with pytest.raises(worker.StructuredBlocked):
         worker.repair(root, state, contract, lambda *_: pytest.fail("inference_not_allowed"))
 

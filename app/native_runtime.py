@@ -25,6 +25,7 @@ from app.native_one_shot import (
 )
 from app.native_pool_http import LocalWorkerApi
 from app.s3_git_bundle_artifact import S3GitBundleArtifactTransport
+from app.secure_file import open_exclusive
 
 
 SYNTHETIC_REPOSITORY = "ci-isolated/native-fixture"
@@ -39,7 +40,7 @@ FIX_SCRIPT = (
     "after = 'def add(a, b):\\n    return a + b\\n'\n"
     "if p.read_text(encoding='utf-8') != before:\n"
     "    raise SystemExit(3)\n"
-    "p.write_text(after, encoding='utf-8')\n"
+    "p.write_bytes(after.encode('utf-8'))\n"
 )
 VALIDATE_SCRIPT = (
     "from pathlib import Path\n"
@@ -360,9 +361,8 @@ def run_synthetic_once(
             evidence, sort_keys=True, separators=(",", ":"),
             ensure_ascii=True, allow_nan=False,
         ).encode("ascii")
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
         try:
-            descriptor = os.open(receipts / "session-evidence.json", flags, 0o600)
+            descriptor = open_exclusive(receipts / "session-evidence.json")
             with os.fdopen(descriptor, "wb") as stream:
                 stream.write(encoded)
                 stream.flush()

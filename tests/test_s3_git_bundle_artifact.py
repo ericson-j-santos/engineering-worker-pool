@@ -107,19 +107,20 @@ def repositories(tmp_path: Path) -> tuple[LocalWorkspace, LocalWorkspace, str, s
     target = tmp_path / "target"
     source.mkdir()
     git(source, "init", "-q")
+    git(source, "config", "core.autocrlf", "false")
     git(source, "config", "user.name", "Fixture")
     git(source, "config", "user.email", "fixture@example.invalid")
-    (source / "code.txt").write_text("base\n", encoding="utf-8")
+    (source / "code.txt").write_text("base\n", encoding="utf-8", newline="")
     git(source, "add", "code.txt")
     git(source, "commit", "-q", "-m", "base")
     base = git(source, "rev-parse", "HEAD")
 
-    git(tmp_path, "clone", "-q", str(source), str(target))
+    git(tmp_path, "-c", "core.autocrlf=false", "clone", "-q", str(source), str(target))
     git(target, "remote", "remove", "origin")
     git(target, "checkout", "-q", "--detach", base)
 
     git(source, "remote", "remove", "origin") if git(source, "remote") else None
-    (source / "code.txt").write_text("result\n", encoding="utf-8")
+    (source / "code.txt").write_text("result\n", encoding="utf-8", newline="")
     git(source, "add", "code.txt")
     git(source, "commit", "-q", "-m", "result")
     produced = git(source, "rev-parse", "HEAD")

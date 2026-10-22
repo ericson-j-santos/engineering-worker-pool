@@ -24,6 +24,14 @@ import sys
 import time
 import zlib
 
+from app.secure_file import (
+    SecureFileError,
+    is_link_or_reparse,
+    open_regular_read,
+    path_matches_fd,
+    validate_regular_fd,
+)
+
 REPOSITORY = "ericson-j-santos/engineering-worker-pool"
 RULES_SHA = "a430688c499077f5472841560f224c40766b0b78"
 ROOT = Path(__file__).resolve().parents[1]
@@ -163,7 +171,7 @@ def physical_directory(path: Path) -> Path:
     require(path.is_absolute(), "physical_directory_required")
     try:
         for component in (path, *path.parents):
-            require(component.is_dir() and not component.is_symlink(),
+            require(component.is_dir() and not is_link_or_reparse(component),
                     "physical_directory_required")
         require(path.resolve(strict=True) == path, "physical_directory_required")
     except OSError as exc:
@@ -178,17 +186,18 @@ def read_regular_bytes(path: Path, limit: int) -> bytes:
         before = path.lstat()
         require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1,
                 "regular_governance_file_required")
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        descriptor = open_regular_read(path)
         with os.fdopen(descriptor, "rb") as handle:
             opened = os.fstat(handle.fileno())
             payload = handle.read(limit + 1)
             after = os.fstat(handle.fileno())
-        final = path.lstat()
-    except OSError as exc:
+            validate_regular_fd(handle.fileno())
+            same_path = path_matches_fd(handle.fileno(), path)
+    except (OSError, SecureFileError) as exc:
         raise RehearsalError("regular_governance_file_required") from exc
-    identity = lambda value: (value.st_dev, value.st_ino, value.st_size,
-                              value.st_mtime_ns, value.st_ctime_ns, value.st_nlink)
-    require(identity(before) == identity(opened) == identity(after) == identity(final)
+    identity = lambda value: (value.st_size, value.st_mtime_ns,
+                              value.st_ctime_ns, value.st_nlink)
+    require(identity(opened) == identity(after) and same_path
             and len(payload) <= limit, "governance_file_changed_or_oversized")
     return payload
 

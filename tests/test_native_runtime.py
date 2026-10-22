@@ -37,18 +37,18 @@ def composed(tmp_path, monkeypatch):
         for relative, value in runtime.SYNTHETIC_FILES.items():
             path = root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(value, encoding="utf-8")
+            path.write_bytes(value.encode("utf-8"))
     launcher = ModuleType("session_launcher")
     launcher_file = tmp_path / "session_launcher.py"
-    launcher_file.write_text("# trusted fixture launcher\n")
+    launcher_file.write_bytes(b"# trusted fixture launcher\n")
     launcher.__file__ = str(launcher_file)
     gateway = ModuleType("command_gateway")
     gateway_file = tmp_path / "command_gateway.py"
-    gateway_file.write_text("# trusted fixture gateway\n")
+    gateway_file.write_bytes(b"# trusted fixture gateway\n")
     gateway.__file__ = str(gateway_file)
     launcher.cg = gateway
     policy = tmp_path / "policy.json"
-    policy.write_text('{"fixture":true}')
+    policy.write_bytes(b'{"fixture":true}')
     gateway.norm = lambda value: str(value)
     gateway.load_policy = lambda value: {"policy_file": str(value)}
     gateway.assert_allowed_path = lambda *args: events.append("allowed")
@@ -213,7 +213,8 @@ def test_session_evidence_exists_before_execution_is_private_and_canonical(compo
         ensure_ascii=True, allow_nan=False,
     ).encode("ascii")
     assert raw == expected
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert result["session_evidence"] == state.evidence_before_run
     assert result["session_evidence"]["product_cutover"] is False
     for forbidden in ("token", "credential", "secret", "target_path", "workspace_path"):
@@ -312,7 +313,7 @@ def test_api_closes_on_execution_failure_and_bootstrap_evidence_survives(compose
 
 def test_changed_fixed_script_is_rejected_before_launcher(composed):
     args, _, events = composed
-    (args["source_repo"] / "scripts/ci_fix.py").write_text("raise SystemExit(0)\n")
+    (args["source_repo"] / "scripts/ci_fix.py").write_bytes(b"raise SystemExit(0)\n")
     with pytest.raises(NativeExecutorBlocked, match="native_runtime_fixture_drift"):
         runtime.run_synthetic_once(**args)
     assert events == []
@@ -321,7 +322,12 @@ def test_changed_fixed_script_is_rejected_before_launcher(composed):
 def test_symlinked_source_is_rejected_before_launcher(composed):
     args, _, events = composed
     link = args["source_repo"].parent / "source-link"
-    link.symlink_to(args["source_repo"], target_is_directory=True)
+    try:
+        link.symlink_to(args["source_repo"], target_is_directory=True)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is unavailable")
+        raise
     args["source_repo"] = link
     with pytest.raises(NativeExecutorBlocked, match="native_runtime_path_invalid"):
         runtime.run_synthetic_once(**args)
@@ -345,7 +351,7 @@ def test_fixed_validation_script_uses_explicit_failure_even_with_optimization(tm
     # Compile-time optimization cannot remove the explicit semantic check.
     path = tmp_path / runtime.SOURCE_PATH
     path.parent.mkdir()
-    path.write_text(runtime.ORIGINAL_SOURCE)
+    path.write_bytes(runtime.ORIGINAL_SOURCE.encode("utf-8"))
     previous = Path.cwd()
     try:
         os.chdir(tmp_path)
@@ -353,7 +359,7 @@ def test_fixed_validation_script_uses_explicit_failure_even_with_optimization(tm
         with pytest.raises(SystemExit) as error:
             exec(code, {"__name__": "__main__"})
         assert error.value.code == 4
-        path.write_text(runtime.REPAIRED_SOURCE)
+        path.write_bytes(runtime.REPAIRED_SOURCE.encode("utf-8"))
         exec(code, {"__name__": "__main__"})
     finally:
         os.chdir(previous)

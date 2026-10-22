@@ -369,14 +369,95 @@ def validate(source: str, task: dict) -> dict:
     return validate_report(evidence, task)
 
 
-def _validate_child() -> None:
-    # This subprocess has no provider credentials. AST controls are repeated here.
+_WINDOWS_RESOURCE_JOB = None
+
+
+def _apply_windows_resource_limits() -> None:
+    """Apply fail-closed CPU and memory limits to the validator on Windows."""
+    import ctypes
+    from ctypes import wintypes
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+            ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+    ]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        raise StructuredBlocked("resource_limits_required")
+    information = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+    information.BasicLimitInformation.PerProcessUserTimeLimit = 2 * 10_000_000
+    information.BasicLimitInformation.LimitFlags = 0x00000002 | 0x00000100 | 0x00002000
+    information.ProcessMemoryLimit = 256 * 1024 * 1024
+    configured = kernel32.SetInformationJobObject(
+        job, 9, ctypes.byref(information), ctypes.sizeof(information)
+    )
+    assigned = configured and kernel32.AssignProcessToJobObject(
+        job, kernel32.GetCurrentProcess()
+    )
+    if not assigned:
+        kernel32.CloseHandle(job)
+        raise StructuredBlocked("resource_limits_required")
+    global _WINDOWS_RESOURCE_JOB
+    _WINDOWS_RESOURCE_JOB = job
+
+
+def _apply_resource_limits() -> None:
     try:
         import resource
-        resource.setrlimit(resource.RLIMIT_CPU, (2, 3))
-        resource.setrlimit(resource.RLIMIT_AS, (256 * 1024 * 1024, 256 * 1024 * 1024))
     except ImportError:
-        raise StructuredBlocked("resource_limits_required") from None
+        if os.name != "nt":
+            raise StructuredBlocked("resource_limits_required") from None
+        _apply_windows_resource_limits()
+        return
+    resource.setrlimit(resource.RLIMIT_CPU, (2, 3))
+    resource.setrlimit(resource.RLIMIT_AS, (256 * 1024 * 1024, 256 * 1024 * 1024))
+
+
+def _validate_child() -> None:
+    # This subprocess has no provider credentials. AST controls are repeated here.
+    _apply_resource_limits()
     raw = sys.stdin.read(125001)
     need(len(raw) <= 125000, "validator_input_size")
     data = json.loads(raw)
@@ -435,11 +516,13 @@ def clean_git_configuration(root: Path) -> None:
     except (OSError, configparser.Error):
         raise StructuredBlocked("git_configuration_invalid") from None
     allowed = {"repositoryformatversion", "filemode", "bare", "logallrefupdates",
-               "ignorecase", "precomposeunicode"}
+               "ignorecase", "precomposeunicode", "symlinks"}
     for section in parser.sections():
         if section == "core":
             need(set(parser[section]) <= allowed, "git_configuration_unsafe")
             need(parser[section].get("bare", "false") == "false", "bare_repository")
+            need(parser[section].get("symlinks", "false") == "false",
+                 "git_configuration_unsafe")
         else:
             # A clone may retain a tracking branch after its remote is removed.
             need(section.startswith('branch "') and set(parser[section]) <= {"remote", "merge"},
@@ -559,7 +642,7 @@ def repair(root: Path, state: Path, task: dict, propose: Callable[[dict, str], s
             "baseline": baseline, "validation": checked, "patch_sha256": sha256(patch.encode()),
             "replayed": False, "model_calls": len(attempts), "attempts": attempts,
         }
-        (state / "change.patch").write_text(patch, encoding="utf-8")
+        (state / "change.patch").write_text(patch, encoding="utf-8", newline="")
         temporary = receipt.with_suffix(".tmp")
         temporary.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n")
         temporary.replace(receipt)
