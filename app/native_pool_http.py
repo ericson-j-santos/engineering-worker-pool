@@ -104,13 +104,14 @@ class LocalWorkerApi:
               "worker_route_invalid")
         target = self.base_url + path
         try:
-            result = self._client.request(
+            request = self._client.build_request(
                 method, target,
                 headers={"Authorization": "Bearer " + self._token(),
                          "Accept": "application/json"},
                 json=payload if method == "POST" else None,
                 timeout=self.timeout_seconds,
             )
+            result = self._client.send(request)
         except (httpx.HTTPError, OSError):
             # POST effects are ambiguous after a transport error. Never retry.
             raise NativeExecutorBlocked("worker_transport_unverified") from None
