@@ -28,11 +28,19 @@ from app.native_one_shot import NativeExecutorBlocked
 from app.native_remote_runtime import (
     HttpsWorkerApi, HttpsWorkerRoute, PosixWorkerTokenFile,
 )
+from app.secure_file import open_exclusive
 
 RULES = "a" * 40
 BASE = "b" * 40
 TOKEN = "disposable-tls-fixture-token-not-operational"
 RECONCILIATION_TOKEN = "disposable-reconciliation-fixture-not-operational"
+
+
+def private_text(path: Path, value: str) -> Path:
+    fd = open_exclusive(path)
+    with os.fdopen(fd, "w", encoding="ascii", newline="") as stream:
+        stream.write(value)
+    return path
 
 
 def bounded_wait(predicate, seconds=15):
@@ -54,24 +62,60 @@ def stop_owned(process):
 @contextmanager
 def tls_authority(tmp_path):
     openssl = shutil.which("openssl")
-    assert openssl, "OpenSSL is required for the real TLS test, not a skipped test"
+    if openssl is None:
+        git = shutil.which("git")
+        git_path = Path(git).resolve() if git else None
+        candidates = [] if git_path is None else [git_path.with_name("openssl.exe")]
+        if git_path is not None:
+            for ancestor in git_path.parents:
+                candidates.extend((ancestor / "bin" / "openssl.exe",
+                                   ancestor / "mingw64" / "bin" / "openssl.exe",
+                                   ancestor / "usr" / "bin" / "openssl.exe"))
+        for bundled in candidates:
+            if bundled.is_file():
+                openssl = str(bundled)
+                break
     ca = tmp_path / "fixture-cert.pem"
     key = tmp_path / "fixture-key.pem"
-    subprocess.run(
-        [openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-         "-keyout", str(key), "-out", str(ca), "-days", "1", "-sha256",
-         "-subj", "/CN=127.0.0.1",
-         "-addext", "subjectAltName=IP:127.0.0.1",
-         "-addext", "basicConstraints=critical,CA:TRUE"],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20,
-    )
+    if openssl:
+        subprocess.run(
+            [openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+             "-keyout", str(key), "-out", str(ca), "-days", "1", "-sha256",
+             "-subj", "/CN=127.0.0.1",
+             "-addext", "subjectAltName=IP:127.0.0.1",
+             "-addext", "basicConstraints=critical,CA:TRUE"],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20,
+        )
+    else:
+        import datetime
+        import ipaddress
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+        now = datetime.datetime.now(datetime.timezone.utc)
+        certificate = (
+            x509.CertificateBuilder().subject_name(name).issuer_name(name)
+            .public_key(private_key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(minutes=1))
+            .not_valid_after(now + datetime.timedelta(days=1))
+            .add_extension(x509.SubjectAlternativeName([
+                x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False)
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .sign(private_key, hashes.SHA256())
+        )
+        key.write_bytes(private_key.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption()))
+        ca.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
     key.chmod(0o600)
     token = tmp_path / "fixture-token"
-    token.write_text(TOKEN, encoding="ascii")
-    token.chmod(0o600)
+    private_text(token, TOKEN)
     reconciliation_token = tmp_path / "fixture-reconciliation"
-    reconciliation_token.write_text(RECONCILIATION_TOKEN, encoding="ascii")
-    reconciliation_token.chmod(0o600)
+    private_text(reconciliation_token, RECONCILIATION_TOKEN)
     assert RECONCILIATION_TOKEN != TOKEN
     db = tmp_path / "authority.db"
     # Keep a bound listener open across process start; only our child inherits it.
@@ -95,14 +139,23 @@ def tls_authority(tmp_path):
         CODEX_WORKER_POOL_FENCED_CUTOVER_ATTESTED="1",
         CODEX_WORKER_POOL_PROGRESS_STALL_SECONDS="300",
     )
+    server_command = [sys.executable, "-B", "-m", "uvicorn", "app.main:app"]
+    popen_options = {}
+    if os.name == "posix":
+        server_command.extend(("--fd", str(listener.fileno())))
+        popen_options["pass_fds"] = (listener.fileno(),)
+    else:
+        listener.close()
+        server_command.extend(("--host", "127.0.0.1", "--port", str(port)))
+    server_command.extend(("--ssl-certfile", str(ca), "--ssl-keyfile", str(key),
+                           "--no-access-log", "--log-level", "error"))
     server = subprocess.Popen(
-        [sys.executable, "-B", "-m", "uvicorn", "app.main:app",
-         "--fd", str(listener.fileno()), "--ssl-certfile", str(ca),
-         "--ssl-keyfile", str(key), "--no-access-log", "--log-level", "error"],
-        cwd=ROOT, env=env, pass_fds=(listener.fileno(),),
+        server_command, cwd=ROOT, env=env,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        **popen_options,
     )
-    listener.close()
+    if os.name == "posix":
+        listener.close()
     route = HttpsWorkerRoute(f"https://127.0.0.1:{port}", ca.read_text())
     admin = httpx.Client(base_url=route.origin, verify=route.ssl_context(),
                          trust_env=False, follow_redirects=False, timeout=2,

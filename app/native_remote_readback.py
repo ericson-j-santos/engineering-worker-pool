@@ -31,6 +31,12 @@ from app.native_remote_runtime import (
     GatewayAuthority, HttpsWorkerApi, RemoteNativeExecutor, _reject_constant, _unique,
 )
 from app.s3_git_bundle_artifact import S3GitBundleArtifactTransport
+from app.secure_file import (
+    SecureFileError,
+    open_private_read,
+    path_matches_fd,
+    validate_private_fd,
+)
 
 MAX_RECEIPT_BYTES = 65_536
 
@@ -41,18 +47,14 @@ def _need(ok: bool, code: str) -> None:
 
 
 def _receipt_bytes(path: Path) -> bytes:
-    """Bounded POSIX file read; Windows needs a separately qualified provider."""
-    _need(os.name == "posix" and hasattr(os, "O_NOFOLLOW"),
-          "readback_platform_unqualified")
+    """Bounded read that refuses links on POSIX and Windows."""
     fd = None
     try:
         _need(path.absolute() == path.resolve() and not path.is_symlink(),
               "readback_receipt_invalid")
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = open_private_read(path)
         before = os.fstat(fd)
-        _need(stat.S_ISREG(before.st_mode) and before.st_uid == os.geteuid()
-              and before.st_nlink == 1 and before.st_mode & 0o077 == 0
-              and 0 < before.st_size <= MAX_RECEIPT_BYTES,
+        _need(0 < before.st_size <= MAX_RECEIPT_BYTES,
               "readback_receipt_invalid")
         data = bytearray()
         while len(data) <= MAX_RECEIPT_BYTES:
@@ -61,14 +63,16 @@ def _receipt_bytes(path: Path) -> bytes:
                 break
             data.extend(chunk)
         after = os.fstat(fd)
-        observed = path.stat(follow_symlinks=False)
+        validate_private_fd(fd)
         signature = lambda item: (
-            item.st_dev, item.st_ino, item.st_mode, item.st_uid, item.st_nlink,
-            item.st_size, item.st_mtime_ns, item.st_ctime_ns,
+            item.st_nlink, item.st_size, item.st_mtime_ns, item.st_ctime_ns,
         )
-        _need(signature(before) == signature(after) == signature(observed)
+        _need(signature(before) == signature(after)
+              and path_matches_fd(fd, path, private=True)
               and len(data) == before.st_size, "readback_receipt_changed")
         return bytes(data)
+    except SecureFileError:
+        raise NativeExecutorBlocked("readback_receipt_invalid") from None
     except (OSError, RuntimeError) as exc:
         if isinstance(exc, NativeExecutorBlocked):
             raise

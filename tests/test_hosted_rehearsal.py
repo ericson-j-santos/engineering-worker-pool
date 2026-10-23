@@ -103,6 +103,7 @@ class CapsuleTests(unittest.TestCase):
             with self.assertRaises(module.RehearsalError):
                 module.decode_capsule(encoded, sha, self.context)
 
+    @unittest.skipUnless(module.os.name == "posix", "hosted rehearsal is POSIX-only")
     def test_launch_receipt_must_bind_exact_sha_and_boolean(self):
         receipt = dict(result="SESSION_LAUNCH_OK", state_validated=True,
                        base_sync="isolated_session_source", source_repo_root=str(module.ROOT),
@@ -233,9 +234,14 @@ class GovernanceTests(unittest.TestCase):
 
     def test_source_alias_and_noncanonical_environment_are_rejected(self):
         alias = self.source/"source-alias"
-        alias.symlink_to(self.source, target_is_directory=True)
-        with self.assertRaisesRegex(module.RehearsalError, "physical_directory_required"):
-            module.physical_directory(alias)
+        try:
+            alias.symlink_to(self.source, target_is_directory=True)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) != 1314:
+                raise
+        else:
+            with self.assertRaisesRegex(module.RehearsalError, "physical_directory_required"):
+                module.physical_directory(alias)
         for changes in ({"REQSYS_WORKSPACE_ROOT":"/tmp"},
                         {"REQSYS_GATEWAY_STATE_DIR":"/tmp/state"},
                         {"GITHUB_WORKSPACE":str(alias)},
@@ -249,6 +255,7 @@ class GovernanceTests(unittest.TestCase):
                     module.run_governed("produce")
                 command.assert_not_called()
 
+    @unittest.skipUnless(module.os.name == "posix", "hosted rehearsal is POSIX-only")
     def test_launcher_is_first_command_and_failure_stops_gateway(self):
         with self.configured(), patch.object(module.subprocess, "run") as direct, \
                 patch.object(module, "execute_json",

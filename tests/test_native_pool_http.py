@@ -14,25 +14,28 @@ from fastapi.testclient import TestClient
 
 from app.native_one_shot import NativeExecutorBlocked
 from app.native_pool_http import LocalWorkerApi
+from app.secure_file import open_exclusive
 
 RULES = "a" * 40
 BASE = "b" * 40
 REPO = "ericson-j-santos/reqsys-v2-enterprise-real"
 
 
+def private_text(path: Path, value: str) -> Path:
+    fd = open_exclusive(path)
+    with os.fdopen(fd, "w", encoding="ascii", newline="") as stream:
+        stream.write(value)
+    return path
+
+
 def token_file(tmp_path: Path, value: str = "isolated-worker-token-value") -> Path:
     path = tmp_path / "pool-token"
-    path.write_text(value + "\n", encoding="ascii")
-    path.chmod(0o600)
-    return path
+    return private_text(path, value + "\n")
 
 
 def isolated_server(tmp_path: Path, monkeypatch, token: Path):
     reconciliation_token = tmp_path / "reconciliation-token"
-    reconciliation_token.write_text(
-        "isolated-reconciliation-token-value\n", encoding="ascii"
-    )
-    reconciliation_token.chmod(0o600)
+    private_text(reconciliation_token, "isolated-reconciliation-token-value\n")
     monkeypatch.setenv("CODEX_WORKER_POOL_DB", str(tmp_path / "pool.db"))
     monkeypatch.setenv("CODEX_WORKER_POOL_API_TOKEN_FILE", str(token))
     monkeypatch.setenv(
@@ -94,8 +97,7 @@ def test_exact_claim_real_isolated_api_and_independent_readback(tmp_path, monkey
                 "claimed"] is False
         # A distinct wrong client token must not rotate the server's secret.
         bad_token = tmp_path / "incorrect-client-token"
-        bad_token.write_text("incorrect-but-valid-token\n", encoding="ascii")
-        bad_token.chmod(0o600)
+        private_text(bad_token, "incorrect-but-valid-token\n")
         assert token.read_text(encoding="ascii").strip() == "isolated-worker-token-value"
         with LocalWorkerApi(port=18097, token_file=bad_token, client=app) as unauth:
             with pytest.raises(NativeExecutorBlocked, match="worker_auth_rejected"):
@@ -271,13 +273,19 @@ def test_missing_permissive_and_symlink_token_block(tmp_path):
         with pytest.raises(NativeExecutorBlocked, match="worker_token_file_unavailable"):
             api.get_task("cwp-" + "1" * 24)
     unsafe = token_file(tmp_path)
-    unsafe.chmod(0o644)
-    with LocalWorkerApi(port=8097, token_file=unsafe) as api:
-        with pytest.raises(NativeExecutorBlocked, match="worker_token_permissions"):
-            api.get_task("cwp-" + "1" * 24)
-    unsafe.chmod(0o600)
+    if os.name == "posix":
+        unsafe.chmod(0o644)
+        with LocalWorkerApi(port=8097, token_file=unsafe) as api:
+            with pytest.raises(NativeExecutorBlocked, match="worker_token_permissions"):
+                api.get_task("cwp-" + "1" * 24)
+        unsafe.chmod(0o600)
     alias = tmp_path / "token-link"
-    alias.symlink_to(unsafe)
+    try:
+        alias.symlink_to(unsafe)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            return
+        raise
     with LocalWorkerApi(port=8097, token_file=alias) as api:
         with pytest.raises(NativeExecutorBlocked, match="worker_token_file_unavailable"):
             api.get_task("cwp-" + "1" * 24)

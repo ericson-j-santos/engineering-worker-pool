@@ -106,7 +106,7 @@ def test_second_proposal_requires_real_failure_feedback(tmp_path):
     spec.loader.exec_module(fixture)
     repo, state = tmp_path / "repo", tmp_path / "state"
     (repo / "src").mkdir(parents=True)
-    (repo / "src/clamp.py").write_text(fixture.BASELINE)
+    (repo / "src/clamp.py").write_bytes(fixture.BASELINE.encode("utf-8"))
     worker.git(repo, "init", "-b", "worker/feedback")
     worker.git(repo, "add", "src/clamp.py")
     worker.git(repo, "-c", "user.name=Test", "-c", "user.email=test@localhost",

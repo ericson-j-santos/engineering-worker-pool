@@ -29,7 +29,7 @@ def make_task(base_sha: str = "a" * 40) -> dict:
 def checkout(tmp_path):
     repo = tmp_path / "repo"
     (repo / "src").mkdir(parents=True)
-    (repo / "src/clamp.py").write_text(BASELINE)
+    (repo / "src/clamp.py").write_text(BASELINE, encoding="utf-8", newline="")
     worker.git(repo, "init", "-b", "worker/test")
     worker.git(repo, "add", "src/clamp.py")
     worker.git(repo, "-c", "user.name=Test", "-c", "user.email=test@localhost",
@@ -170,7 +170,12 @@ def test_symlink_target_rejected(checkout, tmp_path):
     target.unlink()
     outside = tmp_path / "outside.py"
     outside.write_text(BASELINE)
-    target.symlink_to(outside)
+    try:
+        target.symlink_to(outside)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege is unavailable")
+        raise
     with pytest.raises(worker.WorkerBlocked, match="target_not_regular"):
         worker.repair(repo, state, task, lambda *_: pytest.fail("provider called"))
 

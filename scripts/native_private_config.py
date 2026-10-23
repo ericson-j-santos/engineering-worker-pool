@@ -15,6 +15,15 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from app.secure_file import (
+    SecureFileError,
+    is_link_or_reparse,
+    open_exclusive,
+    open_private_read,
+    path_matches_fd,
+    validate_private_fd,
+)
+
 PRIVATE_ROOT = Path("/workspace/.reqsys-command-gateway-posix/private-continuity-v1")
 BROKER_HOST = "br-royal-butterfly-b4as4z27-continuityidentity.compute.c-6.us-east-2.aws.neon.tech"
 S3_ENDPOINT = "https://br-royal-butterfly-b4as4z27.storage.c-6.us-east-2.aws.neon.tech"
@@ -92,31 +101,31 @@ def validate_runtime(value: object) -> dict[str, str]:
     return dict(value)
 
 def _directory(path: Path) -> None:
-    if os.name != "posix" or not path.is_absolute():
+    if not path.is_absolute():
         raise PrivateConfigurationError("private_directory_invalid")
     for current in (*reversed(path.parents), path):
-        if current.exists() or current.is_symlink():
+        if current.exists() or is_link_or_reparse(current):
             info = current.lstat()
-            if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            if not stat.S_ISDIR(info.st_mode) or is_link_or_reparse(current):
                 raise PrivateConfigurationError("private_directory_invalid")
         else:
             current.mkdir(mode=0o700)
     info = path.stat()
-    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+    if (os.name == "posix"
+            and (info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077)):
         raise PrivateConfigurationError("private_directory_permissions")
 
 def read_private(path: Path, *, max_bytes: int = 16384) -> bytes:
-    if os.name != "posix":
-        raise PrivateConfigurationError("private_file_platform")
     for parent in path.parents:
-        if parent.is_symlink():
+        if is_link_or_reparse(parent):
             raise PrivateConfigurationError("private_file_parent")
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        descriptor = open_private_read(path)
+    except SecureFileError:
+        raise PrivateConfigurationError("private_file_permissions") from None
     try:
         before = os.fstat(descriptor)
-        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
-                or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) & 0o077
-                or before.st_size > max_bytes):
+        if before.st_size > max_bytes:
             raise PrivateConfigurationError("private_file_permissions")
         payload = b""
         while len(payload) <= max_bytes:
@@ -125,9 +134,10 @@ def read_private(path: Path, *, max_bytes: int = 16384) -> bytes:
                 break
             payload += chunk
         after = os.fstat(descriptor)
-        current = path.lstat()
-        fingerprint = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns, s.st_nlink)
-        if len(payload) > max_bytes or fingerprint(before) != fingerprint(after) or fingerprint(after) != fingerprint(current):
+        validate_private_fd(descriptor)
+        fingerprint = lambda s: (s.st_size, s.st_mtime_ns, s.st_ctime_ns, s.st_nlink)
+        if (len(payload) > max_bytes or fingerprint(before) != fingerprint(after)
+                or not path_matches_fd(descriptor, path, private=True)):
             raise PrivateConfigurationError("private_file_changed")
         return payload
     finally:
@@ -135,7 +145,7 @@ def read_private(path: Path, *, max_bytes: int = 16384) -> bytes:
 
 def _write(path: Path, payload: bytes) -> str:
     try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        descriptor = open_exclusive(path)
     except FileExistsError:
         if read_private(path) != payload:
             raise PrivateConfigurationError("private_configuration_conflict") from None
@@ -175,11 +185,12 @@ def store_configuration(kind: str, value: object, directory: Path = PRIVATE_ROOT
             if read_private(destination) != payload:
                 raise PrivateConfigurationError("private_configuration_conflict")
     states = [_write(directory / name, payload) for name, payload in outputs.items()]
-    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        os.fsync(directory_fd)
-    finally:
-        os.close(directory_fd)
+    if os.name == "posix":
+        directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     for name, payload in outputs.items():
         if read_private(directory / name) != payload:
             raise PrivateConfigurationError("private_readback_failed")

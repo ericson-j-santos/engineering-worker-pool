@@ -176,7 +176,10 @@ def safe_target(root: Path, task: dict) -> Path:
 
 def atomic_json(path: Path, value: dict) -> None:
     temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    temporary.write_text(
+        json.dumps(value, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8", newline="",
+    )
     temporary.replace(path)
 
 
@@ -269,13 +272,13 @@ def repair(root: Path, state: Path, task: dict, propose: Callable[[dict, str], s
                 and git(root, "status", "--porcelain", "--untracked-files=all") == "",
                 "concurrent_repo_change")
         require(digest(path.read_bytes()) == task["before_sha256"], "concurrent_source_change")
-        path.write_text(after, encoding="utf-8")
+        path.write_text(after, encoding="utf-8", newline="")
         try:
             passed = validate_independently(root, task, state)
             require(git(root, "diff", "--name-only") == task["path"], "change_scope")
         except WorkerBlocked:
             if path.read_text(encoding="utf-8") == after:
-                path.write_text(before, encoding="utf-8")
+                path.write_text(before, encoding="utf-8", newline="")
             raise
         patch = git(root, "diff", "--", task["path"]) + "\n"
         git(root, "add", "--", task["path"])
@@ -294,7 +297,7 @@ def repair(root: Path, state: Path, task: dict, propose: Callable[[dict, str], s
                   "baseline_passed": baseline_passed, "passed": passed, "path": task["path"],
                   "patch_sha256": digest(patch.encode()), "replayed": False,
                   "model_calls": len(attempts), "attempts": attempts}
-        (state / "change.patch").write_text(patch, encoding="utf-8")
+        (state / "change.patch").write_text(patch, encoding="utf-8", newline="")
         atomic_json(receipt, result)
         return result
     finally:

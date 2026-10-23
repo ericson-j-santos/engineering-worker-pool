@@ -24,9 +24,22 @@ import sys
 import time
 import zlib
 
+# Direct script execution sets sys.path[0] to scripts/, so bind imports to the
+# checked-out candidate root before loading project modules.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.secure_file import (
+    SecureFileError,
+    is_link_or_reparse,
+    open_regular_read,
+    path_matches_fd,
+    validate_regular_fd,
+)
+
 REPOSITORY = "ericson-j-santos/engineering-worker-pool"
 RULES_SHA = "a430688c499077f5472841560f224c40766b0b78"
-ROOT = Path(__file__).resolve().parents[1]
 WORK_ROOT = Path("/workspace/.chatgpt-workers")
 POLICY_RELATIVE = "config/command-gateway.policy.posix.json"
 POLICY_SHA256 = "50e2da27bcca6c82ae57cabbb5d8f490108fb363265c5f30fd0dcf78d6828bc5"
@@ -163,7 +176,7 @@ def physical_directory(path: Path) -> Path:
     require(path.is_absolute(), "physical_directory_required")
     try:
         for component in (path, *path.parents):
-            require(component.is_dir() and not component.is_symlink(),
+            require(component.is_dir() and not is_link_or_reparse(component),
                     "physical_directory_required")
         require(path.resolve(strict=True) == path, "physical_directory_required")
     except OSError as exc:
@@ -178,17 +191,18 @@ def read_regular_bytes(path: Path, limit: int) -> bytes:
         before = path.lstat()
         require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1,
                 "regular_governance_file_required")
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        descriptor = open_regular_read(path)
         with os.fdopen(descriptor, "rb") as handle:
             opened = os.fstat(handle.fileno())
             payload = handle.read(limit + 1)
             after = os.fstat(handle.fileno())
-        final = path.lstat()
-    except OSError as exc:
+            validate_regular_fd(handle.fileno())
+            same_path = path_matches_fd(handle.fileno(), path)
+    except (OSError, SecureFileError) as exc:
         raise RehearsalError("regular_governance_file_required") from exc
-    identity = lambda value: (value.st_dev, value.st_ino, value.st_size,
-                              value.st_mtime_ns, value.st_ctime_ns, value.st_nlink)
-    require(identity(before) == identity(opened) == identity(after) == identity(final)
+    identity = lambda value: (value.st_size, value.st_mtime_ns,
+                              value.st_ctime_ns, value.st_nlink)
+    require(identity(opened) == identity(after) and same_path
             and len(payload) <= limit, "governance_file_changed_or_oversized")
     return payload
 
@@ -623,5 +637,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.path.insert(0, str(ROOT))
     raise SystemExit(main())

@@ -1,6 +1,7 @@
 """Capability controls for result readback; doubles are not E2E evidence."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -10,6 +11,13 @@ import pytest
 from app import native_remote_readback as rb
 from app.native_one_shot import NativeExecutorBlocked
 from app.native_remote_runtime import HttpsWorkerApi
+from app.secure_file import open_exclusive
+
+
+def _write_private(path: Path, data: bytes) -> None:
+    fd = open_exclusive(path)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
 
 
 @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE", "HEAD", None])
@@ -89,43 +97,50 @@ def test_unknown_runtime_is_not_a_deployment_authority():
 def test_real_receipt_file_controls(tmp_path):
     path = tmp_path / "receipt.json"
     data = b'{"fixture":true}\n'
-    path.write_bytes(data)
-    path.chmod(0o600)
+    _write_private(path, data)
     assert rb._receipt_bytes(path) == data
-    path.chmod(0o644)
-    with pytest.raises(NativeExecutorBlocked, match="^readback_receipt_invalid$"):
-        rb._receipt_bytes(path)
-    path.chmod(0o600)
+    if os.name == "posix":
+        path.chmod(0o644)
+        with pytest.raises(NativeExecutorBlocked, match="^readback_receipt_invalid$"):
+            rb._receipt_bytes(path)
+        path.chmod(0o600)
     assert rb._receipt_bytes(path) == data
     linked = tmp_path / "linked.json"
-    linked.symlink_to(path)
-    with pytest.raises(NativeExecutorBlocked, match="^readback_receipt_invalid$"):
-        rb._receipt_bytes(linked)
+    try:
+        linked.symlink_to(path)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != 1314:
+            raise
+    else:
+        with pytest.raises(NativeExecutorBlocked, match="^readback_receipt_invalid$"):
+            rb._receipt_bytes(linked)
     with pytest.raises(NativeExecutorBlocked, match="^readback_receipt_unavailable$"):
         rb._receipt_bytes(tmp_path / "missing.json")
 
 
 def test_receipt_size_is_bounded(tmp_path):
     path = tmp_path / "receipt.json"
-    path.write_bytes(b"x" * (rb.MAX_RECEIPT_BYTES + 1))
-    path.chmod(0o600)
+    _write_private(path, b"x" * (rb.MAX_RECEIPT_BYTES + 1))
     with pytest.raises(NativeExecutorBlocked, match="^readback_receipt_invalid$"):
         rb._receipt_bytes(path)
 
 
-def test_unqualified_platform_fails_before_open():
-    path = Path("/not-opened")
-    with patch.object(rb.os, "name", "nt"):
-        with patch.object(rb.os, "open") as opened:
-            with pytest.raises(NativeExecutorBlocked, match="^readback_platform_unqualified$"):
-                rb._receipt_bytes(path)
-    opened.assert_not_called()
+@pytest.mark.skipif(os.name != "nt", reason="Windows DACL control")
+def test_windows_receipt_requires_protected_private_acl(tmp_path):
+    path = tmp_path / "inherited.json"
+    path.write_bytes(b"{}")
+    with pytest.raises(NativeExecutorBlocked, match="^readback_receipt_invalid$"):
+        rb._receipt_bytes(path)
+
+
+def test_missing_receipt_is_unavailable_on_qualified_platform(tmp_path):
+    with pytest.raises(NativeExecutorBlocked, match="^readback_receipt_unavailable$"):
+        rb._receipt_bytes(tmp_path / "not-opened")
 
 
 def test_hardlinked_receipt_is_not_accepted(tmp_path):
     path = tmp_path / "receipt.json"
-    path.write_bytes(b"{}")
-    path.chmod(0o600)
+    _write_private(path, b"{}")
     other = tmp_path / "other.json"
     rb.os.link(path, other)
     with pytest.raises(NativeExecutorBlocked, match="^readback_receipt_invalid$"):

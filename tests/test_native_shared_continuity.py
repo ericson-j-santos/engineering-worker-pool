@@ -55,12 +55,15 @@ class DocumentControls(unittest.TestCase):
         with tempfile.TemporaryDirectory() as name:
             path = Path(name) / "receipt.json"
             m.protected_json(path, {"ok": True})
-            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
             self.assertEqual(m.read_private_json(path), {"ok": True})
             with self.assertRaisesRegex(m.HarnessBlocked, "receipt_already_exists"):
                 m.protected_json(path, {"ok": False})
 
     def test_private_document_refuses_group_read_access(self):
+        if os.name != "posix":
+            self.skipTest("Unix mode bits do not represent Windows ACLs")
         with tempfile.TemporaryDirectory() as name:
             path = Path(name) / "receipt.json"
             m.protected_json(path, {"ok": True})
@@ -73,10 +76,15 @@ class DocumentControls(unittest.TestCase):
             path = Path(name) / "receipt.json"
             m.protected_json(path, {"ok": True})
             link = Path(name) / "link.json"
-            link.symlink_to(path)
-            with self.assertRaises(m.HarnessBlocked):
-                m.read_private_json(link)
-            link.unlink()
+            try:
+                link.symlink_to(path)
+            except OSError as exc:
+                if getattr(exc, "winerror", None) != 1314:
+                    raise
+            else:
+                with self.assertRaises(m.HarnessBlocked):
+                    m.read_private_json(link)
+                link.unlink()
             os.link(path, link)
             with self.assertRaisesRegex(m.HarnessBlocked, "private_document_permissions"):
                 m.read_private_json(path)
@@ -154,7 +162,7 @@ class ProcessInventoryControls(unittest.TestCase):
                      "session": group, "state": "T"},
         }
         with patch.object(m, "process_inventory", return_value=inventory), \
-                patch.object(m.os, "getpgrp", return_value=999):
+                patch.object(m, "current_process_group", return_value=999):
             self.assertEqual(len(m.require_owned_tree(group, 123457)), 2)
             with self.assertRaisesRegex(m.HarnessBlocked, "actor_tree_not_owned"):
                 m.require_owned_tree(group, 999)
@@ -169,7 +177,7 @@ class ProcessInventoryControls(unittest.TestCase):
                      "session": 123458, "state": "S"},
         }
         with patch.object(m, "process_inventory", return_value=inventory), \
-                patch.object(m.os, "getpgrp", return_value=999):
+                patch.object(m, "current_process_group", return_value=999):
             with self.assertRaisesRegex(m.HarnessBlocked, "actor_descendant_escaped_group"):
                 m.require_owned_tree(group, 123457)
 
