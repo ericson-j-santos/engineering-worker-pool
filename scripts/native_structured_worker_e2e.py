@@ -40,17 +40,25 @@ def verified_source_clean(source: Path, *, native_windows: bool | None = None) -
     Never remove files or change Git configuration. Git must verify that ALL
     indexed tracked files and untracked non-ignored files match the source.
     For a Windows checkout, core.autocrlf=true may be selected only when
-    strict status is dirty but Git's own canonical conversion is clean.
-    Require the actual target blob to match HEAD independently.
+    strict status is dirty but Git's canonical HEAD diff is empty.
+    Explicitly reject staged content and non-ignored untracked files, and
+    require the actual target blob to match HEAD independently.
     """
     raw = git(source, "status", "--porcelain", "--untracked-files=all")
     if raw == "":
         return "exact_clean"
     is_windows = os.name == "nt" if native_windows is None else native_windows
     need(is_windows, "source_tree_dirty")
-    normalized = git(source, "-c", "core.autocrlf=true",
-                     "status", "--porcelain", "--untracked-files=all")
-    need(normalized == "", "source_tree_dirty")
+    # Git status can still report dirty because of cached file-stat metadata
+    # after CRLF-only changes even when Git's normalized blob matches HEAD.
+    # Compare the actual HEAD diff, index, and untracked files instead.
+    # These remain read-only; no index refresh or configuration mutation.
+    normalized_diff = git(source, "-c", "core.autocrlf=true",
+                          "diff", "--name-only", "HEAD", "--")
+    staged_diff = git(source, "diff", "--cached", "--name-only", "HEAD", "--")
+    untracked = git(source, "ls-files", "--others", "--exclude-standard")
+    need(normalized_diff == "" and staged_diff == "" and untracked == "",
+         "source_tree_dirty")
     expected_blob = git(source, "rev-parse", "HEAD:" + SOURCE_FILE)
     actual_blob = git(source, "-c", "core.autocrlf=true",
                       "hash-object", "--path", SOURCE_FILE, SOURCE_FILE)
@@ -70,8 +78,9 @@ def require_source(source: Path, sha: str, worktree: Path) -> str:
          "source_not_authorized_checkout")
     need("chatgpt-workers" in str(worktree).lower(), "governed_worktree_required")
     need(git(source, "rev-parse", "HEAD") == sha, "source_sha_changed")
+    integrity_mode = verified_source_clean(source)
     need((source / SOURCE_FILE).is_file(), "source_file_missing")
-    return verified_source_clean(source)
+    return integrity_mode
 
 
 def execute(sha: str, correlation_id: str) -> dict:
