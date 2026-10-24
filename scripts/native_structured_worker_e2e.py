@@ -83,6 +83,80 @@ def require_source(source: Path, sha: str, worktree: Path) -> str:
     return integrity_mode
 
 
+class BridgeRegressionFailed(StructuredBlocked):
+    """Sanitized result; stdout, stderr and local paths are never published."""
+
+    def __init__(self, diagnosis: dict):
+        super().__init__("existing_bridge_regressions_failed")
+        self.diagnosis = diagnosis
+
+
+def bridge_regression_environment(sandbox: Path) -> dict[str, str]:
+    """Small portable environment, no tokens, no user profile, no proxy."""
+    need(sandbox.is_dir() and not sandbox.is_symlink(),
+         "regression_sandbox_unavailable")
+    root = str(sandbox.resolve())
+    env = {
+        "PATH": os.environ.get("PATH", os.defpath),
+        "PYTHONPATH": "",
+        "PY_COLORS": "0",
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        "TEMP": root,
+        "TMP": root,
+        "TMPDIR": root,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    if os.name == "nt":
+        system_root = os.environ.get("SystemRoot") or os.environ.get("SYSTEMROOT")
+        windows_dir = os.environ.get("WINDIR") or system_root
+        need(bool(system_root and windows_dir),
+             "windows_regression_runtime_unavailable")
+        env["SystemRoot"] = system_root
+        env["WINDIR"] = windows_dir
+    return env
+
+
+def run_bridge_regressions(independent: Path, sandbox: Path) -> dict:
+    """Run existing tests with a sterile but *functional* Windows environment."""
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q",
+             "tests/test_portfolio_bridge.py",
+             "tests/test_portfolio_admission_revalidation.py"],
+            cwd=independent, capture_output=True, text=True, timeout=60,
+            check=False, env=bridge_regression_environment(sandbox),
+        )
+    except subprocess.TimeoutExpired:
+        raise StructuredBlocked("bridge_regression_timeout") from None
+    except OSError:
+        raise StructuredBlocked("bridge_regression_process_unavailable") from None
+
+    output = completed.stdout + "\n" + completed.stderr
+    bounded = len(output) <= 131072
+    text = output[:131072]
+    summary = re.search(r"\b([1-9][0-9]*) passed\b", text)
+    failures = re.search(r"\b([0-9]+) failed\b", text)
+    errors = re.search(r"\b([0-9]+) errors?\b", text)
+    category = ("passed" if completed.returncode == 0 and summary and bounded else
+                "import_or_collection" if ("ModuleNotFoundError" in text
+                     or "ImportError" in text or "ERROR collecting" in text) else
+                "assertion" if ("AssertionError" in text or failures) else
+                "process_error")
+    diagnosis = {
+        "exit_code": completed.returncode,
+        "passed_count": int(summary.group(1)) if summary else 0,
+        "failed_count": int(failures.group(1)) if failures else 0,
+        "error_count": int(errors.group(1)) if errors else 0,
+        "category": category,
+        "output_within_limit": bounded,
+    }
+    if completed.returncode != 0 or not summary or not bounded:
+        raise BridgeRegressionFailed(diagnosis)
+    return diagnosis
+
+
 def execute(sha: str, correlation_id: str) -> dict:
     worktree = Path.cwd().resolve()
     source_integrity_mode = require_source(ROOT.resolve(), sha, worktree)
@@ -138,16 +212,7 @@ def execute(sha: str, correlation_id: str) -> dict:
              "validator_scope_invalid")
         need(sha256((state / "change.patch").read_bytes()) == result["patch_sha256"],
              "patch_integrity_invalid")
-        regression = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", "tests/test_portfolio_bridge.py",
-             "tests/test_portfolio_admission_revalidation.py"],
-            cwd=independent, capture_output=True, text=True, timeout=60,
-            check=False, env={"PATH": os.environ.get("PATH", os.defpath),
-                              "PY_COLORS": "0", "PYTHONPATH": ""},
-        )
-        need(regression.returncode == 0 and len(regression.stdout) < 131072
-             and re.search(r"\b[1-9][0-9]* passed\b", regression.stdout) is not None,
-             "existing_bridge_regressions_failed")
+        regression_evidence = run_bridge_regressions(independent, sandbox)
         need(git(checkout, "remote") == "", "worker_remote_present")
         need(result["model_calls"] in (1, 2), "model_call_count_invalid")
         need(git(ROOT, "rev-parse", "HEAD") == sha
@@ -167,6 +232,7 @@ def execute(sha: str, correlation_id: str) -> dict:
             "model_calls": result["model_calls"],
             "independent_validator": True, "replay_no_model_calls": True,
             "existing_bridge_regressions": True,
+            "regression_validation": regression_evidence,
             "produced_sha": result["produced_sha"],
             "patch_sha256": result["patch_sha256"],
             "no_remote_push": True, "no_merge": True,
@@ -229,6 +295,8 @@ def main(argv: list[str] | None = None) -> int:
         }
         if reason == "source_tree_dirty":
             result["checkout_diagnostic"] = dirty_checkout_diagnostic()
+        if isinstance(error, BridgeRegressionFailed):
+            result["regression_diagnostic"] = error.diagnosis
         print(json.dumps(result, sort_keys=True))
         return 2
     print(json.dumps(result, sort_keys=True))
