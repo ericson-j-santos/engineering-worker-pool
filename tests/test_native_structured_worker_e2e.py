@@ -127,3 +127,73 @@ def test_dirty_diagnostic_error_fails_closed(monkeypatch):
     assert physical.dirty_checkout_diagnostic() == {
         "diagnostic_state": "status_unavailable"
     }
+
+
+def create_eol_repository(tmp_path):
+    """Commit exact LF content, then let tests change only its physical checkout."""
+    import subprocess
+    repo = tmp_path / "physical-git-eol"
+    (repo / "app").mkdir(parents=True)
+    source = repo / "app" / "portfolio_bridge.py"
+    source.write_bytes(b"def check():\n    return 123\n")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "core.autocrlf=false",
+                    "add", "app/portfolio_bridge.py"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=CI",
+                    "-c", "user.email=ci@localhost", "commit", "-qm", "eol baseline"],
+                   check=True, capture_output=True)
+    assert physical.git(repo, "status", "--porcelain", "--untracked-files=all") == ""
+    return repo, source
+
+
+def test_windows_crlf_checkout_normalizes_identical_source(tmp_path):
+    repo, source = create_eol_repository(tmp_path)
+    source.write_bytes(source.read_bytes().replace(b"\n", b"\r\n"))
+    assert physical.git(repo, "status", "--porcelain", "--untracked-files=all") != ""
+    assert physical.git(repo, "-c", "core.autocrlf=true",
+                        "status", "--porcelain", "--untracked-files=all") == ""
+    assert physical.verified_source_clean(repo, native_windows=True) == (
+        "git_verified_crlf_normalization"
+    )
+    # Only Windows has this recovery path; no OS-wide or persistent Git config.
+    with pytest.raises(StructuredBlocked, match="^source_tree_dirty$"):
+        physical.verified_source_clean(repo, native_windows=False)
+
+
+@pytest.mark.parametrize("kind", ["modified_content", "untracked", "staged_content"])
+def test_windows_crlf_normalization_never_masks_real_changes(tmp_path, kind):
+    repo, source = create_eol_repository(tmp_path)
+    source.write_bytes(source.read_bytes().replace(b"\n", b"\r\n"))
+    if kind == "modified_content":
+        source.write_bytes(b"def check():\r\n    return 456\r\n")
+    elif kind == "untracked":
+        (repo / "unexpected-work.txt").write_text("other user work")
+    else:
+        source.write_bytes(b"def check():\r\n    return 456\r\n")
+        physical.git(repo, "add", "app/portfolio_bridge.py")
+    with pytest.raises(StructuredBlocked, match="^source_tree_dirty$"):
+        physical.verified_source_clean(repo, native_windows=True)
+
+
+def test_windows_native_clean_checkout_keeps_strict_mode(tmp_path):
+    repo, source = create_eol_repository(tmp_path)
+    assert source.is_file()
+    assert physical.verified_source_clean(repo, native_windows=True) == "exact_clean"
+
+
+def test_windows_normalization_requires_hash_match_even_after_clean_status(tmp_path, monkeypatch):
+    repo, _ = create_eol_repository(tmp_path)
+    original = physical.git
+
+    def divergent(root, *args):
+        if "hash-object" in args:
+            return "f" * 40
+        if "-c" in args and "status" in args:
+            return ""
+        if args[:2] == ("status", "--porcelain"):
+            return " M app/portfolio_bridge.py"
+        return original(root, *args)
+
+    monkeypatch.setattr(physical, "git", divergent)
+    with pytest.raises(StructuredBlocked, match="^source_blob_mismatch$"):
+        physical.verified_source_clean(repo, native_windows=True)
