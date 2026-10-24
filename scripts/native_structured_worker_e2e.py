@@ -101,6 +101,18 @@ def execute(sha: str, correlation_id: str) -> dict:
              "validator_scope_invalid")
         need(sha256((state / "change.patch").read_bytes()) == result["patch_sha256"],
              "patch_integrity_invalid")
+        regression = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "tests/test_portfolio_bridge.py",
+             "tests/test_portfolio_admission_revalidation.py"],
+            cwd=independent, capture_output=True, text=True, timeout=60,
+            check=False, env={"PATH": os.environ.get("PATH", os.defpath),
+                              "PY_COLORS": "0", "PYTHONPATH": ""},
+        )
+        need(regression.returncode == 0 and len(regression.stdout) < 131072
+             and re.search(r"\\b[1-9][0-9]* passed\\b", regression.stdout) is not None,
+             "existing_bridge_regressions_failed")
+        need(git(checkout, "remote") == "", "worker_remote_present")
+        need(result["model_calls"] in (1, 2), "model_call_count_invalid")
         need(git(ROOT, "rev-parse", "HEAD") == sha
              and git(ROOT, "status", "--porcelain", "--untracked-files=all") == "",
              "source_changed_by_test")
@@ -116,6 +128,7 @@ def execute(sha: str, correlation_id: str) -> dict:
             "validated_passed": verification["passed"],
             "model_calls": result["model_calls"],
             "independent_validator": True, "replay_no_model_calls": True,
+            "existing_bridge_regressions": True,
             "produced_sha": result["produced_sha"],
             "patch_sha256": result["patch_sha256"],
             "no_remote_push": True, "no_merge": True,
