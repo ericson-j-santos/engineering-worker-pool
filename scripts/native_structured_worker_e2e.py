@@ -16,6 +16,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+# Block project imports from writing __pycache__ into the immutable Git checkout.
+# Keep the existing strict clean-tree gate: NO file exception is introduced.
+sys.dont_write_bytecode = True
 
 from app.local_code_worker import WorkerBlocked
 from app.native_structured_ollama import NativeStructuredOllama
