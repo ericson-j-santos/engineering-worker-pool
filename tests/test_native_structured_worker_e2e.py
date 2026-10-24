@@ -80,7 +80,7 @@ def test_dirty_source_is_rejected_even_when_only_untracked(tmp_path, monkeypatch
     sha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
     monkeypatch.setattr(physical, "ROOT", repo.resolve())
     monkeypatch.setenv("GITHUB_WORKSPACE", str(base))
-    (repo / ".gitignore").write_text("__pycache__/\\n*.pyc\\n", encoding="utf-8")
+    (repo / ".gitignore").write_text("__pycache__/\n*.pyc\n", encoding="utf-8")
     (repo / "__pycache__").mkdir()
     (repo / "__pycache__" / "test.cpython-312.pyc").write_bytes(b"dummy")
     # Ignored bytecode alone cannot reproduce source_tree_dirty in the real repo.
