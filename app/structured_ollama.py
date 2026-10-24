@@ -171,6 +171,19 @@ def proposal_messages(proposal: dict, before: str) -> list[dict]:
 class StructuredOllama(LocalOllama):
     revision_observer = None  # Opt-in trusted callback; never a default file output.
 
+    @staticmethod
+    def select_model(models: object) -> dict:
+        """Legacy hermetic CI keeps its single-container-model invariant."""
+        need(type(models) is list and len(models) == 1
+             and type(models[0]) is dict, "model_inventory")
+        return models[0]
+
+    def generation_options(self, is_revision: bool) -> dict:
+        """Preserve the reviewed container profile unless a native provider opts in."""
+        return {"temperature": 0, "seed": 7,
+                "num_predict": 1024 if is_revision else 1400,
+                "num_ctx": 4096 if is_revision else 8192}
+
     def __call__(self, task: dict, before: str) -> str:
         messages = proposal_messages(task, before)
         self.last_revision = None
@@ -180,9 +193,7 @@ class StructuredOllama(LocalOllama):
         with httpx.Client(base_url=OLLAMA_URL, timeout=180, trust_env=False,
                           follow_redirects=False) as client:
             models = self.request(client, "GET", "/api/tags").get("models")
-            need(type(models) is list and len(models) == 1 and type(models[0]) is dict,
-                 "model_inventory")
-            model = models[0]
+            model = self.select_model(models)
             digest = model.get("digest")
             need(model.get("name") == MODEL and not model.get("remote_host")
                  and not model.get("remote_model"), "remote_model")
@@ -198,8 +209,7 @@ class StructuredOllama(LocalOllama):
                 "format": model_split_schema(extracted(before, proposal_spec(task))) if is_revision else {"type": "object", "properties": {"function": {"type": "string",
                                                                     "pattern": FUNCTION_PATTERN}},
                            "required": ["function"], "additionalProperties": False},
-                "options": {"temperature": 0, "seed": 7, "num_predict": 1024 if is_revision else 1400,
-                            "num_ctx": 4096 if is_revision else 8192},
+                "options": self.generation_options(is_revision),
             })
             need(response.get("done") is True and response.get("model") == MODEL
                  and type(response.get("eval_count")) is int and response["eval_count"] > 0,

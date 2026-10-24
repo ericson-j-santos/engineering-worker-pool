@@ -1,0 +1,57 @@
+name: Native Qwen7B Windows Contract (no Docker)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - app/structured_ollama.py
+      - app/native_structured_ollama.py
+      - scripts/native_structured_worker_e2e.py
+      - tests/test_native_structured_ollama.py
+      - tests/test_native_structured_worker_e2e.py
+      - .github/workflows/native-qwen7b-windows-contract.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-qwen7b-win-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-contract:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout exact proposed SHA
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+
+      - name: Confirm checked-out head
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if ((git rev-parse HEAD) -ne $env:EXPECTED_SHA) { throw "NATIVE_SOURCE_SHA_MISMATCH" }
+
+      - name: Install existing pinned dependencies
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Compile native adapter, real E2E, and tests
+        shell: pwsh
+        run: python -m compileall -q app scripts/native_structured_worker_e2e.py tests
+
+      - name: Native model admission and true Windows sandbox regression
+        shell: pwsh
+        run: |
+          python -m pytest -q tests/test_native_structured_ollama.py tests/test_native_structured_worker_e2e.py tests/test_structured_code_worker.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
