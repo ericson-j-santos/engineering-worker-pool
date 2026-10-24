@@ -109,7 +109,7 @@ def execute(sha: str, correlation_id: str) -> dict:
                               "PY_COLORS": "0", "PYTHONPATH": ""},
         )
         need(regression.returncode == 0 and len(regression.stdout) < 131072
-             and re.search(r"\\b[1-9][0-9]* passed\\b", regression.stdout) is not None,
+             and re.search(r"\b[1-9][0-9]* passed\b", regression.stdout) is not None,
              "existing_bridge_regressions_failed")
         need(git(checkout, "remote") == "", "worker_remote_present")
         need(result["model_calls"] in (1, 2), "model_call_count_invalid")
