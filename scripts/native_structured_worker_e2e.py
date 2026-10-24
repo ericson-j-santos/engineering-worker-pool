@@ -122,7 +122,11 @@ def run_bridge_regressions(independent: Path, sandbox: Path) -> dict:
     """Run existing tests with a sterile but *functional* Windows environment."""
     try:
         completed = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q",
+            # Reset project-level addopts before selecting one quiet level.
+            # pyproject.toml already sets ``-q``; allowing it to combine with
+            # this explicit flag produces ``-qq`` and hides the pass summary
+            # that this fail-closed evidence parser requires.
+            [sys.executable, "-m", "pytest", "-o", "addopts=", "-q",
              "tests/test_portfolio_bridge.py",
              "tests/test_portfolio_admission_revalidation.py"],
             cwd=independent, capture_output=True, text=True, timeout=60,

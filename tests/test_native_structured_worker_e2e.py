@@ -249,6 +249,34 @@ def test_regression_fail_closed_without_tests_and_without_leaking_output(tmp_pat
     assert str(missing) not in str(sanitized)
 
 
+def test_regression_runner_resets_project_quietness_and_keeps_summary(
+        monkeypatch, tmp_path):
+    observed = {}
+
+    def completed(argv, **kwargs):
+        observed["argv"] = argv
+        observed["kwargs"] = kwargs
+        return physical.subprocess.CompletedProcess(
+            argv, 0, stdout="12 passed in 0.10s\n", stderr=""
+        )
+
+    monkeypatch.setattr(physical.subprocess, "run", completed)
+    result = physical.run_bridge_regressions(tmp_path, tmp_path)
+
+    assert observed["argv"][:6] == [
+        physical.sys.executable, "-m", "pytest", "-o", "addopts=", "-q"
+    ]
+    assert observed["kwargs"]["check"] is False
+    assert result == {
+        "exit_code": 0,
+        "passed_count": 12,
+        "failed_count": 0,
+        "error_count": 0,
+        "category": "passed",
+        "output_within_limit": True,
+    }
+
+
 def test_regression_environment_only_contains_explicit_nonsecret_fields(monkeypatch, tmp_path):
     monkeypatch.setenv("PRIVATE_SECRET_TOKEN", "PRIVATE_VALUE")
     env = physical.bridge_regression_environment(tmp_path)
