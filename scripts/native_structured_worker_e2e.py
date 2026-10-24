@@ -34,7 +34,32 @@ CORRELATION = re.compile(r"[a-z0-9][a-z0-9-]{5,100}\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 
-def require_source(source: Path, sha: str, worktree: Path) -> None:
+def verified_source_clean(source: Path, *, native_windows: bool | None = None) -> str:
+    """Verify a clean tracked checkout; Windows may normalize CRLF via Git.
+
+    Never remove files or change Git configuration. Git must verify that ALL
+    indexed tracked files and untracked non-ignored files match the source.
+    For a Windows checkout, core.autocrlf=true may be selected only when
+    strict status is dirty but Git's own canonical conversion is clean.
+    Require the actual target blob to match HEAD independently.
+    """
+    raw = git(source, "status", "--porcelain", "--untracked-files=all")
+    if raw == "":
+        return "exact_clean"
+    is_windows = os.name == "nt" if native_windows is None else native_windows
+    need(is_windows, "source_tree_dirty")
+    normalized = git(source, "-c", "core.autocrlf=true",
+                     "status", "--porcelain", "--untracked-files=all")
+    need(normalized == "", "source_tree_dirty")
+    expected_blob = git(source, "rev-parse", "HEAD:" + SOURCE_FILE)
+    actual_blob = git(source, "-c", "core.autocrlf=true",
+                      "hash-object", "--path", SOURCE_FILE, SOURCE_FILE)
+    need(bool(re.fullmatch(r"[0-9a-f]{40,64}", expected_blob))
+         and actual_blob == expected_blob, "source_blob_mismatch")
+    return "git_verified_crlf_normalization"
+
+
+def require_source(source: Path, sha: str, worktree: Path) -> str:
     need(SHA.fullmatch(sha) is not None, "source_sha_invalid")
     need(source.is_dir() and not source.is_symlink(), "source_unavailable")
     need(source == ROOT and source != worktree, "source_path_mismatch")
@@ -45,14 +70,13 @@ def require_source(source: Path, sha: str, worktree: Path) -> None:
          "source_not_authorized_checkout")
     need("chatgpt-workers" in str(worktree).lower(), "governed_worktree_required")
     need(git(source, "rev-parse", "HEAD") == sha, "source_sha_changed")
-    need(git(source, "status", "--porcelain", "--untracked-files=all") == "",
-         "source_tree_dirty")
     need((source / SOURCE_FILE).is_file(), "source_file_missing")
+    return verified_source_clean(source)
 
 
 def execute(sha: str, correlation_id: str) -> dict:
     worktree = Path.cwd().resolve()
-    require_source(ROOT.resolve(), sha, worktree)
+    source_integrity_mode = require_source(ROOT.resolve(), sha, worktree)
     with tempfile.TemporaryDirectory(prefix="native-qwen7b-", dir=worktree) as name:
         sandbox = Path(name)
         checkout = sandbox / "builder"
@@ -118,11 +142,12 @@ def execute(sha: str, correlation_id: str) -> dict:
         need(git(checkout, "remote") == "", "worker_remote_present")
         need(result["model_calls"] in (1, 2), "model_call_count_invalid")
         need(git(ROOT, "rev-parse", "HEAD") == sha
-             and git(ROOT, "status", "--porcelain", "--untracked-files=all") == "",
+             and verified_source_clean(ROOT) == source_integrity_mode,
              "source_changed_by_test")
         return {
             "result": "NATIVE_QWEN7B_CODE_E2E_PASSED",
             "source_repo": ALLOWED_SOURCE, "source_sha": sha,
+            "source_integrity_mode": source_integrity_mode,
             "correlation_id": correlation_id,
             "target": SOURCE_FILE, "source_is_real": True,
             "model": "qwen2.5-coder:7b",
