@@ -73,16 +73,20 @@ def test_dirty_source_is_rejected_even_when_only_untracked(tmp_path, monkeypatch
     repo.mkdir(parents=True)
     subprocess.run(["git", "init", "--quiet", str(repo)], check=True, capture_output=True)
     (repo / "test.py").write_text("DATA = 1\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo), "add", "test.py"], check=True, capture_output=True)
+    (repo / ".gitignore").write_text("__pycache__/\n*.pyc\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "test.py", ".gitignore"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(repo), "-c", "user.name=UnitTest",
                     "-c", "user.email=test@localhost", "commit", "-m", "test",
                     "--quiet"], check=True, capture_output=True)
     sha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
     monkeypatch.setattr(physical, "ROOT", repo.resolve())
     monkeypatch.setenv("GITHUB_WORKSPACE", str(base))
-    (repo / ".gitignore").write_text("__pycache__/\n*.pyc\n", encoding="utf-8")
     (repo / "__pycache__").mkdir()
     (repo / "__pycache__" / "test.cpython-312.pyc").write_bytes(b"dummy")
+    assert subprocess.check_output(
+        ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
+        text=True
+    ) == ""
     # Ignored bytecode alone cannot reproduce source_tree_dirty in the real repo.
     # A distinct, non-ignored file must remain blocked.
     (repo / "unexpected.untracked").write_text("other work", encoding="utf-8")
