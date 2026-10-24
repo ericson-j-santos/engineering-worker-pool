@@ -203,3 +203,54 @@ def test_windows_normalization_requires_hash_match_even_after_clean_status(tmp_p
     monkeypatch.setattr(physical, "git", divergent)
     with pytest.raises(StructuredBlocked, match="^source_blob_mismatch$"):
         physical.verified_source_clean(repo, native_windows=True)
+
+
+def test_real_patched_portfolio_passes_native_regression_runner(tmp_path):
+    """Real Git clone and actual pytest, not a mocked subprocess."""
+    import json
+    from test_structured_code_worker import FIXED
+    from app.structured_code_worker import render, sha256
+    source_repo = Path(__file__).resolve().parents[1]
+    independent = tmp_path / "independent-regression"
+    physical.git(tmp_path, "clone", "--no-hardlinks", str(source_repo), str(independent))
+    target = independent / "app/portfolio_bridge.py"
+    before = target.read_text(encoding="utf-8")
+    task = {
+        "task_id": "independent-regression-probe",
+        "path": "app/portfolio_bridge.py",
+        "function": "_property",
+        "parameters": ["properties", "name"],
+        "instruction": INSTRUCTION,
+        "base_sha": physical.git(independent, "rev-parse", "HEAD"),
+        "before_sha256": sha256(before.encode()),
+        "cases": cases(),
+    }
+    replacement = render(before, task, json.dumps({"function": FIXED}))
+    target.write_text(replacement, encoding="utf-8", newline="")
+    observed = physical.run_bridge_regressions(independent, tmp_path)
+    assert observed["category"] == "passed"
+    assert observed["exit_code"] == 0 and observed["passed_count"] >= 10
+    assert observed["output_within_limit"] is True
+
+
+def test_regression_fail_closed_without_tests_and_without_leaking_output(tmp_path):
+    missing = tmp_path / "empty-clone"
+    missing.mkdir()
+    with pytest.raises(physical.BridgeRegressionFailed) as err:
+        physical.run_bridge_regressions(missing, tmp_path)
+    sanitized = err.value.diagnosis
+    assert sanitized["category"] in {"process_error", "import_or_collection"}
+    assert sanitized["exit_code"] != 0
+    assert "stdout" not in str(sanitized) and "stderr" not in str(sanitized)
+    assert str(missing) not in str(sanitized)
+
+
+def test_regression_environment_only_contains_explicit_nonsecret_fields(monkeypatch, tmp_path):
+    monkeypatch.setenv("PRIVATE_SECRET_TOKEN", "PRIVATE_VALUE")
+    env = physical.bridge_regression_environment(tmp_path)
+    assert "PRIVATE_SECRET_TOKEN" not in env
+    assert "PRIVATE_VALUE" not in str(env)
+    assert env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+    assert env["TEMP"] == str(tmp_path.resolve())
+    assert env["TMP"] == str(tmp_path.resolve())
+    assert env["PYTHONPATH"] == ""
