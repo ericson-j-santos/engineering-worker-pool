@@ -54,3 +54,35 @@ def test_native_script_is_bounded_to_real_source_and_approved_runner():
     assert "NATIVE_QWEN7B_CODE_E2E_PASSED" in source
     assert "docker run" not in source.lower()
     assert "git push" not in source.lower()
+
+
+def test_python_imports_must_not_dirty_exact_git_source():
+    source = (Path(__file__).resolve().parents[1] /
+              "scripts/native_structured_worker_e2e.py").read_text(encoding="utf-8")
+    setter = source.index("sys.dont_write_bytecode = True")
+    first_project_import = source.index("from app.local_code_worker import WorkerBlocked")
+    assert setter < first_project_import
+    assert 'git(source, "status", "--porcelain", "--untracked-files=all") == ""' in source
+    assert "source_tree_dirty" in source
+
+
+def test_dirty_source_is_rejected_even_when_only_untracked(tmp_path, monkeypatch):
+    import subprocess
+    base = tmp_path / "checkout-workspace"
+    repo = base / "external" / "engineering-worker-pool"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "--quiet", str(repo)], check=True, capture_output=True)
+    (repo / "test.py").write_text("DATA = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "test.py"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=UnitTest",
+                    "-c", "user.email=test@localhost", "commit", "-m", "test",
+                    "--quiet"], check=True, capture_output=True)
+    sha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    monkeypatch.setattr(physical, "ROOT", repo.resolve())
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(base))
+    (repo / "__pycache__").mkdir()
+    (repo / "__pycache__" / "test.cpython-312.pyc").write_bytes(b"dummy")
+    worktree = tmp_path / "chatgpt-workers" / "worktree"
+    worktree.mkdir(parents=True)
+    with pytest.raises(StructuredBlocked, match="^source_tree_dirty$"):
+        physical.require_source(repo.resolve(), sha, worktree.resolve())
