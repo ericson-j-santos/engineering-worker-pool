@@ -142,6 +142,38 @@ def execute(sha: str, correlation_id: str) -> dict:
         }
 
 
+def dirty_checkout_diagnostic() -> dict:
+    """Only sanitized Git status metadata, never raw paths, content or secrets."""
+    import hashlib
+    source = ROOT.resolve()
+    try:
+        status = git(source, "status", "--porcelain", "--untracked-files=all")
+        alternative = git(source, "-c", "core.autocrlf=true",
+                          "status", "--porcelain", "--untracked-files=all")
+    except (StructuredBlocked, OSError, ValueError):
+        return {"diagnostic_state": "status_unavailable"}
+    entries = []
+    for raw in status.splitlines()[:16]:
+        if len(raw) < 4:
+            continue
+        name = raw[3:].strip().replace("\\", "/")
+        group = name.split("/")[0].lower()
+        if group not in {"app", "scripts", "tests", "docs", ".github"}:
+            group = "root_or_other"
+        ext = Path(name).suffix.lower()
+        if ext not in {".py", ".json", ".md", ".yml", ".yaml", ".toml",
+                       ".txt", ".lock", ".pyc"}:
+            ext = "other"
+        entries.append({"flag": raw[:2], "category": group, "extension": ext,
+                        "path_fingerprint": hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]})
+    return {
+        "diagnostic_state": "status_classified",
+        "status_entry_count": len(status.splitlines()),
+        "status_entries": entries,
+        "autocrlf_true_would_be_clean": alternative == "",
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--expected-source-sha", required=True)
@@ -161,6 +193,8 @@ def main(argv: list[str] | None = None) -> int:
             "source_sha": args.expected_source_sha,
             "correlation_id": args.correlation_id,
         }
+        if reason == "source_tree_dirty":
+            result["checkout_diagnostic"] = dirty_checkout_diagnostic()
         print(json.dumps(result, sort_keys=True))
         return 2
     print(json.dumps(result, sort_keys=True))
