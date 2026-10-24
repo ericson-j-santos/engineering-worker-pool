@@ -62,7 +62,9 @@ def test_python_imports_must_not_dirty_exact_git_source():
     setter = source.index("sys.dont_write_bytecode = True")
     first_project_import = source.index("from app.local_code_worker import WorkerBlocked")
     assert setter < first_project_import
-    assert 'git(source, "status", "--porcelain", "--untracked-files=all") == ""' in source
+    assert 'git(source, "status", "--porcelain", "--untracked-files=all")' in source
+    assert '"diff", "--name-only", "HEAD", "--"' in source
+    assert '"ls-files", "--others", "--exclude-standard"' in source
     assert "source_tree_dirty" in source
 
 
@@ -151,7 +153,11 @@ def test_windows_crlf_checkout_normalizes_identical_source(tmp_path):
     source.write_bytes(source.read_bytes().replace(b"\n", b"\r\n"))
     assert physical.git(repo, "status", "--porcelain", "--untracked-files=all") != ""
     assert physical.git(repo, "-c", "core.autocrlf=true",
-                        "status", "--porcelain", "--untracked-files=all") == ""
+                        "diff", "--name-only", "HEAD", "--") == ""
+    assert physical.git(repo, "rev-parse", "HEAD:app/portfolio_bridge.py") == (
+        physical.git(repo, "-c", "core.autocrlf=true", "hash-object",
+                     "--path", "app/portfolio_bridge.py", "app/portfolio_bridge.py")
+    )
     assert physical.verified_source_clean(repo, native_windows=True) == (
         "git_verified_crlf_normalization"
     )
@@ -188,7 +194,7 @@ def test_windows_normalization_requires_hash_match_even_after_clean_status(tmp_p
     def divergent(root, *args):
         if "hash-object" in args:
             return "f" * 40
-        if "-c" in args and "status" in args:
+        if "-c" in args and "diff" in args:
             return ""
         if args[:2] == ("status", "--porcelain"):
             return " M app/portfolio_bridge.py"
