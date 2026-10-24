@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from app.local_code_worker import WorkerBlocked
 from app.native_structured_ollama import NativeStructuredOllama
 from app.structured_code_worker import (
     StructuredBlocked, git, need, repair, sha256, validate,
@@ -148,9 +149,9 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("invalid_fixed_inputs")
     try:
         result = execute(args.expected_source_sha, args.correlation_id)
-    except (StructuredBlocked, OSError, ValueError, subprocess.SubprocessError,
+    except (StructuredBlocked, WorkerBlocked, OSError, ValueError, subprocess.SubprocessError,
             KeyError) as error:
-        reason = str(error) if isinstance(error, StructuredBlocked) else type(error).__name__
+        reason = str(error) if isinstance(error, (StructuredBlocked, WorkerBlocked)) else type(error).__name__
         result = {
             "result": "NATIVE_QWEN7B_CODE_E2E_BLOCKED",
             "reason_code": reason,
