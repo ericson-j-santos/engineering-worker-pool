@@ -80,9 +80,46 @@ def test_dirty_source_is_rejected_even_when_only_untracked(tmp_path, monkeypatch
     sha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
     monkeypatch.setattr(physical, "ROOT", repo.resolve())
     monkeypatch.setenv("GITHUB_WORKSPACE", str(base))
+    (repo / ".gitignore").write_text("__pycache__/\\n*.pyc\\n", encoding="utf-8")
     (repo / "__pycache__").mkdir()
     (repo / "__pycache__" / "test.cpython-312.pyc").write_bytes(b"dummy")
+    # Ignored bytecode alone cannot reproduce source_tree_dirty in the real repo.
+    # A distinct, non-ignored file must remain blocked.
+    (repo / "unexpected.untracked").write_text("other work", encoding="utf-8")
     worktree = tmp_path / "chatgpt-workers" / "worktree"
     worktree.mkdir(parents=True)
     with pytest.raises(StructuredBlocked, match="^source_tree_dirty$"):
         physical.require_source(repo.resolve(), sha, worktree.resolve())
+
+
+def test_dirty_diagnostic_is_sanitized_and_can_isolate_line_endings(monkeypatch):
+    import hashlib
+    calls = []
+    def fake_git(root, *args):
+        calls.append(args)
+        if "-c" in args:
+            return ""
+        return " M app/example.py\n?? .local-secret/credential.pem"
+    monkeypatch.setattr(physical, "git", fake_git)
+    report = physical.dirty_checkout_diagnostic()
+    assert report["diagnostic_state"] == "status_classified"
+    assert report["status_entry_count"] == 2
+    assert report["autocrlf_true_would_be_clean"] is True
+    assert report["status_entries"][0]["category"] == "app"
+    assert report["status_entries"][0]["extension"] == ".py"
+    assert report["status_entries"][1]["category"] == "root_or_other"
+    assert "credential" not in str(report)
+    assert "example.py" not in str(report)
+    assert report["status_entries"][1]["path_fingerprint"] == (
+        hashlib.sha256(b".local-secret/credential.pem").hexdigest()[:12]
+    )
+    assert len(calls) == 2
+
+
+def test_dirty_diagnostic_error_fails_closed(monkeypatch):
+    def unavailable(*_args):
+        raise StructuredBlocked("git_operation")
+    monkeypatch.setattr(physical, "git", unavailable)
+    assert physical.dirty_checkout_diagnostic() == {
+        "diagnostic_state": "status_unavailable"
+    }
