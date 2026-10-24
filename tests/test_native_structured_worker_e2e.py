@@ -227,7 +227,11 @@ def test_real_patched_portfolio_passes_native_regression_runner(tmp_path):
     }
     replacement = render(before, task, json.dumps({"function": FIXED}))
     target.write_text(replacement, encoding="utf-8", newline="")
-    observed = physical.run_bridge_regressions(independent, tmp_path)
+    try:
+        observed = physical.run_bridge_regressions(independent, tmp_path)
+    except physical.BridgeRegressionFailed as exc:
+        # Print ONLY fixed-schema counts/category; never raw subprocess output.
+        pytest.fail("sanitized_regression_diagnosis=" + repr(exc.diagnosis))
     assert observed["category"] == "passed"
     assert observed["exit_code"] == 0 and observed["passed_count"] >= 10
     assert observed["output_within_limit"] is True
