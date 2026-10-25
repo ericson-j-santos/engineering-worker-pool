@@ -1,0 +1,3 @@
+# Opt-in RAG dependency. Exact SHA is the reviewed Agent Core PR #9 merge commit.
+# Do not install automatically on physical workers; qualify the package and host first.
+portable-agent-core @ git+https://github.com/ericson-j-santos/agent-core.git@1fc032d4c412bdb4ed202cf1193caf0cb49490ce
