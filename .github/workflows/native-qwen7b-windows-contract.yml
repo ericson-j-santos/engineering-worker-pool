@@ -6,9 +6,12 @@ on:
     paths:
       - app/structured_ollama.py
       - app/native_structured_ollama.py
+      - app/issue_draft_pr.py
+      - docs/ISSUE_QWEN7B_DRAFT_HANDOFF.md
       - scripts/native_structured_worker_e2e.py
       - tests/test_native_structured_ollama.py
       - tests/test_native_structured_worker_e2e.py
+      - tests/test_issue_draft_pr.py
       - .github/workflows/native-qwen7b-windows-contract.yml
 
 permissions:
@@ -53,5 +56,5 @@ jobs:
       - name: Native model admission and true Windows sandbox regression
         shell: pwsh
         run: |
-          python -m pytest -q tests/test_native_structured_ollama.py tests/test_native_structured_worker_e2e.py tests/test_structured_code_worker.py
+          python -m pytest -q tests/test_native_structured_ollama.py tests/test_native_structured_worker_e2e.py tests/test_structured_code_worker.py tests/test_issue_draft_pr.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
