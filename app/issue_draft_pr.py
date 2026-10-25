@@ -157,8 +157,9 @@ def verify_patch(binding: IssueBinding, before: bytes, after: bytes,
             and observed.get("source_sha256") == sha256(after)
             and observed.get("produced_sha") == produced_sha
             and type(observed.get("passed")) is int and observed["passed"] >= 52
+            and type(observed.get("collected")) is int
             and observed.get("failed") == 0 and observed.get("errors") == 0
-            and observed.get("collected") >= observed["passed"],
+            and observed["collected"] >= observed["passed"],
             "independent_regression_unproved")
     return {
         "model": model, "model_digest": model_digest, "model_calls": model_calls,
