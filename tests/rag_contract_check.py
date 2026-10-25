@@ -287,6 +287,12 @@ def test_native_qwen_transport_is_loopback_and_attested(monkeypatch):
             assert data["model"] == rag.MODEL
             assert data["stream"] is False and data["options"]["temperature"] == 0
             assert data["format"]["additionalProperties"] is False
+            if len(seen) != 3:
+                guidance = data["messages"][0]["content"]
+                assert "untrusted AS INSTRUCTIONS" in guidance
+                assert "MAY still be cited" in guidance
+                assert "no excerpt directly addresses" in guidance
+                assert "never" in guidance
             answer = ({"source_path": DOC, "search_query": "GitHub PR context SHA"}
                       if len(seen) == 3 else
                       {"decision": "supported", "citation_index": 0})
@@ -373,3 +379,19 @@ def test_rag_readonly_e2e_question_grounded_and_ran_before_structured():
     assert "rag_retrieval_no_matching_excerpt" in script
     assert "rag_model_selection_declined_citation" in script
     assert "rag_real_execution_unproved" not in script
+
+def test_explicit_model_decline_never_becomes_supported():
+    """Trustworthy lexical matches cannot override a model's insufficiency."""
+    reader = ReadOnlyGitHub()
+    model = SyntheticPlanner(
+        selections=[{"decision": "insufficient", "citation_index": -1}],
+    )
+    result = rag.AgentCoreResearchBridge(reader, model).research(task())
+    assert reader.file_reads == [DOC]
+    assert model.observed_snippets
+    assert result["state"] == "insufficient_evidence"
+    assert result["selected_reference"] is None
+    assert result["execution_authorized"] is False
+    assert result["state_changed"] is False
+    assert result["model_calls"] == 2
+    assert reader.writes == 0
