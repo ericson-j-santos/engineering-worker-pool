@@ -10,6 +10,7 @@ import base64
 import hashlib
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import unquote
 
@@ -19,13 +20,13 @@ from app.github_cas_transport import (
     CAS_BUCKET, CAS_PREFIX, AlreadyExists, GitHubObjectCAS,
 )
 from app.github_draft_port import OfficialGitHubDraftPort
-from app.issue_draft_pr import HandoffBlocked, PATH, REPO
+from app.issue_draft_pr import HandoffBlocked, PATH, REPO, admit
 from app.issue_native_adapter import DESCRIPTOR
 from app.issue_rag_receipt_cas import (
     IssueRAGReceiptCAS, KIND, REF_PREFIX, KEY_SUBDIR, MAX_RECEIPT_BYTES,
 )
 from app.native_one_shot import DurableArtifact, TaskManifest
-from test_issue_rag_handoff import binding, receipt_for, CONTENT
+from test_issue_rag_handoff import receipt_for, CONTENT
 
 
 def blob_sha(raw: bytes) -> str:
@@ -151,8 +152,14 @@ def manifest():
 
 def setup():
     state = GitHubState()
-    bind = binding()
-    writer = GitHubObjectCAS(Port(state), bind)
+    writer_port = Port(state)
+    now = datetime.now(timezone.utc)
+    bind = admit(
+        writer_port.get_issue(8), writer_port.get_comment(8100),
+        writer_port.get_branch("main"), base_sha=state.main_sha,
+        observed_at=now.isoformat(), now=now,
+    )
+    writer = GitHubObjectCAS(writer_port, bind)
     reader = GitHubObjectCAS(Port(state, readonly=True), bind)
     return IssueRAGReceiptCAS(writer=writer, independent=reader, binding=bind), state
 
@@ -167,7 +174,7 @@ def publish(cas, *, generation=1, attempt="attempt-1", effect="effect-rag-v1",
     return cas.publish(
         manifest=m or manifest(), lease_generation=generation,
         attempt_id=attempt, effect_id=effect,
-        receipt=receipt or receipt_for(binding()),
+        receipt=receipt or receipt_for(cas.binding),
         independent_source_read=reader,
     )
 
@@ -211,7 +218,7 @@ def test_same_lease_replay_does_not_duplicate_object():
     assert again == first
     assert state.write_count == 2 and state.branch_count == 1
     assert state.reads > first_reads
-    assert load(cas, again)[0] == receipt_for(binding())
+    assert load(cas, again)[0] == receipt_for(cas.binding)
 
 
 def test_preflight_is_required_before_any_rag_write():
@@ -379,7 +386,7 @@ def test_unshared_ports_or_changed_issue_binding_not_accepted():
         IssueRAGReceiptCAS(
             writer=cas.writer, independent=cas.writer, binding=binding(),
         )
-    other = binding()
+    other = cas.binding
     bad = type(other)(
         number=9, base_sha=other.base_sha, comment_id=other.comment_id,
         request_id=other.request_id, correlation_id=other.correlation_id,
