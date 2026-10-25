@@ -22,8 +22,8 @@ Este primeiro perfil, \`bridge.property.v1\`, aceita somente o reparo de \`app/p
 
 ## Limites deste incremento
 
-- Há apenas o **contrato puro e seus testes**, sem adaptador GitHub HTTP concreto, sem credenciais, sem despachante ou workflow de issue, sem publicação por modelo e sem mudança no runtime do Dell.
-- O CI para essa PR comprova a política em memória/fixtures, **não** comprova a integração GitHub nem inferência real. O canário físico anterior permanece evidência válida **somente** para o reparo fixo, não para issue→PR.
-- O fluxo físico novo exige unir a API oficial autenticada ao Worker Pool, revalidar custo e capacidades, e executar uma issue real que ainda possua falha comprovada; não inventar um defeito só para aprovar o gate.
+- Há o contrato de política e o adaptador concreto `app/github_draft_port.py`, que acessa **somente** a API oficial do GitHub por HTTPS com token em arquivo privado. O transporte tem testes isolados com `httpx.MockTransport`; não houve chamadas de escrita reais ao GitHub feitas **por esse adaptador**, nem credenciais provisionadas. Não existe ainda o despachante físico da issue, a integração ao Worker Pool/lease ou a publicação pelo modelo.
+- O CI para essa PR comprova a política em memória e o transporte com HTTP simulado; **não** comprova credencial real, integração GitHub escrita nem inferência real. O canário físico anterior permanece evidência válida **somente** para o reparo fixo, não para issue→PR.
+- O fluxo físico novo exige ligar o transporte autorizado ao Worker Pool e ao executor nativo, validar o uso de identidade GitHub de menor privilégio, revalidar custo e capacidades, e executar uma issue real que ainda possua falha comprovada; não inventar um defeito só para aprovar o gate.
 - Não desativar Docker nos **workflows legados hospedados** da main por causa desse incremento. O caminho nativo do Dell é sem Docker e nenhuma dependência de container é introduzida pelo novo contrato.
 - Não integrar como equivalente ao Work/Codex antes de comprovar: issue real → admissão e lease → Qwen local → testes e Validator independente → PR draft na API → replay/retomada sem duplicidade, tudo vinculado a run/job, base/produced/head SHAs, correlação e readback.
