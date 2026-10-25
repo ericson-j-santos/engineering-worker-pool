@@ -63,6 +63,22 @@ def response(opener, path, *, method="GET", payload=None):
     return code, kind.split(";")[0].strip(), body
 
 
+def require_healthy(status, kind, body):
+    """Classify current HTTP failure without exposing any response payload."""
+    if status != 200:
+        code = str(status) if status in (301, 302, 307, 308, 401, 403, 404,
+                                        429, 500, 502, 503, 504) else "other"
+        raise Blocked("function_health_http_" + code)
+    if kind != "application/json":
+        raise Blocked("function_health_content_type_invalid")
+    try:
+        record = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        raise Blocked("function_health_json_invalid") from None
+    if record != {"service": "continuity-identity", "version": 1}:
+        raise Blocked("function_health_schema_mismatch")
+
+
 def run():
     if (
         os.environ.get("GITHUB_ACTIONS") != "true"
@@ -76,10 +92,7 @@ def run():
     opener = get_opener()
     for repeat in range(2):
         ok, kind, body = response(opener, "/health")
-        if ok != 200 or kind != "application/json" or json.loads(body) != {
-            "service": "continuity-identity", "version": 1
-        }:
-            raise Blocked("function_health_unverified")
+        require_healthy(ok, kind, body)
         unknown, _, _ = response(opener, "/path-not-installed")
         if unknown != 404:
             raise Blocked("unrecognized_route_not_rejected")

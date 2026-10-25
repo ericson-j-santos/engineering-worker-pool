@@ -53,6 +53,29 @@ jobs:
                             "secret_key", "subprocess", "os.system", "rmtree"):
               assert forbidden not in f
           PY
+      - name: Prove bounded HTTP diagnostic positive and negative controls
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from scripts.issue8_neon_dev_http_proof import require_healthy, Blocked
+          payload=json.dumps({"service":"continuity-identity","version":1}).encode()
+          require_healthy(200,"application/json",payload)
+          negatives=[
+              (503,"application/json",payload,"function_health_http_503"),
+              (404,"application/json",payload,"function_health_http_404"),
+              (200,"text/html",payload,"function_health_content_type_invalid"),
+              (200,"application/json",b"not-json","function_health_json_invalid"),
+              (200,"application/json",b"{}","function_health_schema_mismatch"),
+          ]
+          for status,kind,body,expected in negatives:
+              try:
+                  require_healthy(status,kind,body)
+                  raise AssertionError("negative control accepted")
+              except Blocked as exc:
+                  assert str(exc)==expected
+          print("OIDC_DEV_DIAGNOSTIC_CONTROLS_PASSED=6")
+          PY
       - name: Run real remote HTTPS DEV smoke and replay
         shell: bash
         env:
