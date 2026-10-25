@@ -98,7 +98,8 @@ class LocalWorkerApi:
 
     def _request(self, method: str, path: str,
                  payload: dict[str, Any] | None = None, *,
-                 expected_statuses: tuple[int, ...] = (200,)) -> dict[str, Any]:
+                 expected_statuses: tuple[int, ...] = (200,),
+                 expect_list: bool = False) -> dict[str, Any] | list[dict[str, Any]]:
         _need(method in {"GET", "POST"} and path.startswith("/v1/")
               and "//" not in path and "?" not in path and "#" not in path,
               "worker_route_invalid")
@@ -127,7 +128,12 @@ class LocalWorkerApi:
             data = result.json()
         except ValueError:
             raise NativeExecutorBlocked("worker_response_invalid") from None
-        _need(type(data) is dict, "worker_response_invalid")
+        if expect_list:
+            _need(type(data) is list and len(data) <= 128
+                  and all(type(item) is dict for item in data),
+                  "worker_response_invalid")
+        else:
+            _need(type(data) is dict, "worker_response_invalid")
         return data
 
     @staticmethod
@@ -140,6 +146,67 @@ class LocalWorkerApi:
               }
               and "lease_token" not in task, "worker_task_readback_invalid")
         return task
+
+    def list_repositories(self) -> list[dict[str, Any]]:
+        """Read existing lanes without configuring or creating a lane."""
+        result = self._request("GET", "/v1/repositories", expect_list=True)
+        _need(type(result) is list, "worker_lanes_invalid")
+        return result
+
+    def enqueue_fenced_issue(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Submit exactly one pre-approved, fenced issue to the existing lane.
+
+        There is no worker registration, scheduler, service provisioning or retry.
+        A transport-uncertain POST must be reconciled against canonical state
+        before any caller may attempt a repeat.
+        """
+        from app.issue_draft_pr import REPO
+        _need(type(payload) is dict and set(payload) == {
+            "repository", "issue_number", "request_id", "correlation_id",
+            "priority", "base_sha", "target_branch", "max_attempts",
+            "fencing_required",
+        }, "worker_issue_payload_invalid")
+        request_id = payload["request_id"]
+        issue = payload["issue_number"]
+        branch = payload["target_branch"]
+        _need(payload["repository"] == REPO
+              and type(issue) is int and issue > 0
+              and type(request_id) is str
+              and bool(re.fullmatch(r"issue-[0-9a-f]{64}", request_id))
+              and type(payload["correlation_id"]) is str
+              and bool(CORRELATION.fullmatch(payload["correlation_id"]))
+              and type(payload["base_sha"]) is str
+              and bool(SHA40.fullmatch(payload["base_sha"]))
+              and type(branch) is str
+              and branch == f"agent/qwen7b-issue-{issue}-{payload['base_sha'][:12]}"
+              and type(payload["priority"]) is int
+              and payload["priority"] == 10
+              and type(payload["max_attempts"]) is int
+              and payload["max_attempts"] == 1
+              and payload["fencing_required"] is True,
+              "worker_issue_payload_invalid")
+        reply = self._request("POST", "/v1/tasks", payload,
+                              expected_statuses=(200, 201))
+        task = reply.get("task")
+        _need(type(reply.get("created")) is bool and type(task) is dict
+              and type(task.get("task_id")) is str
+              and bool(TASK_ID.fullmatch(task["task_id"])),
+              "worker_issue_enqueue_invalid")
+        task_id = task["task_id"]
+        readback = self.get_task(task_id)
+        for key in ("repository", "issue_number", "request_id",
+                    "correlation_id", "priority", "base_sha"):
+            _need(readback.get(key) == payload[key],
+                  "worker_issue_readback_mismatch")
+        _need(readback.get("branch") == payload["target_branch"]
+              and readback.get("fencing_required") is True
+              and readback.get("max_attempts") == 1
+              and readback.get("state") in {
+                  "queued", "leased", "running", "validating", "completed",
+                  "blocked", "failed",
+              }, "worker_issue_readback_mismatch")
+        return {"task_id": task_id, "created": reply["created"],
+                "task": readback}
 
     def get_task(self, task_id: str) -> dict[str, Any]:
         _id(task_id)
