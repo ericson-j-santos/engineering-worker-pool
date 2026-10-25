@@ -260,7 +260,18 @@ class AgentCoreResearchBridge:
         from agent_core.registry import Registry
 
         task.validate()
-        # The model is not called until repository/head/path parameters pass.
+        # Independent GitHub preflight BEFORE any costly local inference.
+        from agent_core.github import GitHubPRDiagnostics
+        first = self._reader.get_pull_request(task.repository, task.pr_number)
+        first_head, first_base = GitHubPRDiagnostics._identify(first, task.pr_number)
+        _need(first_head == task.expected_head, "rag_head_stale_before_model")
+        head_repo = first.get("head", {}).get("repo")
+        _need(type(head_repo) is dict and
+              head_repo.get("full_name") == task.repository,
+              "rag_head_repository_mismatch")
+        starting_calls = getattr(self._planner, "calls", None)
+        _need(type(starting_calls) is int and starting_calls >= 0,
+              "rag_model_counter_invalid")
         remaining = list(task.source_paths)
         receipts: list[dict] = []
         all_queries: list[str] = []
@@ -291,6 +302,7 @@ class AgentCoreResearchBridge:
                   "rag_retrieval_invalid")
             if base_sha is None:
                 base_sha = evidence["base_sha"]
+            _need(base_sha == first_base, "rag_preflight_base_drift")
             _need(evidence["base_sha"] == base_sha, "rag_base_drift")
             sources = evidence["sources"]
             _need(type(sources) is list and len(sources) == 1 and
@@ -322,7 +334,8 @@ class AgentCoreResearchBridge:
               type(getattr(self._planner, "model_digest", None)) is str and
               getattr(self._planner, "process_verified", False) is True,
               "rag_native_model_not_attested")
-        _need(1 <= self._planner.calls <= 2 * _MAX_ROUNDS,
+        completed_calls = self._planner.calls - starting_calls
+        _need(1 <= completed_calls <= 2 * _MAX_ROUNDS,
               "rag_model_call_budget_invalid")
         receipt = {
             "schema_version": "worker.rag.evidence-v1",
@@ -336,7 +349,7 @@ class AgentCoreResearchBridge:
             "sources": receipts,
             "selected_reference": selected,
             "state": "supported" if selected else "insufficient_evidence",
-            "model_calls": self._planner.calls,
+            "model_calls": completed_calls,
             "model_digest": self._planner.model_digest,
             "model_process_verified": True,
             "pr_readback_stable": True,
