@@ -200,3 +200,139 @@ def test_independent_source_read_error_is_sanitized_without_adapter(tmp_path):
                     RuntimeError("sensitive session secret")))
     assert "sensitive session secret" not in str(blocked.value)
     assert state.write_count == 2
+
+
+def test_cas_to_real_git_builder_and_distinct_validator_checkout(
+    tmp_path, monkeypatch,
+):
+    """Two Git checkouts and a REAL changed Git commit; provider is mocked.
+
+    The source receipt is read via two separate simulated API client objects.
+    This is NOT real owner authorization, a real model run or patch Git CAS.
+    """
+    from datetime import datetime, timezone
+    import json
+
+    from app.github_cas_transport import GitHubObjectCAS
+    from app.issue_draft_pr import admit
+    from app.issue_native_adapter import IssueQwenNativeAdapter
+    from app.issue_rag_receipt_cas import IssueRAGReceiptCAS
+    from app.native_one_shot import AdapterContext
+    from app.structured_code_worker import git
+    from test_issue_native_adapter import create_checkout, context as native_ctx
+    from test_issue_native_adapter import manifest as native_manifest
+    from test_structured_code_worker import FIXED
+
+    builder, before, _old_fixture_binding = create_checkout(tmp_path)
+    real_base = git(builder, "rev-parse", "HEAD")
+    state = GitHubState(main_sha=real_base)
+    initial_port = Port(state)
+    now = datetime.now(timezone.utc)
+    approved = admit(
+        initial_port.get_issue(8),
+        initial_port.get_comment(8100),
+        initial_port.get_branch("main"),
+        base_sha=real_base, observed_at=now.isoformat(), now=now,
+    )
+    cas = IssueRAGReceiptCAS(
+        writer=GitHubObjectCAS(initial_port, approved),
+        independent=GitHubObjectCAS(Port(state, readonly=True), approved),
+        binding=approved,
+    )
+    original_manifest = TaskManifest.parse({
+        "schema_version": 1, "task_id": TASK,
+        "repository": REPO, "base_sha": real_base,
+        "workspace_sha": real_base,
+        "adapter_id": PROFILE,
+        "adapter_contract_sha256": DESCRIPTOR.contract_sha256,
+        "before_sha256": {PATH: sha256(before)},
+    })
+    checked_sources = []
+    def read_source(path, sha):
+        assert path == "docs/ISSUE_QWEN7B_DRAFT_HANDOFF.md"
+        assert sha == real_base
+        checked_sources.append((path, sha))
+        return CONTENT
+
+    cas.preflight()
+    receipt_artifact = cas.publish(
+        manifest=original_manifest, lease_generation=1,
+        attempt_id="attempt-1", effect_id="effect-rag-v1",
+        receipt=__import__(
+            "test_issue_rag_handoff", fromlist=["receipt_for"]
+        ).receipt_for(approved),
+        independent_source_read=read_source,
+    )
+    calls = []
+
+    def propose(self, proposal, source):
+        evidence = getattr(self, "issue_rag_context", None)
+        assert evidence is not None
+        assert evidence.issue == 8 and evidence.base_sha == real_base
+        assert "UNTRUSTED DATA" in evidence.prompt_note()
+        calls.append(evidence.source_sha256)
+        self.model_digest = evidence.model_digest
+        self.process_verified = True
+        return json.dumps({"function": FIXED})
+
+    monkeypatch.setattr(NativeStructuredOllama, "__call__", propose)
+    worker = adapter_from_durable_issue_rag(
+        cas=independent_store(cas), artifact=receipt_artifact,
+        binding=approved, base_manifest=original_manifest,
+        lease_generation=1, attempt_id="attempt-1",
+        effect_id="effect-rag-v1", original_source=before,
+        state_directory=tmp_path / "builder-receipts",
+        model=NativeStructuredOllama(),
+        regression_runner=lambda _: {
+            "exit_code": 0, "category": "passed",
+            "output_within_limit": True,
+            "passed_count": 52, "failed_count": 0, "error_count": 0,
+        },
+        independent_source_read=read_source,
+    )
+    built = worker.build(native_ctx(
+        builder, original_manifest, worker, "builder"
+    ))
+    assert built.produced_sha != real_base
+    assert built.changed_paths == (PATH,)
+    assert git(builder, "diff", "--name-only",
+               real_base, built.produced_sha) == PATH
+    assert git(builder, "status", "--porcelain") == ""
+    assert len(calls) == 1
+    assert worker.propose.issue_rag_context is None
+
+    validator = tmp_path / "independent-validator"
+    git(tmp_path, "clone", "--no-hardlinks", str(builder), str(validator))
+    git(validator, "remote", "remove", "origin")
+    git(validator, "checkout", "--detach", built.produced_sha)
+    after = (validator / PATH).read_bytes()
+    assert before != after
+    validator_manifest = native_manifest(
+        approved, after, produced=built.produced_sha,
+    )
+    # Re-open the receipt via ANOTHER pair of clients; Validator must keep
+    # the original BASE manifest for receipt identity, and use the produced
+    # manifest separately for its own AdapterContext.
+    independent_worker = adapter_from_durable_issue_rag(
+        cas=independent_store(cas), artifact=receipt_artifact,
+        binding=approved, base_manifest=original_manifest,
+        lease_generation=1, attempt_id="attempt-1",
+        effect_id="effect-rag-v1", original_source=before,
+        state_directory=tmp_path / "validator-receipts",
+        model=NativeStructuredOllama(),
+        regression_runner=lambda _: {
+            "exit_code": 0, "category": "passed",
+            "output_within_limit": True, "passed_count": 52,
+            "failed_count": 0, "error_count": 0,
+        },
+        independent_source_read=read_source,
+    )
+    checked = independent_worker.validate(native_ctx(
+        validator, validator_manifest, independent_worker, "validator",
+    ), built.produced_sha)
+    assert checked.produced_sha == built.produced_sha
+    assert checked.invoked_commands == ("issue.validate",)
+    assert len(calls) == 1  # Validator MUST NOT re-infer.
+    assert git(validator, "status", "--porcelain") == ""
+    assert state.write_count == 2  # CAS preflight + RAG receipt only.
+    assert len(checked_sources) >= 4

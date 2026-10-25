@@ -62,3 +62,16 @@ não produz patch nem substitui os 42 casos e 52 regressões. A biblioteca
 continua a exigir que o chamador governe autenticação, sessão, posse de
 lease/fencing e independência física real dos hosts. Os testes deste elo
 são simulações de dois clientes, não um teste de campo.
+
+## Controle adicional em CI — patch Git material, não publicação
+
+O gate de teste `test_cas_to_real_git_builder_and_distinct_validator_checkout`
+cria um repositório Git de prova real em sandbox, persiste **em CAS simulado**
+um recibo issue-bound, abre novamente em clientes distintos, executa o
+Builder com saída de modelo **simulada** e comprova um commit material
+(`base_sha != produced_sha`, diff apenas em `app/portfolio_bridge.py`).
+O Validator usa outro checkout Git, relê o mesmo recibo e roda os 42 casos
+funcionais com verificador de 52 regressões **simulado**. A contagem de
+chamadas ao modelo não aumenta no Validator. Isso testa a ponte entre
+componentes, mas ainda NÃO comprova execução Ollama da issue real,
+CAS patch remoto persistido ou uma PR draft criada autonomamente.
