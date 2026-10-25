@@ -155,7 +155,7 @@ def test_replay_is_observational_not_a_write():
 
 
 @pytest.mark.parametrize("changed", [
-    {"repository": "evil/another"},
+    {"repository": "../untrusted"},
     {"pr_number": 0},
     {"pr_number": True},
     {"expected_head": "INVALID"},
