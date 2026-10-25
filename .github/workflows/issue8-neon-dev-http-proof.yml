@@ -1,0 +1,61 @@
+name: Issue8 isolated Neon DEV OIDC HTTP proof (read only)
+
+on:
+  push:
+    branches: [proof/issue8-neon-dev-oidc-20261025]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue8-neon-dev-oidc-http-one-shot
+  cancel-in-progress: false
+
+jobs:
+  http-proof:
+    name: Native HTTPS health and 401/404 replay on DEV branch
+    if: >-
+      github.repository == 'ericson-j-santos/engineering-worker-pool' &&
+      github.actor == 'ericson-j-santos' &&
+      github.ref == 'refs/heads/proof/issue8-neon-dev-oidc-20261025' &&
+      github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Confirm immutable commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git diff --name-only)"
+          test -z "$(git diff --cached --name-only)"
+      - name: Check Python syntax of immutable probe
+        shell: bash
+        run: python -B -m py_compile scripts/issue8_neon_dev_http_proof.py
+      - name: Check fixed HTTPS origin, replay, secretless controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          f=Path("scripts/issue8_neon_dev_http_proof.py").read_text("utf-8")
+          assert "br-gentle-river-b4yz6b44-continuityidentity.compute" in f
+          assert "for repeat in range(2)" in f
+          assert "unauthenticated_request_not_rejected" in f
+          assert "NoRedirect" in f
+          assert "ssl.create_default_context()" in f
+          assert "GITHUB_REF" in f
+          for forbidden in ("token = ", "GH_TOKEN", "DATABASE_URL",
+                            "secret_key", "subprocess", "os.system", "rmtree"):
+              assert forbidden not in f
+          PY
+      - name: Run real remote HTTPS DEV smoke and replay
+        shell: bash
+        env:
+          GH_TOKEN: ""
+          GITHUB_TOKEN: ""
+        run: python -B scripts/issue8_neon_dev_http_proof.py
