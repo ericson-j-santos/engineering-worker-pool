@@ -75,7 +75,8 @@ def test_real_baseline_and_idempotent_issue_dispatch(inputs):
     ("production", "issue_dispatch_dev_only"),
     ("closed", "issue_identity_invalid"),
     ("comment_revoked", "owner_authorization_missing"),
-    ("branch_drift", "main_head_drift"),
+    # New main HEAD invalidates the exact SHA pinned in the owner comment.
+    ("branch_drift", "owner_authorization_missing"),
     ("disabled_lane", "issue_fenced_lane_not_ready"),
     ("duplicate_lane", "issue_fenced_lane_not_ready"),
     ("wide_lane", "issue_fenced_lane_not_ready"),
