@@ -159,7 +159,7 @@ def test_bad_model_candidate_stops_without_commit(tmp_path):
         binding, before, tmp_path,
         model=lambda *_: json.dumps({"function": "def _property(properties, name):\n    return ''\n"}),
     )
-    with pytest.raises(StructuredBlocked, match="candidate_tests_failed"):
+    with pytest.raises(StructuredBlocked, match="candidate_repeated"):
         instance.build(context(root, manifest(binding, before), instance, "builder"))
     assert git(root, "rev-parse", "HEAD") == binding.base_sha
     assert (root / PATH).read_bytes() == before
