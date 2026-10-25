@@ -384,7 +384,7 @@ def test_unshared_ports_or_changed_issue_binding_not_accepted():
     cas, _ = setup()
     with pytest.raises(HandoffBlocked, match="rag_cas_clients_not_independent"):
         IssueRAGReceiptCAS(
-            writer=cas.writer, independent=cas.writer, binding=binding(),
+            writer=cas.writer, independent=cas.writer, binding=cas.binding,
         )
     other = cas.binding
     bad = type(other)(

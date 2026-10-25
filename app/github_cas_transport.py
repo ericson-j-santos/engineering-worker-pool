@@ -101,7 +101,7 @@ class GitHubObjectCAS:
                 is not None, "cas_branch_unverified")
         return result
 
-    def _ensure_branch(self) -> None:
+    def _ensure_branch(self) -> int:
         branch = self._branch()
         if branch is None:
             result = self.port._request(
@@ -120,7 +120,7 @@ class GitHubObjectCAS:
         require(branch is not None, "cas_branch_unavailable")
         sha = branch["commit"]["sha"]
         if sha == self.binding.base_sha:
-            return
+            return 0
         compare = self.port._request(
             "GET", "/compare/" + self.binding.base_sha + "..." + sha,
         )
@@ -141,6 +141,7 @@ class GitHubObjectCAS:
                             file["filename"].removeprefix("evidence/cas/")
                         ) is not None for file in compare["files"]),
                 "cas_branch_scope_invalid")
+        return compare["ahead_by"]
 
     def _get(self, path: str) -> bytes | None:
         payload = self.port._request(
@@ -181,9 +182,11 @@ class GitHubObjectCAS:
                 and kwargs["Metadata"].get("sha256") == digest,
                 "cas_write_invalid")
         self._authorized()
-        self._ensure_branch()
+        existing_count = self._ensure_branch()
         if self._get(path) is not None:
             raise AlreadyExists()
+        # Count BEFORE a new append; existing objects remain replayable.
+        require(existing_count < 3, "cas_branch_scope_invalid")
         result = self.port._request(
             "PUT", "/contents/" + path, statuses=(201,),
             payload={
