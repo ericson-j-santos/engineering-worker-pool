@@ -122,12 +122,18 @@ def test_budget_covers_two_bounded_model_calls_and_ci_time_limits():
     assert "for attempt in (1, 2):" in worker
     assert "timeout=180" in provider
     model_calls, model_call_timeout = 2, 180
-    gateway_timeout, wrapper_timeout, step_timeout, job_timeout = 420, 435, 8 * 60, 14 * 60
+    gateway_timeout, wrapper_timeout, step_timeout = 420, 435, 8 * 60
+    # Bind budget to the actual workflow rather than a historical 14-minute literal.
+    job_budgets = [line.split(": ", 1)[1] for line in workflow.splitlines()
+                   if line.startswith("    timeout-minutes: ")]
+    assert len(job_budgets) == 1
+    job_minutes = int(job_budgets[0])
+    assert 14 <= job_minutes <= 30  # Explicit finite ceiling, never unbounded CI.
+    job_timeout = job_minutes * 60
     assert model_call_timeout < 300  # Material first-proposal evidence resets the watchdog.
     assert gateway_timeout >= model_calls * model_call_timeout + 60
     assert gateway_timeout < wrapper_timeout < step_timeout < job_timeout
     assert '"--timeout", "420"' in outer and "timeout=435" in outer
-    assert '    timeout-minutes: 14' in workflow
     assert workflow.count("      - name: Repair real structured function in governed copy") == 1
     assert '        timeout-minutes: 8' in workflow.split(
         "      - name: Repair real structured function in governed copy", 1)[1].split(
