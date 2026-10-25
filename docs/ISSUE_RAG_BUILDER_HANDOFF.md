@@ -20,7 +20,7 @@ not falsely reuse the PR #9 citation as issue #8 evidence.
   authorization for the **current** main SHA is accepted by that separate
   module. No issue text is accepted as a command.
 - The optional `rag_receipt` is the canonical, exact
-  `worker.rag.evidence-v1` structure from `agent_rag_consumer`, including
+  `worker.rag.issue-context-v1` structure from `issue_rag_research`, including
   question digest, selected citation, source hash/byte count, Git blob SHA,
   Qwen digest, and the receipt SHA-256.
 - The RAG receipt must refer to the **same repository**, current
@@ -88,3 +88,16 @@ merge, deploy or model downloads are performed by importing these modules.
 Merge and production remain out of scope. Cost incremental limit remains
 R$0.00. No Docker on physical hosts, no GUI/RDC/terminal fallback, and no
 unrestricted LLM commands.
+
+## Issue-specific producer (source SHA, not PR identity)
+
+The `app/issue_rag_research.py` module is the only producer of this
+issue-bound receipt. It revalidates the actual OWNER issue authorization and
+current main HEAD before the model chooses a source, reads only approved
+Markdown at that SHA, repeats admission after inference, and independently
+retrieves source bytes through a separate GitHub GET reader. The exact schema
+uses `issue_number`, `request_id`, `base_sha` and
+`issue_head_readback_stable=true` rather than inventing a PR number.
+An old `worker.rag.evidence-v1` **PR-context** receipt is deliberately
+rejected at the Builder/Validator boundary. The producer has no GitHub
+write capability and no permission to enqueue or publish work.

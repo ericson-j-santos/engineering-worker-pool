@@ -96,25 +96,26 @@ def bind_issue_rag(
     require(type(receipt) is dict and callable(independent_read),
             "rag_attestation_input_invalid")
     valid_fields = {
-        "schema_version", "repository", "pr_number", "correlation_id",
-        "head_sha", "base_sha", "question_sha256", "search_query_sha256",
-        "sources", "selected_reference", "state", "model_calls",
-        "model_digest", "model_process_verified",
-        "pr_readback_stable", "execution_authorized", "state_changed",
-        "receipt_sha256",
+        "schema_version", "repository", "issue_number", "request_id",
+        "correlation_id", "head_sha", "base_sha", "question_sha256",
+        "search_query_sha256", "sources", "selected_reference", "state",
+        "model_calls", "model_digest", "model_process_verified",
+        "issue_head_readback_stable", "execution_authorized",
+        "state_changed", "receipt_sha256",
     }
     require(set(receipt) == valid_fields and
-            receipt.get("schema_version") == "worker.rag.evidence-v1" and
+            receipt.get("schema_version") == "worker.rag.issue-context-v1" and
             receipt.get("repository") == REPO and
-            type(receipt.get("pr_number")) is int and receipt["pr_number"] > 0
+            type(receipt.get("issue_number")) is int
+            and receipt["issue_number"] == binding.number
+            and receipt.get("request_id") == binding.request_id
             and receipt.get("head_sha") == binding.base_sha
-            and type(receipt.get("base_sha")) is str
-            and SHA.fullmatch(receipt["base_sha"]) is not None
+            and receipt.get("base_sha") == binding.base_sha
             and receipt.get("correlation_id") == binding.correlation_id
             and receipt.get("question_sha256") == digest(QUESTION.encode("utf-8"))
             and receipt.get("state") == "supported"
             and receipt.get("model_process_verified") is True
-            and receipt.get("pr_readback_stable") is True
+            and receipt.get("issue_head_readback_stable") is True
             and receipt.get("execution_authorized") is False
             and receipt.get("state_changed") is False,
             "rag_issue_or_source_sha_unbound")
