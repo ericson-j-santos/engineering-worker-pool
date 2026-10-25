@@ -1,0 +1,97 @@
+name: OIDC broker Neon DEV bundle gate (no deploy)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - services/continuity_identity/**
+      - scripts/native_private_config.py
+      - tests/test_native_private_config.py
+      - .github/workflows/continuity-oidc-neon-dev-bundle.yml
+      - tests/test_continuity_oidc_neon_bundle_workflow.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: neon-oidc-bundle-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  bundle:
+    name: OIDC source-and-bundle test, SHA-bound
+    if: >-
+      github.repository == 'ericson-j-santos/engineering-worker-pool' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'fix/continuity-oidc-rejection-diagnostics-20261025' &&
+      github.event.pull_request.user.login == 'ericson-j-santos'
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Checkout exact SHA without credentials
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ env.EXPECTED_SHA }}
+          persist-credentials: false
+
+      - name: Confirm source and bundler constraints
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git diff --name-only)"
+          test -z "$(git diff --cached --name-only)"
+          node -e 'if(Number(process.versions.node.split(".")[0])<22)process.exit(1)'
+          python -m pytest -q tests/test_continuity_oidc_neon_bundle_workflow.py
+
+      - name: Install exact jose from committed lock and test source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix services/continuity_identity --ignore-scripts --no-audit --no-fund
+          node --test services/continuity_identity/identity.test.mjs
+
+      - name: Bundle exact esbuild version and retest output
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes esbuild@0.25.12 services/continuity_identity/index.mjs \
+            --bundle --platform=node --target=node22 --format=esm \
+            --outfile=services/continuity_identity/dist/index.mjs
+          node --check services/continuity_identity/dist/index.mjs
+          cp services/continuity_identity/identity.test.mjs \
+            services/continuity_identity/dist/identity.test.mjs
+          node --test services/continuity_identity/dist/identity.test.mjs
+
+      - name: Verify deterministic ZIP and record digest without secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, hashlib, io, os, re, zipfile
+          from pathlib import Path
+          sha=os.environ["EXPECTED_SHA"]
+          assert re.fullmatch(r"[0-9a-f]{40}",sha)
+          app=Path("services/continuity_identity/dist/index.mjs").read_bytes()
+          assert 2000<len(app)<1000000
+          for token in (b"identity_not_admitted",b"principal_unmatched",b"EWP_OIDC_ADMISSION_REJECTED"):
+              assert token in app
+          for forbidden in (b"test-secret",b"postgresql://"):
+              assert forbidden not in app
+          memory=io.BytesIO()
+          with zipfile.ZipFile(memory,mode="w",compression=zipfile.ZIP_DEFLATED,compresslevel=9) as zf:
+              zf.writestr("index.mjs",app)
+              zf.writestr("SOURCE_COMMIT.txt",sha+"\n")
+          content=memory.getvalue()
+          assert 200<len(content)<900000
+          with zipfile.ZipFile(io.BytesIO(content)) as zf:
+              assert zf.namelist()==["index.mjs","SOURCE_COMMIT.txt"]
+              assert zf.read("index.mjs")==app
+              assert zf.read("SOURCE_COMMIT.txt").decode()==sha+"\n"
+          print("NEON_BROKER_SOURCE_SHA="+sha)
+          print("NEON_BROKER_ZIP_SHA256="+hashlib.sha256(content).hexdigest())
+          print("NEON_BROKER_ZIP_LENGTH="+str(len(content)))
+          print("NEON_BROKER_BASE64="+base64.b64encode(content).decode())
+          PY
