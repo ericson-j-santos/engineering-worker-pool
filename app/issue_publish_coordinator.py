@@ -7,11 +7,12 @@ pytest verification implementations. Fabricated callback results are not an E2E.
 from __future__ import annotations
 
 from datetime import datetime
+import re
 from typing import Any, Callable, Mapping, Protocol
 
 from app.issue_draft_pr import (
     GitHubDraftPort, HandoffBlocked, IssueBinding, PATH, REPO,
-    SHA, HEX64, publish_draft, require, sha256, verify_patch,
+    SHA, HEX64, publish_draft, require, sha256,
 )
 
 
@@ -33,7 +34,7 @@ class IndependentGitVerifier(Protocol):
 def _completed(pool: CompletedPool, binding: IssueBinding,
                task_id: str) -> dict[str, Any]:
     """Canonical read; neither a worker receipt nor a green log is enough."""
-    require(type(task_id) is str and bool(__import__("re").fullmatch(
+    require(type(task_id) is str and bool(re.fullmatch(
         r"cwp-[0-9a-f]{24}", task_id)), "issue_task_id_invalid")
     observed = pool.get_task(task_id)
     require(type(observed) is dict
@@ -119,20 +120,11 @@ def publish_completed_fenced_issue(
             and model_audit.get("produced_sha") == task["produced_sha"]
             and model_audit.get("base_sha") == binding.base_sha,
             "issue_model_audit_mismatch")
-    audit = verify_patch(
-        binding, before, after,
-        model=model_audit.get("model"),
-        model_digest=model_audit.get("model_digest"),
-        model_calls=model_audit.get("model_calls"),
-        produced_sha=task["produced_sha"],
-        regression_checker=regression_checker,
-    )
-    require(audit == model_audit, "issue_model_audit_mismatch")
-
-    # publish_draft performs its own independent GitHub issue/comment/main
-    # re-admission, real acceptance/regrression and branch/PR readback.
+    # publish_draft performs final re-admission and re-runs the real
+    # acceptance/independent regression exactly once before any GitHub write.
+    # Do not duplicate that expensive verification in this coordinator.
     result = publish_draft(
-        github, binding, before, after, audit,
+        github, binding, before, after, dict(model_audit),
         now=now, observed_at=now.isoformat(),
         regression_checker=regression_checker,
     )
