@@ -45,6 +45,7 @@ class GitHubState:
     reads: int = 0
     failed_put_before: bool = False
     failed_put_after: bool = False
+    concurrent_branch_advance: bool = False
     reject_owner: bool = False
     readonly_port_ids: set[int] = field(default_factory=set)
 
@@ -131,11 +132,15 @@ class Port(OfficialGitHubDraftPort):
                 state.objects[path] = raw
                 state.write_count += 1
                 state.branch_sha = str(state.write_count).zfill(40)
+                committed = state.branch_sha
                 if state.failed_put_after:
                     state.failed_put_after = False
                     raise TimeoutError("secret provider timeout after commit")
+                if state.concurrent_branch_advance and path.endswith(".context"):
+                    state.concurrent_branch_advance = False
+                    state.branch_sha = "e" * 40
                 return {"content": {"path": path, "sha": blob_sha(raw)},
-                        "commit": {"sha": state.branch_sha}}
+                        "commit": {"sha": committed}}
         raise AssertionError((method, tail, payload))
 
 
@@ -395,3 +400,14 @@ def test_unshared_ports_or_changed_issue_binding_not_accepted():
     with pytest.raises(HandoffBlocked, match="rag_cas_clients_not_independent"):
         IssueRAGReceiptCAS(writer=cas.writer, independent=cas.independent,
                            binding=bad)
+
+
+def test_concurrent_branch_advance_fails_closed_even_when_object_is_readable():
+    cas, state = setup()
+    cas.preflight()
+    state.concurrent_branch_advance = True
+    with pytest.raises(HandoffBlocked, match="cas_branch_changed_after_write"):
+        publish(cas)
+    # The object may have reached the store, but it is NOT certified as
+    # canonical. No automatic retry, branch rewrite or duplicate publication.
+    assert state.write_count == 2 and state.branch_count == 1

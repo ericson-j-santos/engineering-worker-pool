@@ -34,3 +34,12 @@ Não executar publish/cas da issue #8 enquanto não existir aprovação OWNER pa
 - Tests: positivo, controle de schema/lease/base/task, operação não permitida, limite de branch, adulteração, replay, timeout antes/depois, leitura de fonte independente e nenhuma publicação sem pré-flight.
 - CI Windows/Linux: testes específicos e regressões no HEAD, sem skipped relevantes.
 - CI e mocks demonstram somente contrato. E2E GitHub real com credencial efêmera e duas instâncias, e readback físico com CAS continuam PENDENTES.
+
+## Limite de concorrência
+
+Além da contagem anterior à escrita, o GitHub CAS reconsulta a branch depois
+da resposta de PUT. Se outra operação alterar o HEAD ou exceder o limite,
+o fluxo bloqueia em vez de transformar a simples existência do objeto em
+sucesso. Esse controle é **readback fail-closed, não compare-and-swap atômico**:
+a API de Contents não oferece garantia aqui de serialização entre todos os
+agentes. Um objeto órfão pode existir após corrida; não reexecutar cegamente.

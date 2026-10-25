@@ -206,6 +206,13 @@ class GitHubObjectCAS:
                 and type(result["commit"].get("sha")) is str
                 and re.fullmatch(r"[0-9a-f]{40}", result["commit"]["sha"])
                 is not None, "cas_write_readback_required")
+        # Re-read the branch and enforce the capacity AFTER this new commit.
+        # A concurrent update cannot be certified by a successful PUT alone.
+        observed_branch = self._branch()
+        require(observed_branch is not None
+                and observed_branch["commit"]["sha"] == result["commit"]["sha"],
+                "cas_branch_changed_after_write")
+        self._ensure_branch()
         return {"ETag": expected_blob}
 
     def get_object(self, **kwargs: Any) -> dict:

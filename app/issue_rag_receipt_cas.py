@@ -227,6 +227,13 @@ class IssueRAGReceiptCAS:
                 Metadata={"sha256": full_digest, "artifact-kind": KIND},
                 IfNoneMatch="*",
             )
+        except HandoffBlocked as error:
+            # Deterministic policy/ancestry/capacity rejection must NEVER
+            # be promoted into success by a readable object. Only an
+            # ambiguous provider response can be reconciled by full bytes.
+            if str(error) != "cas_write_readback_required":
+                raise
+            write_error = True
         except Exception:
             write_error = True
         try:
