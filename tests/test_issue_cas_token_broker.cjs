@@ -7,7 +7,7 @@ const crypto = require("node:crypto");
 
 const yaml = fs.readFileSync(
   path.join(__dirname, "..", ".github", "workflows",
-    "issue-qwen7b-cas-token-broker-dev.yml"), "utf8");
+    "issue-qwen7b-cas-token-broker-dev.yml"), "utf8").replace(/\r\n/g, "\n");
 const owner = "ericson-j-santos", repo = "engineering-worker-pool";
 const base = "958990e201c18219a8284f37437ed308c95d1a71";
 const sha = "d".repeat(40);
