@@ -161,7 +161,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           NATIVE_OLLAMA_DEV: '1'
           NATIVE_MODEL_DIGEST_PREFIX: 'dae161e27b0e'
-        run: python scripts/rag_real_qwen_e2e.py
+        run: python -m scripts.rag_real_qwen_e2e
 
       - name: Remove disposable local model
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository

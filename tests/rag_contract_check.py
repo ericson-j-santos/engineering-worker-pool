@@ -334,3 +334,25 @@ def test_dependency_is_pinned_to_reviewed_agent_core_commit():
         "portable-agent-core @ git+https://github.com/ericson-j-santos/"
         "agent-core.git@1fc032d4c412bdb4ed202cf1193caf0cb49490ce"
     ]
+
+def test_rag_e2e_entrypoint_resolves_worker_package_and_fails_closed():
+    """Catch script-vs-package invocation drift before expensive model E2E."""
+    import os
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    env["GITHUB_ACTIONS"] = "false"
+    env.pop("GITHUB_TOKEN", None)
+    observed = subprocess.run(
+        [sys.executable, "-m", "scripts.rag_real_qwen_e2e"],
+        cwd=root, env=env, capture_output=True, text=True,
+        timeout=20, check=False,
+    )
+    assert observed.returncode != 0
+    assert "rag_ci_environment_required" in observed.stderr
+    assert "ModuleNotFoundError" not in observed.stderr
+    workflow = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert workflow.count("run: python -m scripts.rag_real_qwen_e2e") == 1
+    assert "run: python scripts/rag_real_qwen_e2e.py" not in workflow
