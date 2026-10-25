@@ -26,6 +26,7 @@ from app.structured_code_worker import (
     StructuredBlocked, git, need, repair, sha256, validate,
 )
 from scripts.structured_acceptance import INSTRUCTION, cases
+from scripts.native_patch_stage import StageBlocked, stage_validated_patch
 
 
 SOURCE_FILE = "app/portfolio_bridge.py"
@@ -235,7 +236,7 @@ def verify_source_final(source: Path, expected_sha: str, raw_sha256: str,
     return verified_source_clean(source, native_windows=native_windows)
 
 
-def execute(sha: str, correlation_id: str) -> dict:
+def execute(sha: str, correlation_id: str, patch_stage_root: Path | None = None) -> dict:
     worktree = Path.cwd().resolve()
     source_integrity_mode = require_source(ROOT.resolve(), sha, worktree)
     source_raw_sha256 = sha256((ROOT / SOURCE_FILE).read_bytes())
@@ -297,8 +298,23 @@ def execute(sha: str, correlation_id: str) -> dict:
         need(result["model_calls"] in (1, 2), "model_call_count_invalid")
         source_final_integrity_mode = verify_source_final(
             ROOT, sha, source_raw_sha256)
+        staged = None
+        if patch_stage_root is not None:
+            staged = stage_validated_patch(
+                builder=checkout, validator=independent, state=state,
+                output_root=patch_stage_root, source_sha=sha, base_sha=sha,
+                produced_sha=result["produced_sha"],
+                patch_sha256=result["patch_sha256"],
+                correlation_id=correlation_id,
+                passed=verification["passed"], total=verification["total"],
+                regression_passed=regression_evidence["passed_count"],
+            )
         return {
             "result": "NATIVE_QWEN7B_CODE_E2E_PASSED",
+            "patch_staged": staged is not None,
+            "stage_artifact_sha256": staged["artifact_sha256"] if staged else None,
+            "stage_only_not_durable": True,
+            "ready_for_pr": False,
             "source_repo": ALLOWED_SOURCE, "source_sha": sha,
             "source_integrity_mode": source_integrity_mode,
             "source_integrity_mode_final": source_final_integrity_mode,
@@ -360,15 +376,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--expected-source-sha", required=True)
     parser.add_argument("--correlation-id", required=True)
+    parser.add_argument("--patch-stage-root", type=Path)
     args = parser.parse_args(argv)
     if (CORRELATION.fullmatch(args.correlation_id) is None
             or SHA.fullmatch(args.expected_source_sha) is None):
         raise SystemExit("invalid_fixed_inputs")
     try:
-        result = execute(args.expected_source_sha, args.correlation_id)
+        result = execute(args.expected_source_sha, args.correlation_id, args.patch_stage_root)
     except (StructuredBlocked, WorkerBlocked, OSError, ValueError, subprocess.SubprocessError,
             KeyError) as error:
-        reason = str(error) if isinstance(error, (StructuredBlocked, WorkerBlocked)) else type(error).__name__
+        reason = str(error) if isinstance(error, (StructuredBlocked, WorkerBlocked, StageBlocked)) else type(error).__name__
         result = {
             "result": "NATIVE_QWEN7B_CODE_E2E_BLOCKED",
             "reason_code": reason,
