@@ -29,8 +29,8 @@ CAS_BUCKET = "github-public-cas"
 CAS_PREFIX = "qwen7b-cas-v1"
 CAS_MAX_BYTES = 96 * 1024
 KEY = re.compile(
-    r"qwen7b-cas-v1/(?:preflight-v1|git-bundle-v1)/sha256/"
-    r"([0-9a-f]{2})/([0-9a-f]{64})\.(?:probe|artifact)\Z"
+    r"qwen7b-cas-v1/(?:preflight-v1|git-bundle-v1|issue-rag-v1)/sha256/"
+    r"([0-9a-f]{2})/([0-9a-f]{64})\.(?:probe|artifact|context)\Z"
 )
 
 
@@ -69,7 +69,9 @@ class GitHubObjectCAS:
         require(match is not None and match.group(1) == match.group(2)[:2]
                 and (("/preflight-v1/" in key and key.endswith(".probe"))
                      or ("/git-bundle-v1/" in key
-                         and key.endswith(".artifact"))),
+                         and key.endswith(".artifact"))
+                     or ("/issue-rag-v1/" in key
+                         and key.endswith(".context"))),
                 "cas_key_invalid")
         return "evidence/cas/" + key, match.group(2)
 
@@ -126,7 +128,7 @@ class GitHubObjectCAS:
                 and compare.get("status") == "ahead"
                 and compare.get("behind_by") == 0
                 and type(compare.get("ahead_by")) is int
-                and 1 <= compare["ahead_by"] <= 2
+                and 1 <= compare["ahead_by"] <= 3
                 and type(compare.get("total_commits")) is int
                 and compare["total_commits"] == compare["ahead_by"]
                 and type(compare.get("files")) is list
