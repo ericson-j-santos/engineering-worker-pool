@@ -356,3 +356,20 @@ def test_rag_e2e_entrypoint_resolves_worker_package_and_fails_closed():
     workflow = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert workflow.count("run: python -m scripts.rag_real_qwen_e2e") == 1
     assert "run: python scripts/rag_real_qwen_e2e.py" not in workflow
+
+def test_rag_readonly_e2e_question_grounded_and_ran_before_structured():
+    """An answerable assertion and early material evidence prevent delayed failures."""
+    from scripts.rag_real_qwen_e2e import DOC, QUESTION, REPO, HEAD
+    root = Path(__file__).resolve().parents[1]
+    assert "read-only" in QUESTION and "PR context" in QUESTION
+    assert DOC == "docs/PR_CONTEXT_RETRIEVAL.md"
+    assert REPO == "ericson-j-santos/agent-core"
+    assert len(HEAD) == 40
+    workflow = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert workflow.index("      - name: Select local model for structured repair") < (
+        workflow.index("      - name: Real GitHub evidence to native local Qwen7B E2E (read-only)")
+    ) < workflow.index("      - name: Repair real structured function in governed copy")
+    script = (root / "scripts/rag_real_qwen_e2e.py").read_text(encoding="utf-8")
+    assert "rag_retrieval_no_matching_excerpt" in script
+    assert "rag_model_selection_declined_citation" in script
+    assert "rag_real_execution_unproved" not in script

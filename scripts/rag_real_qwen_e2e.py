@@ -21,7 +21,7 @@ PR = 9
 # Reviewed PR #9 head, not merge commit. The doc exists at this exact SHA.
 HEAD = "b083a23af7c55f96ee1c7f8daabbd51167bf4de6"
 DOC = "docs/PR_CONTEXT_RETRIEVAL.md"
-QUESTION = "Which SHA pinned PR context retrieval is documented for Agentic RAG?"
+QUESTION = "Is the GitHub PR context retrieval capability read-only?"
 
 
 def _require(condition, reason):
@@ -65,14 +65,22 @@ def main() -> None:
     observed = research_pr(task, github_token=token)
     _require(observed["schema_version"] == "worker.rag.evidence-v1",
              "rag_evidence_contract")
-    _require(observed["state"] == "supported" and
-             observed["head_sha"] == HEAD and
-             observed["model_calls"] >= 2 and
-             observed["model_process_verified"] is True and
-             observed["pr_readback_stable"] is True and
-             observed["execution_authorized"] is False and
+    _require(observed["state"] in ("supported", "insufficient_evidence"),
+             "rag_retrieval_state_invalid")
+    if observed["state"] != "supported":
+        code = ("rag_retrieval_no_matching_excerpt"
+                if observed["model_calls"] <= 1
+                else "rag_model_selection_declined_citation")
+        raise RuntimeError(code)
+    _require(observed["head_sha"] == HEAD, "rag_head_mismatch")
+    _require(observed["model_calls"] >= 2, "rag_model_selection_missing")
+    _require(observed["model_process_verified"] is True,
+             "rag_real_model_process_unverified")
+    _require(observed["pr_readback_stable"] is True,
+             "rag_pr_readback_unproved")
+    _require(observed["execution_authorized"] is False and
              observed["state_changed"] is False,
-             "rag_real_execution_unproved")
+             "rag_readonly_boundary_broken")
     citation = observed["selected_reference"]
     _require(type(citation) is dict and
              citation["path"] == DOC and

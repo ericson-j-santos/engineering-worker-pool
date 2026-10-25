@@ -147,12 +147,6 @@ jobs:
           docker exec worker-pool-local-code ollama rm qwen2.5-coder:1.5b
           docker exec worker-pool-local-code ollama pull qwen2.5-coder:7b
 
-      - name: Repair real structured function in governed copy
-        id: structured_e2e
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        timeout-minutes: 8
-        run: python scripts/structured_worker_e2e.py
-
       - name: Real GitHub evidence to native local Qwen7B E2E (read-only)
         id: rag_e2e
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
@@ -162,6 +156,12 @@ jobs:
           NATIVE_OLLAMA_DEV: '1'
           NATIVE_MODEL_DIGEST_PREFIX: 'dae161e27b0e'
         run: python -m scripts.rag_real_qwen_e2e
+
+      - name: Repair real structured function in governed copy
+        id: structured_e2e
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        timeout-minutes: 8
+        run: python scripts/structured_worker_e2e.py
 
       - name: Remove disposable local model
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
