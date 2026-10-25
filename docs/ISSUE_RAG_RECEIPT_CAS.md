@@ -43,3 +43,35 @@ o fluxo bloqueia em vez de transformar a simples existência do objeto em
 sucesso. Esse controle é **readback fail-closed, não compare-and-swap atômico**:
 a API de Contents não oferece garantia aqui de serialização entre todos os
 agentes. Um objeto órfão pode existir após corrida; não reexecutar cegamente.
+
+## Consumo durável pelo Builder/Validator
+
+A função `app/issue_rag_durable_adapter.py::adapter_from_durable_issue_rag`
+materializa o recibo a partir do descritor `DurableArtifact` antes de criar
+o adaptador Qwen. Ela exige `IssueBinding`, manifesto BASE, hash dos bytes
+da origem, identidade do adapter, `lease_generation`, `attempt_id` e
+`effect_id`. O `IssueRAGReceiptCAS.materialize` relê o objeto completo e
+recupera/valida a fonte por cliente independente. Só depois o recibo
+materializado é entregue ao `IssueQwenNativeAdapter`, que volta a conferi-lo
+imediatamente antes da inferência ou validação.
+
+No host Validator, o `base_manifest` que acompanha o recibo permanece
+vinculado ao SHA **anterior** da tarefa; o `AdapterContext` normal do Validator
+usa separadamente o SHA produzido. O recibo não autoriza publicar código,
+não produz patch nem substitui os 42 casos e 52 regressões. A biblioteca
+continua a exigir que o chamador governe autenticação, sessão, posse de
+lease/fencing e independência física real dos hosts. Os testes deste elo
+são simulações de dois clientes, não um teste de campo.
+
+## Controle adicional em CI — patch Git material, não publicação
+
+O gate de teste `test_cas_to_real_git_builder_and_distinct_validator_checkout`
+cria um repositório Git de prova real em sandbox, persiste **em CAS simulado**
+um recibo issue-bound, abre novamente em clientes distintos, executa o
+Builder com saída de modelo **simulada** e comprova um commit material
+(`base_sha != produced_sha`, diff apenas em `app/portfolio_bridge.py`).
+O Validator usa outro checkout Git, relê o mesmo recibo e roda os 42 casos
+funcionais com verificador de 52 regressões **simulado**. A contagem de
+chamadas ao modelo não aumenta no Validator. Isso testa a ponte entre
+componentes, mas ainda NÃO comprova execução Ollama da issue real,
+CAS patch remoto persistido ou uma PR draft criada autonomamente.
