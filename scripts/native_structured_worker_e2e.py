@@ -220,9 +220,25 @@ def run_bridge_regressions(independent: Path, sandbox: Path) -> dict:
     return diagnosis
 
 
+def verify_source_final(source: Path, expected_sha: str, raw_sha256: str,
+                        *, native_windows: bool | None = None) -> str:
+    """Require exact source bytes and a clean Git tree; mode labels may drift.
+
+    On Windows Git may refresh status metadata from normalized CRLF to clean.
+    Both modes still require the same HEAD and a verified clean checkout.
+    An actual byte change, including newline conversion, is never accepted.
+    """
+    need(git(source, "rev-parse", "HEAD") == expected_sha,
+         "source_changed_by_test")
+    need(sha256((source / SOURCE_FILE).read_bytes()) == raw_sha256,
+         "source_changed_by_test")
+    return verified_source_clean(source, native_windows=native_windows)
+
+
 def execute(sha: str, correlation_id: str) -> dict:
     worktree = Path.cwd().resolve()
     source_integrity_mode = require_source(ROOT.resolve(), sha, worktree)
+    source_raw_sha256 = sha256((ROOT / SOURCE_FILE).read_bytes())
     with tempfile.TemporaryDirectory(prefix="native-qwen7b-", dir=worktree) as name:
         sandbox = Path(name)
         checkout = sandbox / "builder"
@@ -279,13 +295,14 @@ def execute(sha: str, correlation_id: str) -> dict:
         regression_evidence = run_bridge_regressions(independent, sandbox)
         need(git(checkout, "remote") == "", "worker_remote_present")
         need(result["model_calls"] in (1, 2), "model_call_count_invalid")
-        need(git(ROOT, "rev-parse", "HEAD") == sha
-             and verified_source_clean(ROOT) == source_integrity_mode,
-             "source_changed_by_test")
+        source_final_integrity_mode = verify_source_final(
+            ROOT, sha, source_raw_sha256)
         return {
             "result": "NATIVE_QWEN7B_CODE_E2E_PASSED",
             "source_repo": ALLOWED_SOURCE, "source_sha": sha,
             "source_integrity_mode": source_integrity_mode,
+            "source_integrity_mode_final": source_final_integrity_mode,
+            "source_raw_bytes_unchanged": True,
             "correlation_id": correlation_id,
             "target": SOURCE_FILE, "source_is_real": True,
             "model": "qwen2.5-coder:7b",

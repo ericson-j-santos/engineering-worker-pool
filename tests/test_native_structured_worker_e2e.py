@@ -356,3 +356,74 @@ def test_preflight_must_run_before_model_inference():
     )
     assert "PIP_INSTALL" not in source
     assert "docker run" not in source.lower()
+
+
+
+def test_final_integrity_mode_transition_is_not_mutation(tmp_path, monkeypatch):
+    """Git may change its status classification without changing source bytes."""
+    repo, source = create_eol_repository(tmp_path)
+    source.write_bytes(source.read_bytes().replace(b"\n", b"\r\n"))
+    expected_head = physical.git(repo, "rev-parse", "HEAD")
+    original_bytes = source.read_bytes()
+    raw_hash = sha256(original_bytes)
+    assert physical.verified_source_clean(repo, native_windows=True) == (
+        "git_verified_crlf_normalization"
+    )
+    original_git = physical.git
+
+    def refreshed_status(root, *arguments):
+        if root == repo and arguments[:2] == (
+                "status", "--porcelain"):
+            return ""
+        return original_git(root, *arguments)
+
+    monkeypatch.setattr(physical, "git", refreshed_status)
+    assert physical.verify_source_final(
+        repo, expected_head, raw_hash, native_windows=True
+    ) == "exact_clean"
+    assert source.read_bytes() == original_bytes
+
+
+def test_final_integrity_rejects_raw_byte_change_even_if_normalized(tmp_path):
+    repo, source = create_eol_repository(tmp_path)
+    original_hash = sha256(source.read_bytes())
+    expected_head = physical.git(repo, "rev-parse", "HEAD")
+    source.write_bytes(source.read_bytes().replace(b"\n", b"\r\n"))
+    # Git's canonical content may be the same; source bytes are not.
+    assert physical.verified_source_clean(repo, native_windows=True) == (
+        "git_verified_crlf_normalization"
+    )
+    with pytest.raises(StructuredBlocked, match="^source_changed_by_test$"):
+        physical.verify_source_final(
+            repo, expected_head, original_hash, native_windows=True
+        )
+
+
+@pytest.mark.parametrize("kind,reason", [
+    ("head_changed", "source_changed_by_test"),
+    ("untracked", "source_tree_dirty"),
+])
+def test_final_integrity_detects_head_drift_and_untracked_files(
+        tmp_path, kind, reason):
+    repo, source = create_eol_repository(tmp_path)
+    expected_head = physical.git(repo, "rev-parse", "HEAD")
+    original_hash = sha256(source.read_bytes())
+    if kind == "head_changed":
+        (repo / "another.txt").write_text("unrelated commit\n")
+        physical.git(repo, "add", "another.txt")
+        physical.git(repo, "-c", "user.name=CI", "-c",
+                     "user.email=test@localhost", "commit", "-qm", "changed")
+    else:
+        (repo / "unexpected.untracked").write_text("other work")
+    with pytest.raises(StructuredBlocked, match="^" + reason + "$"):
+        physical.verify_source_final(repo, expected_head, original_hash)
+
+
+def test_final_gate_runs_only_after_real_validator_and_regressions():
+    source = (Path(__file__).resolve().parents[1] /
+              "scripts/native_structured_worker_e2e.py").read_text(encoding="utf-8")
+    assert source.index("regression_evidence = run_bridge_regressions") < (
+        source.index("source_final_integrity_mode = verify_source_final")
+    )
+    assert "verified_source_clean(ROOT) == source_integrity_mode" not in source
+    assert '"source_raw_bytes_unchanged": True' in source
