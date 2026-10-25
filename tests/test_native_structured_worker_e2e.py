@@ -62,7 +62,9 @@ def test_python_imports_must_not_dirty_exact_git_source():
     setter = source.index("sys.dont_write_bytecode = True")
     first_project_import = source.index("from app.local_code_worker import WorkerBlocked")
     assert setter < first_project_import
-    assert 'git(source, "status", "--porcelain", "--untracked-files=all") == ""' in source
+    assert 'git(source, "status", "--porcelain", "--untracked-files=all")' in source
+    assert '"diff", "--name-only", "HEAD", "--"' in source
+    assert '"ls-files", "--others", "--exclude-standard"' in source
     assert "source_tree_dirty" in source
 
 
@@ -127,3 +129,160 @@ def test_dirty_diagnostic_error_fails_closed(monkeypatch):
     assert physical.dirty_checkout_diagnostic() == {
         "diagnostic_state": "status_unavailable"
     }
+
+
+def create_eol_repository(tmp_path):
+    """Commit exact LF content, then let tests change only its physical checkout."""
+    import subprocess
+    repo = tmp_path / "physical-git-eol"
+    (repo / "app").mkdir(parents=True)
+    source = repo / "app" / "portfolio_bridge.py"
+    source.write_bytes(b"def check():\n    return 123\n")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "core.autocrlf=false",
+                    "add", "app/portfolio_bridge.py"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=CI",
+                    "-c", "user.email=ci@localhost", "commit", "-qm", "eol baseline"],
+                   check=True, capture_output=True)
+    assert physical.git(repo, "status", "--porcelain", "--untracked-files=all") == ""
+    return repo, source
+
+
+def test_windows_crlf_checkout_normalizes_identical_source(tmp_path):
+    repo, source = create_eol_repository(tmp_path)
+    source.write_bytes(source.read_bytes().replace(b"\n", b"\r\n"))
+    assert physical.git(repo, "status", "--porcelain", "--untracked-files=all") != ""
+    assert physical.git(repo, "-c", "core.autocrlf=true",
+                        "diff", "--name-only", "HEAD", "--") == ""
+    assert physical.git(repo, "rev-parse", "HEAD:app/portfolio_bridge.py") == (
+        physical.git(repo, "-c", "core.autocrlf=true", "hash-object",
+                     "--path", "app/portfolio_bridge.py", "app/portfolio_bridge.py")
+    )
+    assert physical.verified_source_clean(repo, native_windows=True) == (
+        "git_verified_crlf_normalization"
+    )
+    # Only Windows has this recovery path; no OS-wide or persistent Git config.
+    with pytest.raises(StructuredBlocked, match="^source_tree_dirty$"):
+        physical.verified_source_clean(repo, native_windows=False)
+
+
+@pytest.mark.parametrize("kind", ["modified_content", "untracked", "staged_content"])
+def test_windows_crlf_normalization_never_masks_real_changes(tmp_path, kind):
+    repo, source = create_eol_repository(tmp_path)
+    source.write_bytes(source.read_bytes().replace(b"\n", b"\r\n"))
+    if kind == "modified_content":
+        source.write_bytes(b"def check():\r\n    return 456\r\n")
+    elif kind == "untracked":
+        (repo / "unexpected-work.txt").write_text("other user work")
+    else:
+        source.write_bytes(b"def check():\r\n    return 456\r\n")
+        physical.git(repo, "add", "app/portfolio_bridge.py")
+    with pytest.raises(StructuredBlocked, match="^source_tree_dirty$"):
+        physical.verified_source_clean(repo, native_windows=True)
+
+
+def test_windows_native_clean_checkout_keeps_strict_mode(tmp_path):
+    repo, source = create_eol_repository(tmp_path)
+    assert source.is_file()
+    assert physical.verified_source_clean(repo, native_windows=True) == "exact_clean"
+
+
+def test_windows_normalization_requires_hash_match_even_after_clean_status(tmp_path, monkeypatch):
+    repo, _ = create_eol_repository(tmp_path)
+    original = physical.git
+
+    def divergent(root, *args):
+        if "hash-object" in args:
+            return "f" * 40
+        if "-c" in args and "diff" in args:
+            return ""
+        if args[:2] == ("status", "--porcelain"):
+            return " M app/portfolio_bridge.py"
+        return original(root, *args)
+
+    monkeypatch.setattr(physical, "git", divergent)
+    with pytest.raises(StructuredBlocked, match="^source_blob_mismatch$"):
+        physical.verified_source_clean(repo, native_windows=True)
+
+
+def test_real_patched_portfolio_passes_native_regression_runner(tmp_path):
+    """Real Git clone and actual pytest, not a mocked subprocess."""
+    import json
+    from test_structured_code_worker import FIXED
+    from app.structured_code_worker import render, sha256
+    source_repo = Path(__file__).resolve().parents[1]
+    independent = tmp_path / "independent-regression"
+    physical.git(tmp_path, "clone", "--no-hardlinks", str(source_repo), str(independent))
+    target = independent / "app/portfolio_bridge.py"
+    before = target.read_text(encoding="utf-8")
+    task = {
+        "task_id": "independent-regression-probe",
+        "path": "app/portfolio_bridge.py",
+        "function": "_property",
+        "parameters": ["properties", "name"],
+        "instruction": INSTRUCTION,
+        "base_sha": physical.git(independent, "rev-parse", "HEAD"),
+        "before_sha256": sha256(before.encode()),
+        "cases": cases(),
+    }
+    replacement = render(before, task, json.dumps({"function": FIXED}))
+    target.write_text(replacement, encoding="utf-8", newline="")
+    try:
+        observed = physical.run_bridge_regressions(independent, tmp_path)
+    except physical.BridgeRegressionFailed as exc:
+        # Print ONLY fixed-schema counts/category; never raw subprocess output.
+        pytest.fail("sanitized_regression_diagnosis=" + repr(exc.diagnosis))
+    assert observed["category"] == "passed"
+    assert observed["exit_code"] == 0 and observed["passed_count"] >= 10
+    assert observed["output_within_limit"] is True
+
+
+def test_regression_fail_closed_without_tests_and_without_leaking_output(tmp_path):
+    missing = tmp_path / "empty-clone"
+    missing.mkdir()
+    with pytest.raises(physical.BridgeRegressionFailed) as err:
+        physical.run_bridge_regressions(missing, tmp_path)
+    sanitized = err.value.diagnosis
+    assert sanitized["category"] in {"process_error", "import_or_collection"}
+    assert sanitized["exit_code"] != 0
+    assert "stdout" not in str(sanitized) and "stderr" not in str(sanitized)
+    assert str(missing) not in str(sanitized)
+
+
+def test_regression_runner_resets_project_quietness_and_keeps_summary(
+        monkeypatch, tmp_path):
+    observed = {}
+
+    def completed(argv, **kwargs):
+        observed["argv"] = argv
+        observed["kwargs"] = kwargs
+        return physical.subprocess.CompletedProcess(
+            argv, 0, stdout="12 passed in 0.10s\n", stderr=""
+        )
+
+    monkeypatch.setattr(physical.subprocess, "run", completed)
+    result = physical.run_bridge_regressions(tmp_path, tmp_path)
+
+    assert observed["argv"][:6] == [
+        physical.sys.executable, "-m", "pytest", "-o", "addopts=", "-q"
+    ]
+    assert observed["kwargs"]["check"] is False
+    assert result == {
+        "exit_code": 0,
+        "passed_count": 12,
+        "failed_count": 0,
+        "error_count": 0,
+        "category": "passed",
+        "output_within_limit": True,
+    }
+
+
+def test_regression_environment_only_contains_explicit_nonsecret_fields(monkeypatch, tmp_path):
+    monkeypatch.setenv("PRIVATE_SECRET_TOKEN", "PRIVATE_VALUE")
+    env = physical.bridge_regression_environment(tmp_path)
+    assert "PRIVATE_SECRET_TOKEN" not in env
+    assert "PRIVATE_VALUE" not in str(env)
+    assert env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+    assert env["TEMP"] == str(tmp_path.resolve())
+    assert env["TMP"] == str(tmp_path.resolve())
+    assert env["PYTHONPATH"] == ""

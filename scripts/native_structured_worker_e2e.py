@@ -34,7 +34,40 @@ CORRELATION = re.compile(r"[a-z0-9][a-z0-9-]{5,100}\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 
-def require_source(source: Path, sha: str, worktree: Path) -> None:
+def verified_source_clean(source: Path, *, native_windows: bool | None = None) -> str:
+    """Verify a clean tracked checkout; Windows may normalize CRLF via Git.
+
+    Never remove files or change Git configuration. Git must verify that ALL
+    indexed tracked files and untracked non-ignored files match the source.
+    For a Windows checkout, core.autocrlf=true may be selected only when
+    strict status is dirty but Git's canonical HEAD diff is empty.
+    Explicitly reject staged content and non-ignored untracked files, and
+    require the actual target blob to match HEAD independently.
+    """
+    raw = git(source, "status", "--porcelain", "--untracked-files=all")
+    if raw == "":
+        return "exact_clean"
+    is_windows = os.name == "nt" if native_windows is None else native_windows
+    need(is_windows, "source_tree_dirty")
+    # Git status can still report dirty because of cached file-stat metadata
+    # after CRLF-only changes even when Git's normalized blob matches HEAD.
+    # Compare the actual HEAD diff, index, and untracked files instead.
+    # These remain read-only; no index refresh or configuration mutation.
+    normalized_diff = git(source, "-c", "core.autocrlf=true",
+                          "diff", "--name-only", "HEAD", "--")
+    staged_diff = git(source, "diff", "--cached", "--name-only", "HEAD", "--")
+    untracked = git(source, "ls-files", "--others", "--exclude-standard")
+    need(normalized_diff == "" and staged_diff == "" and untracked == "",
+         "source_tree_dirty")
+    expected_blob = git(source, "rev-parse", "HEAD:" + SOURCE_FILE)
+    actual_blob = git(source, "-c", "core.autocrlf=true",
+                      "hash-object", "--path", SOURCE_FILE, SOURCE_FILE)
+    need(bool(re.fullmatch(r"[0-9a-f]{40,64}", expected_blob))
+         and actual_blob == expected_blob, "source_blob_mismatch")
+    return "git_verified_crlf_normalization"
+
+
+def require_source(source: Path, sha: str, worktree: Path) -> str:
     need(SHA.fullmatch(sha) is not None, "source_sha_invalid")
     need(source.is_dir() and not source.is_symlink(), "source_unavailable")
     need(source == ROOT and source != worktree, "source_path_mismatch")
@@ -45,14 +78,92 @@ def require_source(source: Path, sha: str, worktree: Path) -> None:
          "source_not_authorized_checkout")
     need("chatgpt-workers" in str(worktree).lower(), "governed_worktree_required")
     need(git(source, "rev-parse", "HEAD") == sha, "source_sha_changed")
-    need(git(source, "status", "--porcelain", "--untracked-files=all") == "",
-         "source_tree_dirty")
+    integrity_mode = verified_source_clean(source)
     need((source / SOURCE_FILE).is_file(), "source_file_missing")
+    return integrity_mode
+
+
+class BridgeRegressionFailed(StructuredBlocked):
+    """Sanitized result; stdout, stderr and local paths are never published."""
+
+    def __init__(self, diagnosis: dict):
+        super().__init__("existing_bridge_regressions_failed")
+        self.diagnosis = diagnosis
+
+
+def bridge_regression_environment(sandbox: Path) -> dict[str, str]:
+    """Small portable environment, no tokens, no user profile, no proxy."""
+    need(sandbox.is_dir() and not sandbox.is_symlink(),
+         "regression_sandbox_unavailable")
+    root = str(sandbox.resolve())
+    env = {
+        "PATH": os.environ.get("PATH", os.defpath),
+        "PYTHONPATH": "",
+        "PY_COLORS": "0",
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        "TEMP": root,
+        "TMP": root,
+        "TMPDIR": root,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    if os.name == "nt":
+        system_root = os.environ.get("SystemRoot") or os.environ.get("SYSTEMROOT")
+        windows_dir = os.environ.get("WINDIR") or system_root
+        need(bool(system_root and windows_dir),
+             "windows_regression_runtime_unavailable")
+        env["SystemRoot"] = system_root
+        env["WINDIR"] = windows_dir
+    return env
+
+
+def run_bridge_regressions(independent: Path, sandbox: Path) -> dict:
+    """Run existing tests with a sterile but *functional* Windows environment."""
+    try:
+        completed = subprocess.run(
+            # Reset project-level addopts before selecting one quiet level.
+            # pyproject.toml already sets ``-q``; allowing it to combine with
+            # this explicit flag produces ``-qq`` and hides the pass summary
+            # that this fail-closed evidence parser requires.
+            [sys.executable, "-m", "pytest", "-o", "addopts=", "-q",
+             "tests/test_portfolio_bridge.py",
+             "tests/test_portfolio_admission_revalidation.py"],
+            cwd=independent, capture_output=True, text=True, timeout=60,
+            check=False, env=bridge_regression_environment(sandbox),
+        )
+    except subprocess.TimeoutExpired:
+        raise StructuredBlocked("bridge_regression_timeout") from None
+    except OSError:
+        raise StructuredBlocked("bridge_regression_process_unavailable") from None
+
+    output = completed.stdout + "\n" + completed.stderr
+    bounded = len(output) <= 131072
+    text = output[:131072]
+    summary = re.search(r"\b([1-9][0-9]*) passed\b", text)
+    failures = re.search(r"\b([0-9]+) failed\b", text)
+    errors = re.search(r"\b([0-9]+) errors?\b", text)
+    category = ("passed" if completed.returncode == 0 and summary and bounded else
+                "import_or_collection" if ("ModuleNotFoundError" in text
+                     or "ImportError" in text or "ERROR collecting" in text) else
+                "assertion" if ("AssertionError" in text or failures) else
+                "process_error")
+    diagnosis = {
+        "exit_code": completed.returncode,
+        "passed_count": int(summary.group(1)) if summary else 0,
+        "failed_count": int(failures.group(1)) if failures else 0,
+        "error_count": int(errors.group(1)) if errors else 0,
+        "category": category,
+        "output_within_limit": bounded,
+    }
+    if completed.returncode != 0 or not summary or not bounded:
+        raise BridgeRegressionFailed(diagnosis)
+    return diagnosis
 
 
 def execute(sha: str, correlation_id: str) -> dict:
     worktree = Path.cwd().resolve()
-    require_source(ROOT.resolve(), sha, worktree)
+    source_integrity_mode = require_source(ROOT.resolve(), sha, worktree)
     with tempfile.TemporaryDirectory(prefix="native-qwen7b-", dir=worktree) as name:
         sandbox = Path(name)
         checkout = sandbox / "builder"
@@ -105,24 +216,16 @@ def execute(sha: str, correlation_id: str) -> dict:
              "validator_scope_invalid")
         need(sha256((state / "change.patch").read_bytes()) == result["patch_sha256"],
              "patch_integrity_invalid")
-        regression = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", "tests/test_portfolio_bridge.py",
-             "tests/test_portfolio_admission_revalidation.py"],
-            cwd=independent, capture_output=True, text=True, timeout=60,
-            check=False, env={"PATH": os.environ.get("PATH", os.defpath),
-                              "PY_COLORS": "0", "PYTHONPATH": ""},
-        )
-        need(regression.returncode == 0 and len(regression.stdout) < 131072
-             and re.search(r"\b[1-9][0-9]* passed\b", regression.stdout) is not None,
-             "existing_bridge_regressions_failed")
+        regression_evidence = run_bridge_regressions(independent, sandbox)
         need(git(checkout, "remote") == "", "worker_remote_present")
         need(result["model_calls"] in (1, 2), "model_call_count_invalid")
         need(git(ROOT, "rev-parse", "HEAD") == sha
-             and git(ROOT, "status", "--porcelain", "--untracked-files=all") == "",
+             and verified_source_clean(ROOT) == source_integrity_mode,
              "source_changed_by_test")
         return {
             "result": "NATIVE_QWEN7B_CODE_E2E_PASSED",
             "source_repo": ALLOWED_SOURCE, "source_sha": sha,
+            "source_integrity_mode": source_integrity_mode,
             "correlation_id": correlation_id,
             "target": SOURCE_FILE, "source_is_real": True,
             "model": "qwen2.5-coder:7b",
@@ -133,6 +236,7 @@ def execute(sha: str, correlation_id: str) -> dict:
             "model_calls": result["model_calls"],
             "independent_validator": True, "replay_no_model_calls": True,
             "existing_bridge_regressions": True,
+            "regression_validation": regression_evidence,
             "produced_sha": result["produced_sha"],
             "patch_sha256": result["patch_sha256"],
             "no_remote_push": True, "no_merge": True,
@@ -195,6 +299,8 @@ def main(argv: list[str] | None = None) -> int:
         }
         if reason == "source_tree_dirty":
             result["checkout_diagnostic"] = dirty_checkout_diagnostic()
+        if isinstance(error, BridgeRegressionFailed):
+            result["regression_diagnostic"] = error.diagnosis
         print(json.dumps(result, sort_keys=True))
         return 2
     print(json.dumps(result, sort_keys=True))
