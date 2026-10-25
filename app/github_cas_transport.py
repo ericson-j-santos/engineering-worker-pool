@@ -29,8 +29,8 @@ CAS_BUCKET = "github-public-cas"
 CAS_PREFIX = "qwen7b-cas-v1"
 CAS_MAX_BYTES = 96 * 1024
 KEY = re.compile(
-    r"qwen7b-cas-v1/(?:preflight-v1|git-bundle-v1)/sha256/"
-    r"([0-9a-f]{2})/([0-9a-f]{64})\.(?:probe|artifact)\Z"
+    r"qwen7b-cas-v1/(?:preflight-v1|git-bundle-v1|issue-rag-v1)/sha256/"
+    r"([0-9a-f]{2})/([0-9a-f]{64})\.(?:probe|artifact|context)\Z"
 )
 
 
@@ -69,9 +69,25 @@ class GitHubObjectCAS:
         require(match is not None and match.group(1) == match.group(2)[:2]
                 and (("/preflight-v1/" in key and key.endswith(".probe"))
                      or ("/git-bundle-v1/" in key
-                         and key.endswith(".artifact"))),
+                         and key.endswith(".artifact"))
+                     or ("/issue-rag-v1/" in key
+                         and key.endswith(".context"))),
                 "cas_key_invalid")
         return "evidence/cas/" + key, match.group(2)
+
+    @classmethod
+    def _valid_branch_object(cls, file: Any) -> bool:
+        if (type(file) is not dict or file.get("status") != "added"
+                or type(file.get("filename")) is not str
+                or not file["filename"].startswith("evidence/cas/")):
+            return False
+        try:
+            cls._checked_key(
+                CAS_BUCKET, file["filename"].removeprefix("evidence/cas/")
+            )
+        except HandoffBlocked:
+            return False
+        return True
 
     def _authorized(self) -> None:
         now = datetime.now(timezone.utc)
@@ -99,7 +115,7 @@ class GitHubObjectCAS:
                 is not None, "cas_branch_unverified")
         return result
 
-    def _ensure_branch(self) -> None:
+    def _ensure_branch(self) -> int:
         branch = self._branch()
         if branch is None:
             result = self.port._request(
@@ -118,7 +134,7 @@ class GitHubObjectCAS:
         require(branch is not None, "cas_branch_unavailable")
         sha = branch["commit"]["sha"]
         if sha == self.binding.base_sha:
-            return
+            return 0
         compare = self.port._request(
             "GET", "/compare/" + self.binding.base_sha + "..." + sha,
         )
@@ -126,19 +142,17 @@ class GitHubObjectCAS:
                 and compare.get("status") == "ahead"
                 and compare.get("behind_by") == 0
                 and type(compare.get("ahead_by")) is int
-                and 1 <= compare["ahead_by"] <= 2
+                and 1 <= compare["ahead_by"] <= 3
                 and type(compare.get("total_commits")) is int
                 and compare["total_commits"] == compare["ahead_by"]
                 and type(compare.get("files")) is list
                 and len(compare["files"]) == compare["ahead_by"]
-                and all(type(file) is dict
-                        and file.get("status") == "added"
-                        and type(file.get("filename")) is str
-                        and file["filename"].startswith("evidence/cas/")
-                        and KEY.fullmatch(
-                            file["filename"].removeprefix("evidence/cas/")
-                        ) is not None for file in compare["files"]),
+                and len({f.get("filename") for f in compare["files"]
+                         if type(f) is dict}) == compare["ahead_by"]
+                and all(self._valid_branch_object(file)
+                        for file in compare["files"]),
                 "cas_branch_scope_invalid")
+        return compare["ahead_by"]
 
     def _get(self, path: str) -> bytes | None:
         payload = self.port._request(
@@ -179,9 +193,11 @@ class GitHubObjectCAS:
                 and kwargs["Metadata"].get("sha256") == digest,
                 "cas_write_invalid")
         self._authorized()
-        self._ensure_branch()
+        existing_count = self._ensure_branch()
         if self._get(path) is not None:
             raise AlreadyExists()
+        # Count BEFORE a new append; existing objects remain replayable.
+        require(existing_count < 3, "cas_branch_scope_invalid")
         result = self.port._request(
             "PUT", "/contents/" + path, statuses=(201,),
             payload={
@@ -201,6 +217,13 @@ class GitHubObjectCAS:
                 and type(result["commit"].get("sha")) is str
                 and re.fullmatch(r"[0-9a-f]{40}", result["commit"]["sha"])
                 is not None, "cas_write_readback_required")
+        # Re-read the branch and enforce the capacity AFTER this new commit.
+        # A concurrent update cannot be certified by a successful PUT alone.
+        observed_branch = self._branch()
+        require(observed_branch is not None
+                and observed_branch["commit"]["sha"] == result["commit"]["sha"],
+                "cas_branch_changed_after_write")
+        self._ensure_branch()
         return {"ETag": expected_blob}
 
     def get_object(self, **kwargs: Any) -> dict:
