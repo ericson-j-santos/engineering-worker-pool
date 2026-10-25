@@ -74,7 +74,7 @@ jobs:
       - name: Test
         run: python -m pytest -q
       - name: Execute pinned Agent Core RAG contract tests
-        run: python -m pytest -q tests/rag_contract_check.py
+        run: python -m pytest -q tests/rag_contract_check.py tests/issue_rag_contract_check.py
       - name: Install pinned GitHub OIDC verifier
         run: npm ci --ignore-scripts --no-audit --no-fund --prefix services/continuity_identity
       - name: Verify private identity admission controls
