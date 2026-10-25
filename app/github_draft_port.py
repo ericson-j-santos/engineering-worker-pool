@@ -96,7 +96,8 @@ class OfficialGitHubDraftPort:
             # Write may have reached GitHub. No immediate blind retry.
             raise HandoffBlocked("github_result_uncertain") from None
         require(result.url.scheme == "https" and result.url.host == "api.github.com"
-                and result.url.path == PREFIX + tail and not result.history,
+                and result.url.raw_path.split(b'?')[0] == (PREFIX + tail).encode('ascii')
+                and not result.history,
                 "github_response_origin_invalid")
         if missing_ok and result.status_code == 404:
             return None
@@ -127,7 +128,7 @@ class OfficialGitHubDraftPort:
     def get_branch(self, branch: str) -> dict | None:
         ref = self._ref(branch)
         result = self._request(
-            "GET", "/branches/" + quote(ref, safe="/"), missing_ok=True,
+            "GET", "/branches/" + quote(ref, safe=""), missing_ok=True,
         )
         if result is None:
             return None
