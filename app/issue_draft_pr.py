@@ -173,6 +173,7 @@ class GitHubDraftPort(Protocol):
     """Trusted, authenticated official GitHub API adapter (not issue content)."""
     def get_branch(self, branch: str) -> Mapping[str, Any] | None: ...
     def get_source(self, ref: str) -> tuple[bytes, str]: ...
+    def changed_paths(self, base_sha: str, head_sha: str) -> tuple[str, ...]: ...
     def create_branch(self, name: str, sha: str) -> None: ...
     def replace_source(self, name: str, content: bytes, blob_sha: str) -> None: ...
     def find_pr(self, head: str) -> Mapping[str, Any] | None: ...
@@ -183,7 +184,9 @@ class GitHubDraftPort(Protocol):
 
 def publish_draft(port: GitHubDraftPort, binding: IssueBinding,
                   before: bytes, after: bytes, audit: Mapping[str, Any],
-                  *, now: datetime, observed_at: str) -> dict[str, Any]:
+                  *, now: datetime, observed_at: str,
+                  regression_checker: Callable[[bytes, str], Mapping[str, Any]]
+                  ) -> dict[str, Any]:
     """Idempotent branch + draft PR; no push, merge, deploy or force-update.
 
     On uncertain HTTP side effects the adapter must raise and stop. A retry is
@@ -197,12 +200,15 @@ def publish_draft(port: GitHubDraftPort, binding: IssueBinding,
     actual_source, source_blob = port.get_source(binding.base_sha)
     require(actual_source == before and type(source_blob) is str
             and SHA.fullmatch(source_blob) is not None, "base_source_changed")
-    require(type(audit) is dict and audit.get("source_sha256") == sha256(after)
-            and audit.get("base_sha") == binding.base_sha
-            and audit.get("request_id") == binding.request_id
-            and audit.get("accepted_cases") == 42
-            and audit.get("regressions_passed", 0) >= 52,
-            "audit_binding_invalid")
+    require(type(audit) is dict, "audit_binding_invalid")
+    checked_audit = verify_patch(
+        binding, before, after,
+        model=audit.get("model"), model_digest=audit.get("model_digest"),
+        model_calls=audit.get("model_calls"),
+        produced_sha=audit.get("produced_sha"),
+        regression_checker=regression_checker,
+    )
+    require(audit == checked_audit, "audit_binding_invalid")
     existing = port.get_branch(binding.branch)
     if existing is None:
         port.create_branch(binding.branch, binding.base_sha)
@@ -225,6 +231,8 @@ def publish_draft(port: GitHubDraftPort, binding: IssueBinding,
             and final_branch["commit"]["sha"] != binding.base_sha
             and final_source == after, "branch_readback_failed")
     head = final_branch["commit"]["sha"]
+    require(port.changed_paths(binding.base_sha, head) == (PATH,),
+            "draft_branch_diff_scope_invalid")
     body = (
         f"Closes #{binding.number} only after independent review.\n\n"
         f"Marker: {MARKER}\n"
@@ -238,8 +246,10 @@ def publish_draft(port: GitHubDraftPort, binding: IssueBinding,
         "Draft only. No automatic merge, deployment or product cutover.\n"
     )
     pr = port.find_pr(binding.branch)
+    created = False
     if pr is None:
         port.create_pr(binding.branch, f"fix: issue #{binding.number} via local Qwen7B", body)
+        created = True
         pr = port.find_pr(binding.branch)
     require(type(pr) is dict and type(pr.get("number")) is int
             and pr.get("state") == "open" and pr.get("draft") is True
@@ -247,6 +257,6 @@ def publish_draft(port: GitHubDraftPort, binding: IssueBinding,
             and pr.get("body") == body, "draft_pr_readback_failed")
     return {"result": "DRAFT_PR_VERIFIED", "issue": binding.number,
             "pr_number": pr["number"], "head_sha": head,
-            "replayed": pr.get("created_now") is not True,
+            "replayed": not created,
             "request_id": binding.request_id, "model": MODEL,
             "merge_performed": False}
