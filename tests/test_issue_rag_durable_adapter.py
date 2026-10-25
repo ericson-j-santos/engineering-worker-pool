@@ -174,8 +174,10 @@ def test_cross_task_tamper_and_revocation_block_before_adapter(tmp_path, tamper)
         effect = "new-effect"
     elif tamper == "artifact_sha":
         artifact = DurableArtifact(
-            artifact.artifact_kind, artifact.artifact_ref[:-1] + "0",
-            artifact.artifact_sha256,
+            artifact.artifact_kind,
+            artifact.artifact_ref[:-1] + (
+                "1" if artifact.artifact_ref[-1] != "1" else "0"
+            ), artifact.artifact_sha256,
         )
     elif tamper == "source_change":
         source_reader = lambda *_: CONTENT + b"forged"
