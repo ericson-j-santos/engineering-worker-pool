@@ -1,0 +1,183 @@
+name: OIDC broker Neon DEV bundle gate (no deploy)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    paths:
+      - services/continuity_identity/**
+      - scripts/native_private_config.py
+      - tests/test_native_private_config.py
+      - .github/workflows/continuity-oidc-neon-dev-bundle.yml
+      - tests/test_continuity_oidc_neon_bundle_workflow.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: neon-oidc-bundle-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  bundle:
+    name: OIDC source-and-bundle test, SHA-bound
+    if: >-
+      github.repository == 'ericson-j-santos/engineering-worker-pool' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'fix/continuity-oidc-rejection-diagnostics-20261025' &&
+      github.event.pull_request.user.login == 'ericson-j-santos'
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    env:
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Checkout exact SHA without credentials
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ env.EXPECTED_SHA }}
+          persist-credentials: false
+
+      - name: Confirm source and bundler constraints
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git diff --name-only)"
+          test -z "$(git diff --cached --name-only)"
+          node -e 'if(Number(process.versions.node.split(".")[0])<22)process.exit(1)'
+          python - <<'PY'
+          import runpy
+          namespace = runpy.run_path("tests/test_continuity_oidc_neon_bundle_workflow.py")
+          tests = [value for name, value in namespace.items()
+                   if name.startswith("test_") and callable(value)]
+          assert len(tests) == 3
+          for case in tests:
+              case()
+          print("OIDC_BUNDLE_STATIC_GATE_PASSED=3")
+          PY
+
+      - name: Install exact jose from committed lock and test source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix services/continuity_identity --ignore-scripts --no-audit --no-fund
+          node --test services/continuity_identity/identity.test.mjs
+
+      - name: Bundle exact esbuild version and retest output
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes esbuild@0.25.12 services/continuity_identity/index.mjs \
+            --bundle --platform=node --target=node22 --format=esm \
+            --outfile=services/continuity_identity/dist/index.mjs
+          node --check services/continuity_identity/dist/index.mjs
+          cp services/continuity_identity/identity.test.mjs \
+            services/continuity_identity/dist/identity.test.mjs
+          node --test services/continuity_identity/dist/identity.test.mjs
+
+      - name: Verify deterministic ZIP and record digest without secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, hashlib, io, os, re, zipfile
+          from pathlib import Path
+          sha=os.environ["EXPECTED_SHA"]
+          assert re.fullmatch(r"[0-9a-f]{40}",sha)
+          app=Path("services/continuity_identity/dist/index.mjs").read_bytes()
+          assert 2000<len(app)<1000000
+          for token in (b"identity_not_admitted",b"principal_unmatched",b"EWP_OIDC_ADMISSION_REJECTED"):
+              assert token in app
+          for forbidden in (b"test-secret",b"postgresql://"):
+              assert forbidden not in app
+          memory=io.BytesIO()
+          with zipfile.ZipFile(memory,mode="w",compression=zipfile.ZIP_DEFLATED,compresslevel=9) as zf:
+              zf.writestr("index.mjs",app)
+              zf.writestr("SOURCE_COMMIT.txt",sha+"\n")
+          content=memory.getvalue()
+          assert 200<len(content)<900000
+          with zipfile.ZipFile(io.BytesIO(content)) as zf:
+              assert zf.namelist()==["index.mjs","SOURCE_COMMIT.txt"]
+              assert zf.read("index.mjs")==app
+              assert zf.read("SOURCE_COMMIT.txt").decode()==sha+"\n"
+          print("NEON_BROKER_SOURCE_SHA="+sha)
+          print("NEON_BROKER_ZIP_SHA256="+hashlib.sha256(content).hexdigest())
+          print("NEON_BROKER_ZIP_LENGTH="+str(len(content)))
+          print("NEON_BROKER_BASE64="+base64.b64encode(content).decode())
+          PY
+
+
+  smoke-dev:
+    name: Isolated Neon OIDC function read-only HTTP E2E
+    needs: bundle
+    if: >-
+      needs.bundle.result == 'success' &&
+      github.event.action == 'edited' &&
+      github.actor == 'ericson-j-santos' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'fix/continuity-oidc-rejection-diagnostics-20261025' &&
+      github.event.changes.body.from != null &&
+      contains(github.event.pull_request.body, 'OWNER_OIDC_DEV_SMOKE_20261025_ONCE') &&
+      !contains(github.event.changes.body.from, 'OWNER_OIDC_DEV_SMOKE_20261025_ONCE')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Independent PR SHA and one-shot owner readback
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner='ericson-j-santos',repo='engineering-worker-pool';
+            const pr=(await github.rest.pulls.get({
+              owner,repo,pull_number:context.payload.pull_request.number
+            })).data;
+            const payload=context.payload.pull_request;
+            if (pr.state!=='open' ||
+                pr.head.sha!==payload.head.sha ||
+                pr.head.repo?.full_name!==owner+'/'+repo ||
+                pr.head.ref!=='fix/continuity-oidc-rejection-diagnostics-20261025' ||
+                !pr.body?.includes('OWNER_OIDC_DEV_SMOKE_20261025_ONCE')) {
+              core.setFailed('OIDC_DEV_SMOKE_SOURCE_DRIFT');return;
+            }
+            core.info('OIDC_DEV_SMOKE_SHA_BOUND HEAD='+pr.head.sha);
+
+      - name: HTTPS health, unknown route and missing-credential denials
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import ssl
+          import urllib.error
+          import urllib.request
+
+          origin="https://br-gentle-river-b4yz6b44-continuityidentity.compute.c-6.us-east-2.aws.neon.tech"
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *_args, **_kwargs):
+                  return None
+          opener=urllib.request.build_opener(
+              urllib.request.ProxyHandler({}),
+              urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+              NoRedirect())
+          def request(path, *, method="GET", data=None):
+              target=origin+path
+              req=urllib.request.Request(
+                  target,data=data,method=method,
+                  headers={"Content-Type":"application/json","Accept":"application/json"})
+              try:
+                  with opener.open(req,timeout=12) as response:
+                      return response.status, response.headers.get("Content-Type",""),response.read(1025)
+              except urllib.error.HTTPError as err:
+                  with err:
+                      return err.code,err.headers.get("Content-Type",""),err.read(1025)
+          status,kind,body=request("/health")
+          assert status==200 and kind.split(";")[0].strip()=="application/json"
+          assert json.loads(body)=={"service":"continuity-identity","version":1}
+          status404,_,_=request("/path-not-installed")
+          assert status404==404
+          status401,_,_=request("/bootstrap",method="POST",
+              data=b'{"purpose":"native-continuity-runtime-v1","run_id":"1"}')
+          assert status401==401
+          print("OIDC_DEV_E2E_PASS: health=200 unknown=404 unsigned=401 no_write=true")
+          PY

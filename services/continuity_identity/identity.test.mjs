@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair, exportJWK, createLocalJWKSet, SignJWT } from "jose";
 import { ISSUER, AUDIENCE, PRINCIPALS, admittedClaims, validatedRuntimeConfiguration,
-  verifiedGithubToken, verifiedCurrentMainSha, createHandler } from "./index.mjs";
+  verifiedGithubToken, verifiedCurrentMainSha, createHandler,
+  rejectedAdmissionCategory } from "./index.mjs";
 const sha = "b".repeat(40);
 const now = Math.floor(Date.now() / 1000);
 const claims = {
@@ -281,4 +282,84 @@ test("invalid ReqSys source SHA is rejected before any GitHub request", async ()
     PRINCIPALS["reqsys-handoff-v1"], invalid, async () => { calls++; throw new Error("must not call"); }
   ), null);
   assert.equal(calls, 0);
+});
+
+
+test("diagnostic labels are bounded and never change the authoritative policy", () => {
+  const cases = [
+    { label: "accepted", candidate: claims, allow: [sha], source: null, category: "allowed" },
+    { label: "unset allowlist", candidate: claims, allow: [], source: null,
+      category: "allowlist_configuration_invalid" },
+    { label: "stale allowlist", candidate: claims, allow: ["d".repeat(40)], source: null,
+      category: "source_sha_not_allowlisted" },
+    { label: "invalid run", candidate: { ...claims, run_id: "0" }, allow: [sha],
+      source: null, category: "run_identity_invalid" },
+    { label: "bad source", candidate: { ...claims, workflow_sha: "d".repeat(40) },
+      allow: [sha], source: null, category: "source_identity_invalid" },
+    { label: "untrusted subject", candidate: { ...claims, sub: "not-a-sub" },
+      allow: [sha], source: null, category: "principal_unmatched" },
+    { label: "reusable provenance mismatch",
+      candidate: { ...claims, job_workflow_ref: claims.workflow_ref }, allow: [sha],
+      source: null, category: "job_provenance_invalid" },
+    { label: "expired", candidate: { ...claims, exp: now }, allow: [sha],
+      source: null, category: "token_time_invalid" },
+    { label: "trusted ReqSys", candidate: reqsysClaims, allow: [], source: reqsysSha,
+      category: "allowed" },
+    { label: "ReqSys source drift", candidate: reqsysClaims, allow: [], source: null,
+      category: "verified_source_sha_mismatch" },
+  ];
+  for (const sample of cases) {
+    const category = rejectedAdmissionCategory(
+      sample.candidate, sample.allow, now, sample.source);
+    assert.equal(category, sample.category, sample.label);
+    assert.equal(
+      admittedClaims(sample.candidate, sample.allow, now, sample.source),
+      category === "allowed", sample.label);
+    assert.match(category, /^[a-z_]{3,48}$/);
+    assert.ok(!category.includes(sha));
+    assert.ok(!category.includes(config.aws_secret_access_key));
+  }
+});
+
+test("real rejection remains HTTP 403 with no private access and only safe audit category", async () => {
+  const audit = [], reads = [];
+  const handler = createHandler({
+    verify: async () => claims, shas: () => ["d".repeat(40)], now: () => now,
+    observeRejection: value => audit.push(value),
+    configuration: () => { reads.push("sensitive"); return config; },
+  });
+  const result = await handler(request());
+  assert.equal(result.status, 403);
+  assert.deepEqual(await result.json(), { error: "identity_not_admitted" });
+  assert.deepEqual(audit, ["source_sha_not_allowlisted"]);
+  assert.deepEqual(reads, []);
+  assert.ok(!JSON.stringify(audit).includes(claims.sha));
+  assert.ok(!JSON.stringify(audit).includes(config.database_url));
+});
+
+test("audit failure never changes fail-closed 403 response", async () => {
+  let privateRead = false;
+  const handler = createHandler({
+    verify: async () => claims, shas: () => [], now: () => now,
+    observeRejection: () => { throw new Error("audit unavailable"); },
+    configuration: () => { privateRead = true; return config; },
+  });
+  const result = await handler(request());
+  assert.equal(result.status, 403);
+  assert.deepEqual(await result.json(), { error: "identity_not_admitted" });
+  assert.equal(privateRead, false);
+});
+
+test("unmatched signed principal still rejects without leaking its claims", async () => {
+  const categories = [];
+  const handler = createHandler({
+    verify: async () => ({ ...claims, actor: "other" }),
+    shas: () => [sha], now: () => now,
+    observeRejection: code => categories.push(code),
+    configuration: () => { throw new Error("unreachable private read"); },
+  });
+  const result = await handler(request());
+  assert.equal(result.status, 403);
+  assert.deepEqual(await result.json(), { error: "identity_not_admitted" });
+  assert.deepEqual(categories, ["principal_unmatched"]);
 });
