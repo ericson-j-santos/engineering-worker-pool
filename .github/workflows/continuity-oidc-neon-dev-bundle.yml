@@ -2,7 +2,7 @@ name: OIDC broker Neon DEV bundle gate (no deploy)
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, edited]
     paths:
       - services/continuity_identity/**
       - scripts/native_private_config.py
@@ -103,4 +103,81 @@ jobs:
           print("NEON_BROKER_ZIP_SHA256="+hashlib.sha256(content).hexdigest())
           print("NEON_BROKER_ZIP_LENGTH="+str(len(content)))
           print("NEON_BROKER_BASE64="+base64.b64encode(content).decode())
+          PY
+
+
+  smoke-dev:
+    name: Isolated Neon OIDC function read-only HTTP E2E
+    needs: bundle
+    if: >-
+      needs.bundle.result == 'success' &&
+      github.event.action == 'edited' &&
+      github.actor == 'ericson-j-santos' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'fix/continuity-oidc-rejection-diagnostics-20261025' &&
+      github.event.changes.body.from != null &&
+      contains(github.event.pull_request.body, 'OWNER_OIDC_DEV_SMOKE_20261025_ONCE') &&
+      !contains(github.event.changes.body.from, 'OWNER_OIDC_DEV_SMOKE_20261025_ONCE')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Independent PR SHA and one-shot owner readback
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner='ericson-j-santos',repo='engineering-worker-pool';
+            const pr=(await github.rest.pulls.get({
+              owner,repo,pull_number:context.payload.pull_request.number
+            })).data;
+            const payload=context.payload.pull_request;
+            if (pr.state!=='open' ||
+                pr.head.sha!==payload.head.sha ||
+                pr.head.repo?.full_name!==owner+'/'+repo ||
+                pr.head.ref!=='fix/continuity-oidc-rejection-diagnostics-20261025' ||
+                !pr.body?.includes('OWNER_OIDC_DEV_SMOKE_20261025_ONCE')) {
+              core.setFailed('OIDC_DEV_SMOKE_SOURCE_DRIFT');return;
+            }
+            core.info('OIDC_DEV_SMOKE_SHA_BOUND HEAD='+pr.head.sha);
+
+      - name: HTTPS health, unknown route and missing-credential denials
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import ssl
+          import urllib.error
+          import urllib.request
+
+          origin="https://br-gentle-river-b4yz6b44-continuityidentity.compute.c-6.us-east-2.aws.neon.tech"
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *_args, **_kwargs):
+                  return None
+          opener=urllib.request.build_opener(
+              urllib.request.ProxyHandler({}),
+              urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+              NoRedirect())
+          def request(path, *, method="GET", data=None):
+              target=origin+path
+              req=urllib.request.Request(
+                  target,data=data,method=method,
+                  headers={"Content-Type":"application/json","Accept":"application/json"})
+              try:
+                  with opener.open(req,timeout=12) as response:
+                      return response.status, response.headers.get("Content-Type",""),response.read(1025)
+              except urllib.error.HTTPError as err:
+                  with err:
+                      return err.code,err.headers.get("Content-Type",""),err.read(1025)
+          status,kind,body=request("/health")
+          assert status==200 and kind.split(";")[0].strip()=="application/json"
+          assert json.loads(body)=={"service":"continuity-identity","version":1}
+          status404,_,_=request("/path-not-installed")
+          assert status404==404
+          status401,_,_=request("/bootstrap",method="POST",
+              data=b'{"purpose":"native-continuity-runtime-v1","run_id":"1"}')
+          assert status401==401
+          print("OIDC_DEV_E2E_PASS: health=200 unknown=404 unsigned=401 no_write=true")
           PY

@@ -29,3 +29,19 @@ def test_package_verifies_bundle_identity_and_denial_semantics():
     assert "NEON_BROKER_ZIP_SHA256=" in text
     assert "NEON_BROKER_BASE64=" in text
     assert "NEON_BROKER_SOURCE_SHA=" in text
+
+
+
+def test_optional_live_dev_smoke_requires_owner_edit_and_remains_unprivileged():
+    text = F.read_text(encoding="utf-8")
+    assert "OWNER_OIDC_DEV_SMOKE_20261025_ONCE" in text
+    assert "github.event.action == 'edited'" in text
+    assert "github.actor == 'ericson-j-santos'" in text
+    assert "!contains(github.event.changes.body.from" in text
+    assert "needs.bundle.result == 'success'" in text
+    assert "OIDC_DEV_SMOKE_SOURCE_DRIFT" in text
+    assert "br-gentle-river-b4yz6b44-continuityidentity.compute.c-6.us-east-2.aws.neon.tech" in text
+    assert "OIDC_DEV_E2E_PASS: health=200 unknown=404 unsigned=401 no_write=true" in text
+    assert "contents: write" not in text
+    assert "id-token: write" not in text
+    assert "secrets." not in text
