@@ -26,7 +26,7 @@ from app.structured_code_worker import (
     StructuredBlocked, git, need, repair, sha256, validate,
 )
 from scripts.structured_acceptance import INSTRUCTION, cases
-from scripts.native_patch_stage import StageBlocked, stage_validated_patch
+from scripts.native_patch_stage import StageBlocked, stage_validated_patch, require_runner_stage
 
 
 SOURCE_FILE = "app/portfolio_bridge.py"
@@ -300,6 +300,7 @@ def execute(sha: str, correlation_id: str, patch_stage_root: Path | None = None)
             ROOT, sha, source_raw_sha256)
         staged = None
         if patch_stage_root is not None:
+            require_runner_stage(patch_stage_root, os.environ.get("RUNNER_TEMP", ""))
             staged = stage_validated_patch(
                 builder=checkout, validator=independent, state=state,
                 output_root=patch_stage_root, source_sha=sha, base_sha=sha,

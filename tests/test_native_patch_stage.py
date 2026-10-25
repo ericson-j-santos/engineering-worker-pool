@@ -6,7 +6,7 @@ import subprocess
 import zipfile
 
 import pytest
-from scripts.native_patch_stage import StageBlocked, stage_validated_patch
+from scripts.native_patch_stage import StageBlocked, stage_validated_patch, require_runner_stage
 
 
 def git(path: Path, *argv: str) -> str:
@@ -118,3 +118,23 @@ def test_output_root_link_is_rejected(tmp_path):
     args["output_root"]=alias
     with pytest.raises(StageBlocked, match="stage_root_unavailable"):
         stage_validated_patch(**args)
+
+
+def test_runner_stage_requires_precreated_child(tmp_path):
+    root = tmp_path / "runner-temp"
+    root.mkdir()
+    accepted = root / "validated-patch"
+    accepted.mkdir()
+    require_runner_stage(accepted, str(root))
+    with pytest.raises(StageBlocked, match="runner_temp_missing"):
+        require_runner_stage(accepted, "")
+    with pytest.raises(StageBlocked, match="patch_stage_outside_runner_temp"):
+        require_runner_stage(root, str(root))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    with pytest.raises(StageBlocked, match="patch_stage_outside_runner_temp"):
+        require_runner_stage(outside, str(root))
+    alias = root / "symlink"
+    alias.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(StageBlocked, match="patch_stage_outside_runner_temp"):
+        require_runner_stage(alias, str(root))

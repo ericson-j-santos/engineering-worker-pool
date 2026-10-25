@@ -55,6 +55,16 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def require_runner_stage(output_root: Path, runner_temp: str) -> None:
+    """An explicit, pre-created direct child of the trusted runner temp only."""
+    need(bool(runner_temp), "runner_temp_missing")
+    trusted = Path(runner_temp)
+    need(trusted.is_dir() and not trusted.is_symlink(), "runner_temp_invalid")
+    need(output_root.is_dir() and not output_root.is_symlink() and
+         output_root.resolve().parent == trusted.resolve(),
+         "patch_stage_outside_runner_temp")
+
+
 def stage_validated_patch(*, builder: Path, validator: Path, state: Path,
                           output_root: Path, source_sha: str, base_sha: str,
                           produced_sha: str, patch_sha256: str,
