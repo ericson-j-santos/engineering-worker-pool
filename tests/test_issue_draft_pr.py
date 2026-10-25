@@ -159,6 +159,7 @@ class FakeOfficialGitHub:
         self.branch_sha = None
         self.candidate = None
         self.pr = None
+        self.changed_files = (gate.PATH,)
         self.effects = []
 
     def get_issue(self, number):
@@ -177,11 +178,16 @@ class FakeOfficialGitHub:
         return None
 
     def get_source(self, ref):
-        if ref == self.binding.base_sha or self.branch_sha == self.binding.base_sha:
+        if ref == self.binding.base_sha:
             return self.source, "1" * 40
-        if ref == self.binding.branch and self.candidate is not None:
-            return self.candidate, "3" * 40
+        if ref == self.binding.branch and self.branch_sha:
+            return (self.candidate if self.candidate is not None else self.source,
+                    "3" * 40 if self.candidate is not None else "1" * 40)
         raise AssertionError("unexpected source request")
+
+    def changed_paths(self, base_sha, head_sha):
+        assert base_sha == self.binding.base_sha and head_sha == self.branch_sha
+        return self.changed_files
 
     def create_branch(self, name, sha):
         assert name == self.binding.branch and sha == self.binding.base_sha
@@ -213,13 +219,13 @@ def test_publish_draft_real_policy_idempotency(source_pair):
     audit = verified(binding, before, after)
     api = FakeOfficialGitHub(binding, before)
     first = gate.publish_draft(api, binding, before, after, audit,
-                               now=NOW, observed_at=NOW.isoformat())
+                               now=NOW, observed_at=NOW.isoformat(), regression_checker=checker)
     assert first["result"] == "DRAFT_PR_VERIFIED"
-    assert first["merge_performed"] is False
+    assert first["merge_performed"] is False and first["replayed"] is False
     assert api.effects == ["create_branch", "replace_source", "create_pr"]
     replay = gate.publish_draft(api, binding, before, after, audit,
-                                now=NOW, observed_at=NOW.isoformat())
-    assert replay["pr_number"] == 46
+                                now=NOW, observed_at=NOW.isoformat(), regression_checker=checker)
+    assert replay["pr_number"] == 46 and replay["replayed"] is True
     assert api.effects == ["create_branch", "replace_source", "create_pr"]
     assert gate.MARKER in api.pr["body"]
 
@@ -230,9 +236,9 @@ def test_branch_collision_does_not_overwrite(source_pair):
     api = FakeOfficialGitHub(binding, before)
     api.branch_sha = "e" * 40
     audit = verified(binding, before, after)
-    with pytest.raises((gate.HandoffBlocked, AssertionError)):
+    with pytest.raises(gate.HandoffBlocked, match="branch_collision_or_divergence"):
         gate.publish_draft(api, binding, before, after, audit,
-                           now=NOW, observed_at=NOW.isoformat())
+                           now=NOW, observed_at=NOW.isoformat(), regression_checker=checker)
     assert api.effects == []
 
 
@@ -250,7 +256,7 @@ def test_authorization_or_main_drift_blocks_publication(source_pair):
             api.comment["body"] = "/local-agent revoke"
         with pytest.raises(gate.HandoffBlocked):
             gate.publish_draft(api, binding, before, after, audit,
-                               now=NOW, observed_at=NOW.isoformat())
+                               now=NOW, observed_at=NOW.isoformat(), regression_checker=checker)
         assert api.effects == []
 
 
@@ -261,6 +267,49 @@ def test_recovery_after_branch_create_before_write(source_pair):
     api = FakeOfficialGitHub(binding, before)
     api.create_branch(binding.branch, binding.base_sha)  # prior interrupted attempt
     out = gate.publish_draft(api, binding, before, after, audit,
-                             now=NOW, observed_at=NOW.isoformat())
+                             now=NOW, observed_at=NOW.isoformat(), regression_checker=checker)
     assert out["result"] == "DRAFT_PR_VERIFIED"
     assert api.effects == ["create_branch", "replace_source", "create_pr"]
+
+
+def test_forged_model_report_cannot_publish(source_pair):
+    before, after = source_pair
+    binding = admitted()
+    correct = verified(binding, before, after)
+    for forged in (
+        {**correct, "regressions_passed": 999},
+        {**correct, "model_digest": "f" * 64},
+        {**correct, "source_sha256": "f" * 64},
+    ):
+        api = FakeOfficialGitHub(binding, before)
+        with pytest.raises(gate.HandoffBlocked):
+            gate.publish_draft(api, binding, before, after, forged,
+                               now=NOW, observed_at=NOW.isoformat(),
+                               regression_checker=checker)
+        assert api.effects == []
+
+
+def test_external_diff_exceeds_scope_blocks_pr(source_pair):
+    before, after = source_pair
+    binding = admitted()
+    audit = verified(binding, before, after)
+    api = FakeOfficialGitHub(binding, before)
+    api.changed_files = (gate.PATH, "tests/test_portfolio_bridge.py")
+    with pytest.raises(gate.HandoffBlocked, match="draft_branch_diff_scope_invalid"):
+        gate.publish_draft(api, binding, before, after, audit,
+                           now=NOW, observed_at=NOW.isoformat(),
+                           regression_checker=checker)
+    assert api.effects == ["create_branch", "replace_source"]
+    assert api.pr is None  # Never publish a PR with unrelated files.
+
+
+def test_unverified_regression_never_writes(source_pair):
+    before, after = source_pair
+    binding = admitted()
+    audit = verified(binding, before, after)
+    api = FakeOfficialGitHub(binding, before)
+    with pytest.raises(gate.HandoffBlocked, match="independent_regression_unproved"):
+        gate.publish_draft(api, binding, before, after, audit,
+                           now=NOW, observed_at=NOW.isoformat(),
+                           regression_checker=lambda *_: {"independent_checkout": False})
+    assert api.effects == []
