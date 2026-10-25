@@ -132,11 +132,31 @@ class WorkerPoolStore:
 
     def _db(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.db_path, timeout=10, isolation_level=None)
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA journal_mode=WAL")
-        db.execute("PRAGMA foreign_keys=ON")
-        db.execute("PRAGMA busy_timeout=10000")
-        return db
+        try:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute("PRAGMA foreign_keys=ON")
+            db.execute("PRAGMA busy_timeout=10000")
+            return db
+        except BaseException:
+            # Failed SQLite configuration must not strand a Windows handle.
+            db.close()
+            raise
+
+    @contextmanager
+    def _read_db(self) -> Iterator[sqlite3.Connection]:
+        """Preserve SQLite transaction semantics and close reader OS handles.
+
+        Using a sqlite3.Connection with 'with' commits/rolls back but does not
+        call close(), causing nondeterministic Windows scratch-file deletion.
+        Writer _tx() and initialization retain their existing explicit close.
+        """
+        db = self._db()
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
@@ -332,7 +352,7 @@ class WorkerPoolStore:
         return dict(row)
 
     def fenced_cutover_status(self) -> dict[str, Any]:
-        with self._db() as db:
+        with self._read_db() as db:
             row = db.execute(
                 """SELECT enabled,enabled_at,enabled_by_correlation_id
                    FROM pool_control WHERE control_key='fenced_cutover'"""
@@ -395,7 +415,7 @@ class WorkerPoolStore:
         return self.get_worker(worker_id)
 
     def get_worker(self, worker_id: str) -> dict[str, Any]:
-        with self._db() as db:
+        with self._read_db() as db:
             row = db.execute("SELECT * FROM workers WHERE worker_id=?", (worker_id,)).fetchone()
         data = self._d(row)
         data["gateway_ok"], data["state_validated"] = bool(data["gateway_ok"]), bool(data["state_validated"])
@@ -438,7 +458,7 @@ class WorkerPoolStore:
 
     def get_repository(self, repository: str) -> dict[str, Any]:
         repository = self._validate_repository(repository)
-        with self._db() as db:
+        with self._read_db() as db:
             row = db.execute(
                 "SELECT * FROM repository_lanes WHERE repository=?", (repository,)
             ).fetchone()
@@ -466,7 +486,7 @@ class WorkerPoolStore:
 
     def worker_affinities(self, worker_id: str) -> list[str]:
         self.get_worker(worker_id)
-        with self._db() as db:
+        with self._read_db() as db:
             rows = db.execute(
                 """SELECT repository FROM worker_repository_affinity
                    WHERE worker_id=? ORDER BY repository""",
@@ -1143,7 +1163,7 @@ class WorkerPoolStore:
         return self._d(created), True
 
     def get_latest_checkpoint(self, task_id: str) -> dict[str, Any] | None:
-        with self._db() as db:
+        with self._read_db() as db:
             if not db.execute("SELECT 1 FROM tasks WHERE task_id=?", (task_id,)).fetchone():
                 raise NotFoundError(f"task não encontrada: {task_id}")
             row = db.execute(
@@ -1165,7 +1185,7 @@ class WorkerPoolStore:
 
     def get_recovery_context(self, task_id: str) -> dict[str, Any]:
         latest_checkpoint = self.get_latest_checkpoint(task_id)
-        with self._db() as db:
+        with self._read_db() as db:
             effects = db.execute(
                 """SELECT checkpoint.*,
                           reconciliation.outcome AS reconciliation_outcome,
@@ -1287,11 +1307,11 @@ class WorkerPoolStore:
             return self._recover(db)
 
     def get_task(self, task_id: str) -> dict[str, Any]:
-        with self._db() as db:
+        with self._read_db() as db:
             return self._d(db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone())
 
     def list_quarantine(self) -> list[dict[str, Any]]:
-        with self._db() as db:
+        with self._read_db() as db:
             return [dict(r) for r in db.execute("""SELECT task_id,idempotency_key,
               correlation_id,attempt_count,reason,quarantined_at
               FROM quarantine ORDER BY id DESC""").fetchall()]
@@ -1300,7 +1320,7 @@ class WorkerPoolStore:
         self.recover_expired_leases()
         self.recover_stalled_tasks()
         now = self.clock()
-        with self._db() as db:
+        with self._read_db() as db:
             workers = db.execute("SELECT * FROM workers ORDER BY host,worker_id").fetchall()
             tasks = db.execute("""SELECT * FROM tasks WHERE state<>'completed'
               ORDER BY priority,created_at,task_id""").fetchall()
