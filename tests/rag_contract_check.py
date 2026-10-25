@@ -386,7 +386,10 @@ def test_explicit_model_decline_never_becomes_supported():
     model = SyntheticPlanner(
         selections=[{"decision": "insufficient", "citation_index": -1}],
     )
-    result = rag.AgentCoreResearchBridge(reader, model).research(task())
+    # A single-source scenario guarantees the only expected plan is consumed.
+    result = rag.AgentCoreResearchBridge(reader, model).research(
+        task(source_paths=(DOC,))
+    )
     assert reader.file_reads == [DOC]
     assert model.observed_snippets
     assert result["state"] == "insufficient_evidence"
