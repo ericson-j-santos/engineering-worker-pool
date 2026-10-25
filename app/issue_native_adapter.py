@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from app.issue_rag_handoff import BoundIssueRAG, bind_issue_rag
 from app.issue_draft_pr import (
     FUNCTION, MODEL_DIGEST_PREFIX, PATH, PROFILE, REPO, IssueBinding,
     HandoffBlocked, require, sha256, trusted_task,
@@ -42,7 +43,9 @@ class IssueQwenNativeAdapter:
     def __init__(self, *, binding: IssueBinding, task_id: str, before: bytes,
                  state_directory: Path, propose: Callable[[dict, str], str],
                  regression_runner: Callable[[Path], Mapping[str, Any]],
-                 require_native_model: bool = True):
+                 require_native_model: bool = True,
+                 rag_receipt: Mapping[str, Any] | None = None,
+                 rag_source_reader: Callable[[str, str], bytes] | None = None):
         require(type(binding) is IssueBinding
                 and type(task_id) is str
                 and task_id.startswith("cwp-") and len(task_id) == 28
@@ -55,6 +58,9 @@ class IssueQwenNativeAdapter:
                     "issue_native_model_required")
         require(callable(propose) and callable(regression_runner),
                 "issue_native_handlers_missing")
+        require((rag_receipt is None and rag_source_reader is None) or
+                (type(rag_receipt) is dict and callable(rag_source_reader)
+                 and require_native_model), "issue_rag_opt_in_invalid")
         self.binding = binding
         self.task_id = task_id
         self.before = before
@@ -62,6 +68,8 @@ class IssueQwenNativeAdapter:
         self.propose = propose
         self.regression_runner = regression_runner
         self.require_native_model = require_native_model
+        self.rag_receipt = rag_receipt
+        self.rag_source_reader = rag_source_reader
 
     def _manifest(self, ctx: AdapterContext) -> TaskManifest:
         manifest = ctx.manifest
@@ -94,7 +102,21 @@ class IssueQwenNativeAdapter:
             require(original_report["total"] == 42
                     and original_report["passed"] < 42,
                     "issue_native_no_failing_baseline")
-            result = repair(root, self.state_directory, task, self.propose)
+            context: BoundIssueRAG | None = None
+            if self.rag_receipt is not None:
+                require(self.rag_source_reader is not None,
+                        "issue_rag_reader_unavailable")
+                context = bind_issue_rag(
+                    self.binding, self.rag_receipt, self.rag_source_reader,
+                )
+                require(getattr(self.propose, "issue_rag_context", None) is None,
+                        "issue_rag_context_leak")
+                self.propose.issue_rag_context = context
+            try:
+                result = repair(root, self.state_directory, task, self.propose)
+            finally:
+                if context is not None:
+                    self.propose.issue_rag_context = None
             require(result.get("result") == "STRUCTURED_CODE_REPAIRED"
                     and result.get("base_sha") == self.binding.base_sha
                     and result.get("produced_sha") != self.binding.base_sha
@@ -110,6 +132,9 @@ class IssueQwenNativeAdapter:
                         and type(getattr(self.propose, "model_digest", None)) is str
                         and self.propose.model_digest.startswith(MODEL_DIGEST_PREFIX),
                         "issue_native_model_not_attested")
+                if context is not None:
+                    require(self.propose.model_digest == context.model_digest,
+                            "issue_rag_model_digest_drift")
             return result
 
         def independently_validate() -> dict[str, Any]:
@@ -166,6 +191,14 @@ class IssueQwenNativeAdapter:
                 and produced_sha != self.binding.base_sha
                 and manifest.before_sha256[PATH] == sha256(self._workspace_file(ctx)),
                 "issue_native_validator_source_drift")
+        # The independently materialized Validator must re-read the same
+        # citation at the issue's original SHA. A Builder receipt alone is not
+        # authority, and no model call is made during validation.
+        if self.rag_receipt is not None:
+            require(self.rag_source_reader is not None,
+                    "issue_rag_reader_unavailable")
+            bind_issue_rag(self.binding, self.rag_receipt,
+                           self.rag_source_reader)
         observed = ctx.invoke("issue.validate")
         require(type(observed) is dict and observed.get("case_total") == 42
                 and type(observed.get("source_sha256")) is str,
