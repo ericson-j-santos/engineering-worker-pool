@@ -75,6 +75,20 @@ class GitHubObjectCAS:
                 "cas_key_invalid")
         return "evidence/cas/" + key, match.group(2)
 
+    @classmethod
+    def _valid_branch_object(cls, file: Any) -> bool:
+        if (type(file) is not dict or file.get("status") != "added"
+                or type(file.get("filename")) is not str
+                or not file["filename"].startswith("evidence/cas/")):
+            return False
+        try:
+            cls._checked_key(
+                CAS_BUCKET, file["filename"].removeprefix("evidence/cas/")
+            )
+        except HandoffBlocked:
+            return False
+        return True
+
     def _authorized(self) -> None:
         now = datetime.now(timezone.utc)
         main = self.port.get_branch("main")
@@ -133,13 +147,10 @@ class GitHubObjectCAS:
                 and compare["total_commits"] == compare["ahead_by"]
                 and type(compare.get("files")) is list
                 and len(compare["files"]) == compare["ahead_by"]
-                and all(type(file) is dict
-                        and file.get("status") == "added"
-                        and type(file.get("filename")) is str
-                        and file["filename"].startswith("evidence/cas/")
-                        and KEY.fullmatch(
-                            file["filename"].removeprefix("evidence/cas/")
-                        ) is not None for file in compare["files"]),
+                and len({f.get("filename") for f in compare["files"]
+                         if type(f) is dict}) == compare["ahead_by"]
+                and all(self._valid_branch_object(file)
+                        for file in compare["files"]),
                 "cas_branch_scope_invalid")
         return compare["ahead_by"]
 

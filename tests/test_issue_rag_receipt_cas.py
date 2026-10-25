@@ -411,3 +411,26 @@ def test_concurrent_branch_advance_fails_closed_even_when_object_is_readable():
     # The object may have reached the store, but it is NOT certified as
     # canonical. No automatic retry, branch rewrite or duplicate publication.
     assert state.write_count == 2 and state.branch_count == 1
+
+
+@pytest.mark.parametrize("bad_suffix,folder", [
+    ("artifact", "issue-rag-v1"),
+    ("context", "git-bundle-v1"),
+    ("context", "preflight-v1"),
+])
+def test_preexisting_branch_rejects_semantically_invalid_object_keys(
+    bad_suffix, folder,
+):
+    cas, state = setup()
+    cas.preflight()
+    bad_raw = b"unapproved document type"
+    bad_sha = hashlib.sha256(bad_raw).hexdigest()
+    state.objects[
+        "evidence/cas/qwen7b-cas-v1/"
+        + folder + "/sha256/" + bad_sha[:2] + "/"
+        + bad_sha + "." + bad_suffix
+    ] = bad_raw
+    state.branch_sha = "c" * 40
+    with pytest.raises(HandoffBlocked, match="cas_branch_scope_invalid"):
+        publish(cas)
+    assert state.write_count == 1
