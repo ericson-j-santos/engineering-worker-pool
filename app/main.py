@@ -41,6 +41,15 @@ FENCED_CUTOVER_ATTESTED = (
     os.getenv("CODEX_WORKER_POOL_FENCED_CUTOVER_ATTESTED", "").strip() == "1"
 )
 
+# Explicit DEV-only opt-in. An invalid profile fails BEFORE any DB connection
+# or legacy SQLite construction; no fallback to an external provider.
+AUTHORITY_PROFILE = os.getenv("CODEX_WORKER_POOL_AUTHORITY_PROFILE", "").strip()
+if AUTHORITY_PROFILE:
+    from app.native_free_dev import validate_native_free_dev
+    NATIVE_FREE_PREFLIGHT = validate_native_free_dev(os.environ)
+else:
+    NATIVE_FREE_PREFLIGHT = None
+
 store_options = {
     "heartbeat_ttl_seconds": HEARTBEAT_TTL_SECONDS,
     "default_lease_seconds": LEASE_SECONDS,
