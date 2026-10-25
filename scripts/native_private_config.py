@@ -264,7 +264,9 @@ def _claim_shape_diagnostic(value: str) -> dict:
             "job_workflow_sha_present": "job_workflow_sha" in payload,
             "job_workflow_ref_matches_workflow": payload.get("job_workflow_ref") == expected["workflow_ref"],
             "job_workflow_sha_matches_source": payload.get("job_workflow_sha") == expected["sha"],
-            "audience_is_singleton_expected": payload.get("aud") == [expected["aud"]],
+            # GitHub's requested single audience is an exact JWT string here.
+            # This field is diagnostic only, NEVER a signature/admission proof.
+            "audience_is_exact_expected": payload.get("aud") == expected["aud"],
         }
         if all(type(payload.get(k)) is int for k in ("iat", "nbf", "exp")):
             result.update({
