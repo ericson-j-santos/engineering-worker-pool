@@ -173,3 +173,14 @@ def test_pr_identity_and_draft_from_github(monkeypatch):
     api = port_for(monkeypatch, lambda _: response(200, [bad]))
     with pytest.raises(HandoffBlocked, match="github_pr_identity_invalid"):
         api.find_pr(BRANCH)
+
+
+def test_nested_branch_name_is_percent_encoded_and_readable(monkeypatch):
+    seen = []
+    def handler(request):
+        seen.append(request.url.raw_path)
+        assert b"agent%2Fqwen7b-issue-8-" in request.url.raw_path
+        return response(200, {"name": BRANCH, "commit": {"sha": HEAD}})
+    api = port_for(monkeypatch, handler)
+    assert api.get_branch(BRANCH)["commit"]["sha"] == HEAD
+    assert len(seen) == 1
