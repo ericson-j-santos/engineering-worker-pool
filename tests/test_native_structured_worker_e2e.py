@@ -286,3 +286,73 @@ def test_regression_environment_only_contains_explicit_nonsecret_fields(monkeypa
     assert env["TEMP"] == str(tmp_path.resolve())
     assert env["TMP"] == str(tmp_path.resolve())
     assert env["PYTHONPATH"] == ""
+
+
+def test_preflight_collects_real_portfolio_modules_before_model(tmp_path):
+    """Collect actual regression tests in a separate checkout (no model needed)."""
+    source_repo = Path(__file__).resolve().parents[1]
+    independent = tmp_path / "preflight-copy"
+    physical.git(tmp_path, "clone", "--no-hardlinks", str(source_repo), str(independent))
+    report = physical.preflight_bridge_regressions(independent, tmp_path)
+    assert report["phase"] == "collection_preflight"
+    assert report["collected_count"] >= 10
+
+
+def test_preflight_fails_closed_when_pytest_missing(monkeypatch, tmp_path):
+    """Simulate the precise native Python failure without leaking its stderr."""
+    def missing(argv, **kwargs):
+        assert argv[:5] == [
+            physical.sys.executable, "-m", "pytest", "-o", "addopts="
+        ]
+        assert "--collect-only" in argv
+        return physical.subprocess.CompletedProcess(
+            argv, 1, stdout="", stderr="python.exe: No module named pytest"
+        )
+    monkeypatch.setattr(physical.subprocess, "run", missing)
+    with pytest.raises(physical.BridgeRegressionFailed) as failure:
+        physical.preflight_bridge_regressions(tmp_path, tmp_path)
+    detail = failure.value.diagnosis
+    assert detail == {
+        "phase": "collection_preflight",
+        "category": "pytest_unavailable",
+        "exit_code": 1,
+        "collected_count": 0,
+        "output_within_limit": True,
+    }
+    assert "python.exe" not in str(detail)
+    assert "stderr" not in str(detail)
+
+
+def test_preflight_rejects_success_without_collected_tests(monkeypatch, tmp_path):
+    """A zero exit code is not proof of test collection."""
+    def empty(argv, **kwargs):
+        return physical.subprocess.CompletedProcess(
+            argv, 0, stdout="no collection evidence", stderr=""
+        )
+    monkeypatch.setattr(physical.subprocess, "run", empty)
+    with pytest.raises(physical.BridgeRegressionFailed) as failure:
+        physical.preflight_bridge_regressions(tmp_path, tmp_path)
+    assert failure.value.diagnosis["category"] == "process_error"
+    assert failure.value.diagnosis["collected_count"] == 0
+
+
+def test_missing_pytest_is_distinguished_from_code_regression(monkeypatch, tmp_path):
+    def missing(argv, **kwargs):
+        return physical.subprocess.CompletedProcess(
+            argv, 1, stdout="", stderr="python.exe: No module named 'pytest'"
+        )
+    monkeypatch.setattr(physical.subprocess, "run", missing)
+    with pytest.raises(physical.BridgeRegressionFailed) as failure:
+        physical.run_bridge_regressions(tmp_path, tmp_path)
+    assert failure.value.diagnosis["category"] == "pytest_unavailable"
+    assert failure.value.diagnosis["passed_count"] == 0
+
+
+def test_preflight_must_run_before_model_inference():
+    source = (Path(__file__).resolve().parents[1] /
+              "scripts/native_structured_worker_e2e.py").read_text(encoding="utf-8")
+    assert source.index("preflight_bridge_regressions(checkout, sandbox)") < (
+        source.index("provider = NativeStructuredOllama()")
+    )
+    assert "PIP_INSTALL" not in source
+    assert "docker run" not in source.lower()

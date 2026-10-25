@@ -91,6 +91,26 @@ class BridgeRegressionFailed(StructuredBlocked):
         self.diagnosis = diagnosis
 
 
+
+def pytest_failure_category(output: str, *, exit_code: int,
+                            summary_present: bool, bounded: bool) -> str:
+    """Classify known interpreter/collection errors without exposing raw text."""
+    if exit_code == 0 and summary_present and bounded:
+        return "passed"
+    lowered = output.lower()
+    if ("no module named pytest" in lowered
+            or "no module named 'pytest'" in lowered
+            or 'no module named "pytest"' in lowered):
+        return "pytest_unavailable"
+    if any(fragment in lowered for fragment in (
+            "no module named ", "modulenotfounderror", "importerror",
+            "error collecting")):
+        return "import_or_collection"
+    if "assertionerror" in lowered or re.search(r"\b[0-9]+ failed\b", lowered):
+        return "assertion"
+    return "process_error"
+
+
 def bridge_regression_environment(sandbox: Path) -> dict[str, str]:
     """Small portable environment, no tokens, no user profile, no proxy."""
     need(sandbox.is_dir() and not sandbox.is_symlink(),
@@ -118,6 +138,46 @@ def bridge_regression_environment(sandbox: Path) -> dict[str, str]:
     return env
 
 
+
+def preflight_bridge_regressions(checkout: Path, sandbox: Path) -> dict:
+    """Collect the two real test modules before expensive model inference.
+
+    No service, installation, credential, remote call, or user code mutation.
+    Test stdout/stderr stay private; errors have a fixed sanitized schema.
+    """
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-m", "pytest", "-o", "addopts=",
+             "--collect-only", "-q",
+             "tests/test_portfolio_bridge.py",
+             "tests/test_portfolio_admission_revalidation.py"],
+            cwd=checkout, capture_output=True, text=True, timeout=45,
+            check=False, env=bridge_regression_environment(sandbox),
+        )
+    except subprocess.TimeoutExpired:
+        raise StructuredBlocked("bridge_preflight_timeout") from None
+    except OSError:
+        raise StructuredBlocked("bridge_preflight_process_unavailable") from None
+    output = completed.stdout + "\n" + completed.stderr
+    bounded = len(output) <= 131072
+    text = output[:131072]
+    collected = re.search(r"\b([1-9][0-9]*) tests? collected\b", text)
+    category = pytest_failure_category(
+        text, exit_code=completed.returncode,
+        summary_present=bool(collected), bounded=bounded,
+    )
+    if completed.returncode != 0 or not collected or not bounded:
+        raise BridgeRegressionFailed({
+            "phase": "collection_preflight",
+            "category": category,
+            "exit_code": completed.returncode,
+            "collected_count": int(collected.group(1)) if collected else 0,
+            "output_within_limit": bounded,
+        })
+    return {"phase": "collection_preflight",
+            "collected_count": int(collected.group(1))}
+
+
 def run_bridge_regressions(independent: Path, sandbox: Path) -> dict:
     """Run existing tests with a sterile but *functional* Windows environment."""
     try:
@@ -143,11 +203,10 @@ def run_bridge_regressions(independent: Path, sandbox: Path) -> dict:
     summary = re.search(r"\b([1-9][0-9]*) passed\b", text)
     failures = re.search(r"\b([0-9]+) failed\b", text)
     errors = re.search(r"\b([0-9]+) errors?\b", text)
-    category = ("passed" if completed.returncode == 0 and summary and bounded else
-                "import_or_collection" if ("ModuleNotFoundError" in text
-                     or "ImportError" in text or "ERROR collecting" in text) else
-                "assertion" if ("AssertionError" in text or failures) else
-                "process_error")
+    category = pytest_failure_category(
+        text, exit_code=completed.returncode,
+        summary_present=bool(summary), bounded=bounded,
+    )
     diagnosis = {
         "exit_code": completed.returncode,
         "passed_count": int(summary.group(1)) if summary else 0,
@@ -176,6 +235,7 @@ def execute(sha: str, correlation_id: str) -> dict:
         git(checkout, "switch", "-c", "worker/native-qwen7b")
         need(git(checkout, "rev-parse", "HEAD") == sha, "builder_source_sha_changed")
 
+        regression_preflight = preflight_bridge_regressions(checkout, sandbox)
         before = (checkout / SOURCE_FILE).read_bytes()
         task = {
             "task_id": correlation_id,
@@ -236,6 +296,7 @@ def execute(sha: str, correlation_id: str) -> dict:
             "model_calls": result["model_calls"],
             "independent_validator": True, "replay_no_model_calls": True,
             "existing_bridge_regressions": True,
+            "regression_preflight": regression_preflight,
             "regression_validation": regression_evidence,
             "produced_sha": result["produced_sha"],
             "patch_sha256": result["patch_sha256"],
