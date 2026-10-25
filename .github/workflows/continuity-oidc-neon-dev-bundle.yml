@@ -49,10 +49,10 @@ jobs:
           namespace = runpy.run_path("tests/test_continuity_oidc_neon_bundle_workflow.py")
           tests = [value for name, value in namespace.items()
                    if name.startswith("test_") and callable(value)]
-          assert len(tests) == 2
+          assert len(tests) == 3
           for case in tests:
               case()
-          print("OIDC_BUNDLE_STATIC_GATE_PASSED=2")
+          print("OIDC_BUNDLE_STATIC_GATE_PASSED=3")
           PY
 
       - name: Install exact jose from committed lock and test source
