@@ -83,6 +83,42 @@ export function admittedClaims(
       payload.exp - payload.iat > 600 || payload.exp <= payload.iat) return false;
   return true;
 }
+// Diagnostic only. This function is NEVER an admission authority and must
+// return only fixed category labels, not JWT claims, SHAs or credential values.
+// admittedClaims remains the sole allow/deny decision above credential reads.
+export function rejectedAdmissionCategory(
+  payload, allowedShas, nowSeconds, verifiedSourceSha = null
+) {
+  const matched = principalForClaims(payload);
+  if (!matched) return "principal_unmatched";
+  const [, principal] = matched;
+  if (!UINT.test(String(payload.run_id)) || !UINT.test(String(payload.run_attempt)))
+    return "run_identity_invalid";
+  if (!HEAD.test(payload.sha || "") || payload.workflow_sha !== payload.sha)
+    return "source_identity_invalid";
+  if (principal.sha_policy === "environment_allowlist") {
+    if (!Array.isArray(allowedShas) || allowedShas.length < 1 ||
+        allowedShas.length > 8 ||
+        !allowedShas.every(s => typeof s === "string" && HEAD.test(s)) ||
+        new Set(allowedShas).size !== allowedShas.length)
+      return "allowlist_configuration_invalid";
+    if (!allowedShas.includes(payload.sha)) return "source_sha_not_allowlisted";
+  } else if (principal.sha_policy === "verified_current_main") {
+    if (verifiedSourceSha !== payload.sha) return "verified_source_sha_mismatch";
+  } else return "source_policy_unknown";
+  const hasJobProvenance = payload.job_workflow_ref !== undefined ||
+    payload.job_workflow_sha !== undefined;
+  if (hasJobProvenance && (payload.job_workflow_ref !== principal.workflow_ref ||
+      payload.job_workflow_sha !== payload.sha)) return "job_provenance_invalid";
+  if (![payload.iat, payload.nbf, payload.exp].every(Number.isSafeInteger) ||
+      payload.iat > nowSeconds || payload.nbf > nowSeconds ||
+      payload.exp <= nowSeconds || nowSeconds - payload.iat > 600 ||
+      payload.exp - payload.iat > 600 || payload.exp <= payload.iat)
+    return "token_time_invalid";
+  return admittedClaims(payload, allowedShas, nowSeconds, verifiedSourceSha)
+    ? "allowed" : "unclassified";
+}
+
 export function validatedRuntimeConfiguration(raw) {
   const value = JSON.parse(raw);
   const keys = ["authority_id", "schema", "database_url", "aws_access_key_id",
@@ -174,7 +210,9 @@ export function createHandler({ verify = verifiedGithubToken,
   shas = () => (process.env.EWP_ALLOWED_SHAS || "").split(",").filter(Boolean),
   verifySource = verifiedCurrentMainSha,
   configuration = () => validatedRuntimeConfiguration(process.env.EWP_RUNTIME_CONFIG_JSON || ""),
-  now = () => Date.now() / 1000 } = {}) {
+  now = () => Date.now() / 1000,
+  observeRejection = code => console.warn("EWP_OIDC_ADMISSION_REJECTED code=" + code)
+} = {}) {
   return async request => {
     const url = new URL(request.url);
     if (url.pathname === "/health" && request.method === "GET" && !url.search) {
@@ -189,15 +227,26 @@ export function createHandler({ verify = verifiedGithubToken,
     try { payload = await verify(auth.slice(7)); }
     catch { return response(401, { error: "unauthorized" }); }
     const matched = principalForClaims(payload);
-    if (!matched) return response(403, { error: "identity_not_admitted" });
+    if (!matched) {
+      try { observeRejection("principal_unmatched"); } catch {}
+      return response(403, { error: "identity_not_admitted" });
+    }
     const [, principal] = matched;
     let verifiedSourceSha = null;
     if (principal.sha_policy === "verified_current_main") {
       try { verifiedSourceSha = await verifySource(principal, payload); }
       catch { return response(503, { error: "source_verification_unavailable" }); }
     }
-    if (!admittedClaims(payload, shas(), now(), verifiedSourceSha))
+    const allowed = shas();
+    const observedAt = now();
+    if (!admittedClaims(payload, allowed, observedAt, verifiedSourceSha)) {
+      try {
+        observeRejection(rejectedAdmissionCategory(
+          payload, allowed, observedAt, verifiedSourceSha
+        ));
+      } catch {} // Telemetry failure must never change the refusal response.
       return response(403, { error: "identity_not_admitted" });
+    }
     try {
       const body = await boundedJson(request);
       if (!body || Object.keys(body).sort().join() !== "purpose,run_id" ||

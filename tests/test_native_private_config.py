@@ -119,3 +119,48 @@ def test_identity_expectation_is_closed_and_profile_specific(monkeypatch):
     monkeypatch.setenv("EWP_IDENTITY_PROFILE", "unknown")
     with pytest.raises(PrivateConfigurationError, match="identity_profile_invalid"):
         identity_expectation()
+
+
+def test_oidc_claim_shape_readback_uses_exact_string_audience(monkeypatch):
+    """An unsigned diagnostic fixture is NEVER evidence of OIDC authorization."""
+    import base64
+    import json
+    from scripts.native_private_config import (
+        _claim_shape_diagnostic, identity_expectation,
+    )
+
+    monkeypatch.delenv("EWP_IDENTITY_PROFILE", raising=False)
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setenv("GITHUB_RUN_ID", "12345")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    profile = identity_expectation()
+    audience = "urn:engineering-worker-pool:continuity:v1"
+    payload = {
+        "iss": "https://token.actions.githubusercontent.com",
+        "aud": audience,
+        **profile,
+        "repository_owner": "ericson-j-santos",
+        "repository_owner_id": "60470500",
+        "ref_type": "branch",
+        "runner_environment": "github-hosted",
+        "sha": "a" * 40,
+        "workflow_sha": "a" * 40,
+        "run_id": "12345",
+        "run_attempt": "1",
+    }
+
+    def diagnostic(data):
+        encoded = base64.urlsafe_b64encode(
+            json.dumps(data).encode("utf-8")).decode("ascii").rstrip("=")
+        return _claim_shape_diagnostic("not-signed." + encoded + ".not-signed")
+
+    good = diagnostic(payload)
+    assert good["mismatch_names"] == []
+    assert good["audience_is_exact_expected"] is True
+    assert good["authorization_evidence"] is False
+    assert "audience_is_singleton_expected" not in good
+
+    wrong = diagnostic({**payload, "aud": [audience]})
+    assert "aud" in wrong["mismatch_names"]
+    assert wrong["audience_is_exact_expected"] is False
+    assert wrong["authorization_evidence"] is False
