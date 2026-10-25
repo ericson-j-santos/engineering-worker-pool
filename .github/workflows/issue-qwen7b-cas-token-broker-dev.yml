@@ -1,0 +1,212 @@
+name: Qwen7B issue-scoped GitHub CAS broker (DEV)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qwen7b-cas-owner-20261025
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    name: CAS broker contract
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'feat/issue-qwen7b-native-github-cas-writer-20261025'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Positive, negative and replay broker tests
+        run: node --test tests/test_issue_cas_token_broker.cjs
+
+  admission:
+    name: CAS owner SHA admission
+    needs: contract
+    if: >-
+      needs.contract.result == 'success' &&
+      github.event.action == 'edited' &&
+      github.actor == 'ericson-j-santos' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'feat/issue-qwen7b-native-github-cas-writer-20261025' &&
+      github.event.pull_request.draft == true &&
+      contains(github.event.pull_request.body, 'ISSUE_CAS_BROKER_OWNER_20261025_ONCE') &&
+      github.event.changes.body.from != null &&
+      !contains(github.event.changes.body.from, 'ISSUE_CAS_BROKER_OWNER_20261025_ONCE')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      checks: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Revalidate GitHub issue, source SHA, and completed gates
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = 'ericson-j-santos', repo = 'engineering-worker-pool';
+            const base = '958990e201c18219a8284f37437ed308c95d1a71';
+            const pr = (await github.rest.pulls.get({owner,repo,pull_number:context.payload.pull_request.number})).data;
+            const main = (await github.rest.repos.getBranch({owner,repo,branch:'main'})).data;
+            const sha = context.payload.pull_request.head.sha;
+            if (main.commit.sha !== base || pr.base.sha !== base ||
+                pr.head.sha !== sha || pr.state !== 'open' || !pr.draft ||
+                pr.head.ref !== 'feat/issue-qwen7b-native-github-cas-writer-20261025' ||
+                pr.head.repo?.full_name !== owner + '/' + repo ||
+                !pr.body?.includes('ISSUE_CAS_BROKER_OWNER_20261025_ONCE')) {
+              core.setFailed('CAS_BROKER_ADMISSION_HEAD_DRIFT'); return;
+            }
+            const issue = (await github.rest.issues.get({owner,repo,issue_number:8})).data;
+            const comment = (await github.rest.issues.getComment({owner,repo,comment_id:6398567143})).data;
+            const source = (await github.rest.repos.getContent({
+              owner,repo,path:'app/portfolio_bridge.py',ref:base
+            })).data;
+            if (issue.state !== 'open' || !!issue.pull_request ||
+                comment.author_association !== 'OWNER' || comment.user?.login !== owner ||
+                comment.issue_url !== 'https://api.github.com/repos/' + owner + '/' + repo + '/issues/8' ||
+                comment.body !== '/local-agent authorize bridge.property.v1 sha:' + base ||
+                source.type !== 'file' || source.sha !== 'd9a25c574163c49f695e774609949160d94f4490') {
+              core.setFailed('CAS_BROKER_OWNER_OR_SOURCE_UNVERIFIED'); return;
+            }
+            const runs = (await github.rest.checks.listForRef({owner,repo,ref:sha,per_page:100})).data.check_runs;
+            for (const name of ['test','native-contract']) {
+              if (!runs.some(x => x.name === name && x.head_sha === sha &&
+                  x.status === 'completed' && x.conclusion === 'success' &&
+                  x.started_at && x.completed_at)) {
+                core.setFailed('CAS_BROKER_CI_MISSING_' + name); return;
+              }
+            }
+            core.info('CAS_BROKER_ADMISSION_VERIFIED head=' + sha);
+
+  publish:
+    name: GitHub CAS immutable append (scoped token)
+    needs: admission
+    if: needs.admission.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: write
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Write only one fixed nonsecret CAS object and verify
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {createHash} = require('crypto');
+            const owner='ericson-j-santos', repo='engineering-worker-pool';
+            const base='958990e201c18219a8284f37437ed308c95d1a71';
+            const branch='agent/cas-qwen7b-issue-8-' + base.slice(0,12);
+            const body=Buffer.from('CWP-S3-PREFLIGHT-V1\n','utf8');
+            const digest=createHash('sha256').update(body).digest('hex');
+            const path='evidence/cas/qwen7b-cas-v1/preflight-v1/sha256/' +
+              digest.slice(0,2) + '/' + digest + '.probe';
+            const sha1=createHash('sha1').update(Buffer.concat([
+              Buffer.from('blob ' + body.length + '\0'),body
+            ])).digest('hex');
+            const pr=(await github.rest.pulls.get({
+              owner,repo,pull_number:context.payload.pull_request.number
+            })).data;
+            const main=(await github.rest.repos.getBranch({owner,repo,branch:'main'})).data;
+            const comment=(await github.rest.issues.getComment({owner,repo,comment_id:6398567143})).data;
+            const issue=(await github.rest.issues.get({owner,repo,issue_number:8})).data;
+            if (context.actor!==owner || pr.state!=='open' || !pr.draft ||
+                main.commit.sha!==base || pr.base.sha!==base ||
+                pr.head.sha!==context.payload.pull_request.head.sha ||
+                pr.head.ref!=='feat/issue-qwen7b-native-github-cas-writer-20261025' ||
+                pr.head.repo?.full_name!==owner+'/'+repo ||
+                !pr.body?.includes('ISSUE_CAS_BROKER_OWNER_20261025_ONCE') ||
+                comment.user?.login!==owner || comment.author_association!=='OWNER' ||
+                comment.body!=='/local-agent authorize bridge.property.v1 sha:'+base ||
+                comment.issue_url!=='https://api.github.com/repos/'+owner+'/'+repo+'/issues/8' ||
+                issue.state!=='open' || !!issue.pull_request) {
+              core.setFailed('CAS_BROKER_WRITE_PRECONDITION_CHANGED'); return;
+            }
+            let current=null;
+            try {current=(await github.rest.repos.getBranch({owner,repo,branch})).data;}
+            catch(error) {if (error.status!==404) {core.setFailed('CAS_BRANCH_READ_FAILED');return;}}
+            if (!current) {
+              try {await github.rest.git.createRef({owner,repo,ref:'refs/heads/'+branch,sha:base});}
+              catch(error) {core.setFailed('CAS_BRANCH_CREATE_FAILED');return;}
+              current=(await github.rest.repos.getBranch({owner,repo,branch})).data;
+              if (current.commit.sha!==base) {core.setFailed('CAS_BRANCH_SHA_DRIFT');return;}
+            }
+            let existing=null;
+            try {existing=(await github.rest.repos.getContent({owner,repo,path,ref:branch})).data;}
+            catch(error) {if (error.status!==404) {core.setFailed('CAS_OBJECT_READ_FAILED');return;}}
+            if (!existing) {
+              if (current.commit.sha!==base) {core.setFailed('CAS_BRANCH_NOT_EMPTY');return;}
+              try {
+                await github.rest.repos.createOrUpdateFileContents({
+                  owner,repo,path,branch,content:body.toString('base64'),
+                  message:'evidence: immutable nonsecret issue-Qwen7B CAS preflight probe'
+                });
+              } catch(error) {core.setFailed('CAS_OBJECT_WRITE_UNVERIFIED');return;}
+            }
+            const observed=(await github.rest.repos.getContent({owner,repo,path,ref:branch})).data;
+            const raw=Buffer.from((observed.content||'').replace(/\s+/g,''),'base64');
+            if (observed.type!=='file' || observed.path!==path ||
+                observed.size!==body.length || observed.sha!==sha1 ||
+                !raw.equals(body) || createHash('sha256').update(raw).digest('hex')!==digest) {
+              core.setFailed('CAS_OBJECT_READBACK_INVALID');return;
+            }
+            const head=(await github.rest.repos.getBranch({owner,repo,branch})).data.commit.sha;
+            const diff=(await github.rest.repos.compareCommitsWithBasehead({
+              owner,repo,basehead:base+'...'+head
+            })).data;
+            if (diff.status!=='ahead' || diff.ahead_by!==1 || diff.behind_by!==0 ||
+                diff.total_commits!==1 || diff.files?.length!==1 ||
+                diff.files[0].status!=='added' || diff.files[0].filename!==path) {
+              core.setFailed('CAS_OBJECT_SCOPE_INVALID');return;
+            }
+            core.info('CAS_OBJECT_WRITTEN_AND_READBACK sha='+head+' digest='+digest);
+
+  independent-readback:
+    name: CAS independent readback without write
+    needs: publish
+    if: needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - name: Independently verify immutable object and branch diff
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {createHash}=require('crypto');
+            const owner='ericson-j-santos',repo='engineering-worker-pool';
+            const base='958990e201c18219a8284f37437ed308c95d1a71';
+            const branch='agent/cas-qwen7b-issue-8-'+base.slice(0,12);
+            const bytes=Buffer.from('CWP-S3-PREFLIGHT-V1\n','utf8');
+            const digest=createHash('sha256').update(bytes).digest('hex');
+            const path='evidence/cas/qwen7b-cas-v1/preflight-v1/sha256/'+digest.slice(0,2)+'/'+digest+'.probe';
+            const got=(await github.rest.repos.getContent({owner,repo,path,ref:branch})).data;
+            const actual=Buffer.from((got.content||'').replace(/\s+/g,''),'base64');
+            const blob=createHash('sha1').update(Buffer.concat([
+              Buffer.from('blob '+actual.length+'\0'),actual
+            ])).digest('hex');
+            const head=(await github.rest.repos.getBranch({owner,repo,branch})).data.commit.sha;
+            const compare=(await github.rest.repos.compareCommitsWithBasehead({
+              owner,repo,basehead:base+'...'+head
+            })).data;
+            if (got.type!=='file' || got.path!==path || got.size!==bytes.length ||
+                got.sha!==blob || !actual.equals(bytes) ||
+                createHash('sha256').update(actual).digest('hex')!==digest ||
+                compare.status!=='ahead' || compare.ahead_by!==1 ||
+                compare.behind_by!==0 || compare.total_commits!==1 ||
+                compare.files?.length!==1 || compare.files[0].filename!==path) {
+              core.setFailed('CAS_INDEPENDENT_READBACK_FAILED');return;
+            }
+            core.info('CAS_INDEPENDENT_READBACK_SUCCESS sha='+head+' digest='+digest);
