@@ -275,6 +275,18 @@ def test_official_reader_fixed_get_routes_and_no_writes(monkeypatch):
     assert not hasattr(adapter, "create_pr") and not hasattr(adapter, "delete_ref")
 
 
+def test_native_qwen_plan_schema_matches_runtime_query_allowlist():
+    """Structured output must prevent characters the runtime rejects."""
+    from app import agent_rag_consumer as consumer
+    query = consumer._PLAN_SCHEMA["properties"]["search_query"]
+    assert query == {
+        "type": "string",
+        "pattern": r"^[A-Za-z0-9 .,:\-]{4,120}$",
+    }
+    assert consumer._QUERY.fullmatch("casos Builder bridge.property.v1")
+    assert consumer._QUERY.fullmatch("42/42 casos") is None
+
+
 def test_native_qwen_planner_mock_transport_is_loopback_and_no_tools(monkeypatch):
     # A transport-level integration only: real model inference is an
     # independent gate and is NOT certified by this mocked provider.
