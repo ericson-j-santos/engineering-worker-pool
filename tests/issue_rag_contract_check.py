@@ -112,7 +112,7 @@ class GitHubReader:
 class Planner:
     def __init__(self, *, plans=None, selections=None):
         self.plans = list(plans or [{
-            "source_path": DOC, "search_query": "tests regression evidence",
+            "source_path": DOC, "search_query": "casos Builder",
         }])
         self.selections = list(selections or [{
             "decision": "supported", "citation_index": 0,
@@ -245,8 +245,8 @@ def test_independent_reader_rejects_modified_bytes():
 
 def test_replay_receipts_idempotent_without_duplicate_side_effects():
     model = Planner(plans=[
-        {"source_path": DOC, "search_query": "tests regression evidence"},
-        {"source_path": DOC, "search_query": "tests regression evidence"},
+        {"source_path": DOC, "search_query": "casos Builder"},
+        {"source_path": DOC, "search_query": "casos Builder"},
     ], selections=[
         {"decision": "supported", "citation_index": 0},
         {"decision": "supported", "citation_index": 0},
@@ -297,7 +297,7 @@ def test_native_qwen_planner_mock_transport_is_loopback_and_no_tools(monkeypatch
             data = json.loads(request.content)
             assert data["stream"] is False and "tools" not in data
             if seen.count("/api/chat") == 1:
-                reply = {"source_path": DOC, "search_query": "tests regression evidence"}
+                reply = {"source_path": DOC, "search_query": "casos Builder"}
             else:
                 reply = {"decision": "supported", "citation_index": 0}
             return httpx.Response(200, json={
