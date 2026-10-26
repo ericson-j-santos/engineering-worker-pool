@@ -323,3 +323,57 @@ def test_native_qwen_planner_mock_transport_is_loopback_and_no_tools(monkeypatch
     assert observed["state"] == "supported" and observed["model_calls"] == 2
     assert seen.count("/api/chat") == 2
     assert reader.writes == independent.writes == 0
+
+
+def test_real_portuguese_issue_contract_ranked_by_english_question():
+    """The actual PT-BR document must offer the required acceptance clauses."""
+    from pathlib import Path
+    from app.issue_rag_research import _ranking_words
+    body = (Path(__file__).resolve().parents[1] / DOC).read_text(encoding="utf-8")
+    assert "42/42" in body and "52" in body and "regressões" in body
+    direct, localized = _ranking_words("tests regression evidence")
+    assert {"testes", "casos", "regressões"} <= localized
+    assert "testes" not in direct
+    reader = GitHubReader(source=body)
+    verified = GitHubReader(source=body)
+    model = Planner()
+    result = IssueRAGResearch(
+        reader=reader, independent_reader=verified, planner=model,
+        approved_paths=(DOC,),
+    ).research(admitted())
+    assert result["state"] == "supported"
+    assert result["model_calls"] == 2
+    assert result["selected_reference"]["path"] == DOC
+    assert result["selected_reference"]["line"] in (17, 18)
+    assert result["selected_reference"]["untrusted_source_text"] is True
+    assert result["execution_authorized"] is False
+    assert result["state_changed"] is False
+    assert len([x for x in verified.calls if x[0] == "file"]) == 1
+
+
+def test_translated_match_cannot_override_model_insufficiency():
+    from pathlib import Path
+    body = (Path(__file__).resolve().parents[1] / DOC).read_text(encoding="utf-8")
+    reader = GitHubReader(source=body)
+    independent = GitHubReader(source=body)
+    refused = Planner(
+        selections=[{"decision": "insufficient", "citation_index": -1}],
+    )
+    result = IssueRAGResearch(
+        reader=reader, independent_reader=independent, planner=refused,
+        approved_paths=(DOC,),
+    ).research(admitted())
+    assert result["state"] == "insufficient_evidence"
+    assert result["selected_reference"] is None
+    assert result["model_calls"] == 2
+    assert not independent.calls
+    assert reader.writes == independent.writes == 0
+
+
+def test_bilingual_expansion_does_not_accept_irrelevant_document():
+    from app.issue_rag_research import _ranking_words
+    words, localized = _ranking_words("tests regression evidence")
+    irrelevant = "The weather is cloudy. Stay hydrated."
+    from agent_core.pr_context import _words
+    score = len(words & _words(irrelevant)) + 4 * len(localized & _words(irrelevant))
+    assert score == 0
