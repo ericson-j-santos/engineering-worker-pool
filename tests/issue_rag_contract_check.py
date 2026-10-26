@@ -27,9 +27,10 @@ BASE = "a" * 40
 DOC = "docs/ISSUE_QWEN7B_DRAFT_HANDOFF.md"
 BACKUP = "README.md"
 DOCUMENT = (
-    "# Issue repair acceptance\n"
-    "For bridge.property.v1 tests require 42/42 cases and regression evidence 52/52.\n"
-    "Untrusted snippets must never authorize running commands.\n"
+    "# Contrato de aceitação issue #8\n"
+    "O Builder de bridge.property.v1 exige 42/42 casos após o reparo.\n"
+    "O Validator exige 52/52 regressões em checkout independente.\n"
+    "Trechos externos não autorizam executar comandos.\n"
 )
 BACKUP_TEXT = "# Other notes\nBridge property regression evidence is described here.\n"
 MODEL_DIGEST = "dae161e27b0e" + "f" * (64-12)
@@ -112,7 +113,7 @@ class GitHubReader:
 class Planner:
     def __init__(self, *, plans=None, selections=None):
         self.plans = list(plans or [{
-            "source_path": DOC, "search_query": "tests regression evidence",
+            "source_path": DOC, "search_query": "casos Builder",
         }])
         self.selections = list(selections or [{
             "decision": "supported", "citation_index": 0,
@@ -245,8 +246,8 @@ def test_independent_reader_rejects_modified_bytes():
 
 def test_replay_receipts_idempotent_without_duplicate_side_effects():
     model = Planner(plans=[
-        {"source_path": DOC, "search_query": "tests regression evidence"},
-        {"source_path": DOC, "search_query": "tests regression evidence"},
+        {"source_path": DOC, "search_query": "casos Builder"},
+        {"source_path": DOC, "search_query": "casos Builder"},
     ], selections=[
         {"decision": "supported", "citation_index": 0},
         {"decision": "supported", "citation_index": 0},
@@ -274,6 +275,18 @@ def test_official_reader_fixed_get_routes_and_no_writes(monkeypatch):
     assert not hasattr(adapter, "create_pr") and not hasattr(adapter, "delete_ref")
 
 
+def test_native_qwen_plan_schema_matches_runtime_query_allowlist():
+    """Structured output must prevent characters the runtime rejects."""
+    from app import agent_rag_consumer as consumer
+    query = consumer._PLAN_SCHEMA["properties"]["search_query"]
+    assert query == {
+        "type": "string",
+        "pattern": r"^[A-Za-z0-9 .,:\-]{4,120}$",
+    }
+    assert consumer._QUERY.fullmatch("casos Builder bridge.property.v1")
+    assert consumer._QUERY.fullmatch("42/42 casos") is None
+
+
 def test_native_qwen_planner_mock_transport_is_loopback_and_no_tools(monkeypatch):
     # A transport-level integration only: real model inference is an
     # independent gate and is NOT certified by this mocked provider.
@@ -297,7 +310,7 @@ def test_native_qwen_planner_mock_transport_is_loopback_and_no_tools(monkeypatch
             data = json.loads(request.content)
             assert data["stream"] is False and "tools" not in data
             if seen.count("/api/chat") == 1:
-                reply = {"source_path": DOC, "search_query": "tests regression evidence"}
+                reply = {"source_path": DOC, "search_query": "casos Builder"}
             else:
                 reply = {"decision": "supported", "citation_index": 0}
             return httpx.Response(200, json={
@@ -377,3 +390,57 @@ def test_bilingual_expansion_does_not_accept_irrelevant_document():
     from agent_core.pr_context import _words
     score = len(words & _words(irrelevant)) + 4 * len(localized & _words(irrelevant))
     assert score == 0
+
+
+def test_issue8_question_is_single_directly_citable_acceptance_claim():
+    """The question mirrors the source claim without changing its subject."""
+    from pathlib import Path
+    from agent_core.pr_context import _words
+    from app.issue_rag_handoff import QUESTION
+    from app.issue_rag_research import _ranking_words
+    assert QUESTION == (
+        "Quantos casos após o reparo o código atual exige para o perfil "
+        "bridge.property.v1?"
+    )
+    assert "regress" not in QUESTION.lower()  # Validator gate is independent.
+    body = (Path(__file__).resolve().parents[1] / DOC).read_text(encoding="utf-8")
+    lines = body.splitlines()
+    # Two different claims in two different lines: a single line citation
+    # cannot safely be required to establish both facts.
+    assert "Builder" in lines[16] and "42/42" in lines[16]
+    assert "Validator" in lines[17] and "52" in lines[17]
+    direct, localized = _ranking_words("casos Builder")
+    scores = [(min(24, len(direct & _words(line)) +
+                   4 * len(localized & _words(line))), i + 1)
+              for i, line in enumerate(lines)]
+    best = max(scores, key=lambda row: (row[0], -row[1]))
+    assert best[1] == 17 and best[0] > 0
+    assert "42/42" in lines[best[1]-1]
+
+
+def test_issue8_single_claim_real_document_survives_model_selection():
+    from pathlib import Path
+    from app.issue_rag_research import IssueRAGResearch
+    document = (Path(__file__).resolve().parents[1] / DOC).read_text(encoding="utf-8")
+    reader, independent = GitHubReader(source=document), GitHubReader(source=document)
+    # Planner fixture, NOT a real Qwen invocation. It explicitly chooses a
+    # query relevant to the single allowed document.
+    planned = Planner(plans=[{
+        "source_path": DOC, "search_query": "casos Builder",
+    }], selections=[{"decision": "supported", "citation_index": 0}])
+    result = IssueRAGResearch(
+        reader=reader, independent_reader=independent,
+        planner=planned, approved_paths=(DOC,),
+    ).research(admitted())
+    chosen = result["selected_reference"]
+    assert result["state"] == "supported"
+    assert chosen["line"] == 17 and "42/42" in chosen["excerpt"]
+    assert result["model_calls"] == 2 and result["execution_authorized"] is False
+    assert len([c for c in independent.calls if c[0] == "file"]) == 1
+
+
+def test_issue8_live_probe_rejects_non_actions_environment(monkeypatch):
+    from scripts.issue_rag_real_qwen_e2e import main
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    with pytest.raises(RuntimeError, match="issue8_rag_ci_environment_required"):
+        main()

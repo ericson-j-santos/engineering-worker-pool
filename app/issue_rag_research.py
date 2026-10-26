@@ -230,5 +230,5 @@ def research_issue(binding: IssueBinding, *, github_token: str | None = None) ->
         reader=official_issue_reader(github_token),
         independent_reader=official_issue_reader(github_token),
         planner=NativeQwenResearchPlanner(),
-        approved_paths=("docs/ISSUE_QWEN7B_DRAFT_HANDOFF.md", "README.md"),
+        approved_paths=("docs/ISSUE_QWEN7B_DRAFT_HANDOFF.md",),
     ).research(binding)

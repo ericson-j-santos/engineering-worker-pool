@@ -21,7 +21,12 @@ from app.issue_draft_pr import (
     HandoffBlocked, IssueBinding, MODEL_DIGEST_PREFIX, REPO, SHA, require,
 )
 
-QUESTION = "What tests and regression evidence are required for bridge.property.v1?"
+# One answerable claim per independently cited line. The former question
+# conflated the Builder's 42/42 acceptance and the separate Validator's
+# 52+ regressions, while the first single-claim wording attributed approval
+# directly to the Builder even though the source says the current code requires
+# the cases. Mirror that literal source claim; never promote a refusal.
+QUESTION = "Quantos casos após o reparo o código atual exige para o perfil bridge.property.v1?"
 ALLOWED_SOURCES = frozenset({
     "README.md",
     "AGENTS.md",

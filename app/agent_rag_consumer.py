@@ -93,7 +93,10 @@ _PLAN_SCHEMA = {
     "type": "object",
     "properties": {
         "source_path": {"type": "string"},
-        "search_query": {"type": "string"},
+        "search_query": {
+            "type": "string",
+            "pattern": r"^[A-Za-z0-9 .,:\-]{4,120}$",
+        },
     },
     "required": ["source_path", "search_query"],
     "additionalProperties": False,
@@ -185,7 +188,10 @@ class NativeQwenResearchPlanner:
             prompt=("Question: " + question + "\nSource paths available: " +
                     json.dumps(allowed_sources) +
                     "\nChoose exactly one path from the list. Return a brief "
-                    "search_query preserving the original topic's keywords."),
+                    "search_query preserving the original topic's keywords. "
+                    "The query must be 4-120 characters and use only ASCII "
+                    "letters, digits, spaces, period, comma, colon or hyphen; "
+                    "do not include slash, question marks, quotes or Markdown."),
             schema=_PLAN_SCHEMA,
         )
 
