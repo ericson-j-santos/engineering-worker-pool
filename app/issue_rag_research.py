@@ -23,6 +23,36 @@ from app.issue_rag_handoff import (
 MAX_SOURCE_BYTES = 65_536
 MAX_LINES = 5
 
+# The versioned issue question is English, while its approved evidence document
+# is in PT-BR. A literal English-only token intersection hid the real 42/42 and
+# 52/52 acceptance paragraphs. These aliases affect candidate RANKING only;
+# neither they nor a keyword hit can turn Qwen's refusal into "supported".
+_ISSUE_SEARCH_ALIASES = {
+    "test": ("teste", "testes", "casos"),
+    "tests": ("teste", "testes", "casos"),
+    "cases": ("casos",),
+    "regression": ("regressão", "regressões"),
+    "regressions": ("regressão", "regressões"),
+    "evidence": ("evidência", "evidências", "provas"),
+    "required": ("exige", "exigidos", "obrigatório"),
+    "verification": ("verificação", "verificado"),
+    "validation": ("validação", "validador"),
+}
+
+
+def _ranking_words(query: str) -> tuple[set[str], set[str]]:
+    """Constrained bilingual vocabulary for the fixed issue acceptance question."""
+    from agent_core.pr_context import _words
+
+    direct = _words(query)
+    # A model-selected query cannot erase the operator-defined topic, but the
+    # actual query still supplies the direct-match terms.
+    fixed_topic = _words(QUESTION)
+    local_terms = set()
+    for term in sorted(direct | fixed_topic):
+        local_terms.update(_ISSUE_SEARCH_ALIASES.get(term, ()))
+    return direct, local_terms
+
 
 class IssueReader(Protocol):
     def get_issue(self, number: int) -> dict[str, Any]: ...
@@ -95,10 +125,14 @@ class IssueRAGResearch:
             }
             receipts.append(source)
             snippets: list[dict[str, Any]] = []
-            words = _words(query)
+            direct, localized = _ranking_words(query)
             for line, value in enumerate(text.splitlines(), start=1):
                 excerpt = value.strip()[:MAX_LINE]
-                score = len(words & _words(value))
+                source_words = _words(value)
+                # Prefer clauses about tests/regressions over a bare profile
+                # identifier; keep the existing 24-point citation contract.
+                score = min(24, len(direct & source_words) +
+                            4 * len(localized & source_words))
                 if excerpt and score:
                     snippets.append({
                         "path": chosen, "line": line,
