@@ -8,7 +8,7 @@ A pergunta anterior exigia uma citação que comprovasse **42/42 casos do Builde
 
 ## Correção e prevenção
 
-- Reformular apenas a pergunta de pesquisa para um fato citável diretamente: quantos casos de aceitação do Builder devem passar após o reparo. A resposta esperada está literalmente documentada na linha 17, com `Builder` e `42/42`.
+- Reformular apenas a pergunta de pesquisa para espelhar literalmente o sujeito da fonte: quantos casos após o reparo o código atual exige para o perfil. A resposta está documentada na linha 17, cujo contexto contém `Builder` e `42/42`; não atribuir ao Builder um verbo de aprovação que a linha não declara.
 - O gate independente de 52/52 regressões **permanece obrigatório** no Validator e não depende do texto do RAG. Nenhum critério de aceite foi retirado nem alterado.
 - A pesquisa continua limitada à fonte SHA-bound `docs/ISSUE_QWEN7B_DRAFT_HANDOFF.md`, sem fallback para outros documentos, comandos do modelo, CAS ou publicação de PR.
 - Testes positivos e negativos verificam a citação exata e preservam a recusa explícita do Qwen: `insufficient` continua falha fechada.

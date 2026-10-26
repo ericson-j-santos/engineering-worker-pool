@@ -380,15 +380,15 @@ def test_bilingual_expansion_does_not_accept_irrelevant_document():
     assert score == 0
 
 
-def test_issue8_question_is_single_directly_citable_builder_claim():
-    """The previous English question asked about two different source lines."""
+def test_issue8_question_is_single_directly_citable_acceptance_claim():
+    """The question mirrors the source claim without changing its subject."""
     from pathlib import Path
     from agent_core.pr_context import _words
     from app.issue_rag_handoff import QUESTION
     from app.issue_rag_research import _ranking_words
     assert QUESTION == (
-        "Quantos casos de aceitação o Builder de bridge.property.v1 "
-        "deve aprovar após o reparo?"
+        "Quantos casos após o reparo o código atual exige para o perfil "
+        "bridge.property.v1?"
     )
     assert "regress" not in QUESTION.lower()  # Validator gate is independent.
     body = (Path(__file__).resolve().parents[1] / DOC).read_text(encoding="utf-8")
