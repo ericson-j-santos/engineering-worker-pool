@@ -21,7 +21,11 @@ from app.issue_draft_pr import (
     HandoffBlocked, IssueBinding, MODEL_DIGEST_PREFIX, REPO, SHA, require,
 )
 
-QUESTION = "What tests and regression evidence are required for bridge.property.v1?"
+# One answerable claim per independently cited line. The former question
+# conflated the Builder's 42/42 acceptance and the separate Validator's
+# 52+ regressions, which are documented in different source lines. Never
+# promote Qwen's explicit insufficiency into an artificial citation.
+QUESTION = "Quantos casos de aceitação o Builder de bridge.property.v1 deve aprovar após o reparo?"
 ALLOWED_SOURCES = frozenset({
     "README.md",
     "AGENTS.md",

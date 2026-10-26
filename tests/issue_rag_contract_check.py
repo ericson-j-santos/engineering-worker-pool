@@ -377,3 +377,57 @@ def test_bilingual_expansion_does_not_accept_irrelevant_document():
     from agent_core.pr_context import _words
     score = len(words & _words(irrelevant)) + 4 * len(localized & _words(irrelevant))
     assert score == 0
+
+
+def test_issue8_question_is_single_directly_citable_builder_claim():
+    """The previous English question asked about two different source lines."""
+    from pathlib import Path
+    from agent_core.pr_context import _words
+    from app.issue_rag_handoff import QUESTION
+    from app.issue_rag_research import _ranking_words
+    assert QUESTION == (
+        "Quantos casos de aceitação o Builder de bridge.property.v1 "
+        "deve aprovar após o reparo?"
+    )
+    assert "regress" not in QUESTION.lower()  # Validator gate is independent.
+    body = (Path(__file__).resolve().parents[1] / DOC).read_text(encoding="utf-8")
+    lines = body.splitlines()
+    # Two different claims in two different lines: a single line citation
+    # cannot safely be required to establish both facts.
+    assert "Builder" in lines[16] and "42/42" in lines[16]
+    assert "Validator" in lines[17] and "52" in lines[17]
+    direct, localized = _ranking_words("casos Builder")
+    scores = [(min(24, len(direct & _words(line)) +
+                   4 * len(localized & _words(line))), i + 1)
+              for i, line in enumerate(lines)]
+    best = max(scores, key=lambda row: (row[0], -row[1]))
+    assert best[1] == 17 and best[0] > 0
+    assert "42/42" in lines[best[1]-1]
+
+
+def test_issue8_single_claim_real_document_survives_model_selection():
+    from pathlib import Path
+    from app.issue_rag_research import IssueRAGResearch
+    document = (Path(__file__).resolve().parents[1] / DOC).read_text(encoding="utf-8")
+    reader, independent = GitHubReader(source=document), GitHubReader(source=document)
+    # Planner fixture, NOT a real Qwen invocation. It explicitly chooses a
+    # query relevant to the single allowed document.
+    planned = Planner(plans=[{
+        "source_path": DOC, "search_query": "casos Builder",
+    }], selections=[{"decision": "supported", "citation_index": 0}])
+    result = IssueRAGResearch(
+        reader=reader, independent_reader=independent,
+        planner=planned, approved_paths=(DOC,),
+    ).research(admitted())
+    chosen = result["selected_reference"]
+    assert result["state"] == "supported"
+    assert chosen["line"] == 17 and "42/42" in chosen["excerpt"]
+    assert result["model_calls"] == 2 and result["execution_authorized"] is False
+    assert len([c for c in independent.calls if c[0] == "file"]) == 1
+
+
+def test_issue8_live_probe_rejects_non_actions_environment(monkeypatch):
+    from scripts.issue_rag_real_qwen_e2e import main
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    with pytest.raises(RuntimeError, match="issue8_rag_ci_environment_required"):
+        main()

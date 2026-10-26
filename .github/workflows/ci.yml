@@ -157,6 +157,16 @@ jobs:
           NATIVE_MODEL_DIGEST_PREFIX: 'dae161e27b0e'
         run: python -m scripts.rag_real_qwen_e2e
 
+      - name: Real issue8 Qwen7B acceptance citation with independent GitHub readback
+        id: issue_rag_e2e
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        timeout-minutes: 4
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NATIVE_OLLAMA_DEV: '1'
+          NATIVE_MODEL_DIGEST_PREFIX: 'dae161e27b0e'
+        run: python -m scripts.issue_rag_real_qwen_e2e
+
       - name: Repair real structured function in governed copy
         id: structured_e2e
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
@@ -184,6 +194,7 @@ jobs:
           LOCAL_CODE_E2E: ${{ steps.code_e2e.outcome }}
           STRUCTURED_E2E: ${{ steps.structured_e2e.outcome }}
           RAG_E2E: ${{ steps.rag_e2e.outcome }}
+          ISSUE_RAG_E2E: ${{ steps.issue_rag_e2e.outcome }}
         run: |
           {
             echo "## Worker Pool native CI"
@@ -197,5 +208,6 @@ jobs:
             echo "Local-code E2E: $LOCAL_CODE_E2E"
             echo "Structured-code E2E: $STRUCTURED_E2E"
             echo "Agentic RAG read-only E2E: $RAG_E2E"
+            echo "Issue8 RAG single-claim E2E: $ISSUE_RAG_E2E"
             echo "Evidence: lossless SHA-bound capsules in job logs; no artifact uploads or pip cache"
           } >> "$GITHUB_STEP_SUMMARY"
