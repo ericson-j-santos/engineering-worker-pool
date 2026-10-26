@@ -444,3 +444,108 @@ def test_issue8_live_probe_rejects_non_actions_environment(monkeypatch):
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     with pytest.raises(RuntimeError, match="issue8_rag_ci_environment_required"):
         main()
+
+
+def test_refusal_trace_contains_exact_model_candidate_lines_not_excerpts():
+    """Real document bytes, synthetic planner: no fabricated Qwen success."""
+    from pathlib import Path
+    from app.issue_rag_handoff import canonical
+    body = (Path(__file__).resolve().parents[1] / DOC).read_text(encoding="utf-8")
+    reader, independent = GitHubReader(source=body), GitHubReader(source=body)
+    planner = Planner(
+        plans=[{"source_path": DOC, "search_query": "casos Builder"}],
+        selections=[{"decision": "insufficient", "citation_index": -1}],
+    )
+    trace = []
+    receipt = IssueRAGResearch(
+        reader=reader, independent_reader=independent,
+        planner=planner, approved_paths=(DOC,), diagnostic_sink=trace,
+    ).research(admitted())
+    assert receipt["state"] == "insufficient_evidence"
+    assert receipt["selected_reference"] is None
+    assert len(trace) == 1
+    assert trace[0]["path"] == DOC
+    assert trace[0]["decision"] == "insufficient"
+    assert 17 in trace[0]["candidate_lines"]
+    assert 1 <= len(trace[0]["candidate_lines"]) <= 5
+    assert all(1 <= i <= len(body.splitlines()) for i in trace[0]["candidate_lines"])
+    assert "Builder com Ollama" not in json.dumps(trace, ensure_ascii=False)
+    assert "42/42" not in json.dumps(trace)
+    assert "candidate_lines" not in receipt
+    assert receipt["receipt_sha256"] == digest(canonical({
+        k: v for k, v in receipt.items() if k != "receipt_sha256"
+    }))
+    with pytest.raises(HandoffBlocked, match="rag_issue_or_source_sha_unbound"):
+        bind_issue_rag(admitted(), receipt, lambda *_: pytest.fail("unexpected read"))
+    assert planner.calls == 2
+    assert not independent.calls and reader.writes == independent.writes == 0
+
+
+def test_no_candidate_line_reports_no_candidates_without_model_selection():
+    source = "# A harmless unrelated document\nThe clouds and birds are visible.\n"
+    reader, independent = GitHubReader(source=source), GitHubReader(source=source)
+    planner = Planner(plans=[
+        {"source_path": DOC, "search_query": "casos Builder"},
+    ])
+    trace = []
+    receipt = IssueRAGResearch(
+        reader=reader, independent_reader=independent,
+        planner=planner, approved_paths=(DOC,), diagnostic_sink=trace,
+    ).research(admitted())
+    assert receipt["state"] == "insufficient_evidence"
+    assert receipt["model_calls"] == 1
+    assert trace == [{"path": DOC, "candidate_lines": [], "decision": "no_candidates"}]
+    assert planner.calls == 1 and not independent.calls
+    assert reader.writes == 0
+
+
+def test_supported_trace_and_normal_receipt_replay_have_no_extra_fields():
+    trace = []
+    reader, independent = GitHubReader(), GitHubReader()
+    first = IssueRAGResearch(
+        reader=reader, independent_reader=independent,
+        planner=Planner(), approved_paths=(DOC,), diagnostic_sink=trace,
+    ).research(admitted())
+    assert first["state"] == "supported"
+    assert trace[0]["decision"] == "supported"
+    assert first["selected_reference"]["line"] in trace[0]["candidate_lines"]
+    assert "candidate_lines" not in first and "diagnostic_sink" not in first
+    second = IssueRAGResearch(
+        reader=GitHubReader(), independent_reader=GitHubReader(),
+        planner=Planner(), approved_paths=(DOC,), diagnostic_sink=[],
+    ).research(admitted())
+    assert first == second
+    assert reader.writes == independent.writes == 0
+
+
+@pytest.mark.parametrize("unsafe", [
+    {"candidate_lines": [17]},
+    [dict(path=DOC, candidate_lines=[17], decision="supported")],
+    "not a trusted sink",
+])
+def test_tracer_rejects_untrusted_or_reused_sinks(unsafe):
+    with pytest.raises(HandoffBlocked, match="rag_diagnostic_sink_invalid"):
+        IssueRAGResearch(
+            reader=GitHubReader(), independent_reader=GitHubReader(),
+            planner=Planner(), approved_paths=(DOC,), diagnostic_sink=unsafe,
+        )
+
+
+def test_real_probe_remains_get_only_and_refusal_fails_closed():
+    from pathlib import Path
+    code = (Path(__file__).resolve().parents[1] /
+            "scripts" / "issue_rag_real_qwen_e2e.py").read_text(encoding="utf-8")
+    assert "diagnostic_sink=candidate_trace" in code
+    assert "ISSUE8_RAG_CANDIDATE_LINES_ATTESTED" in code
+    assert '"raw_source_or_model_text_logged": False' in code
+    assert "issue8_real_qwen_evidence_unproved" in code
+    assert "source_contains_acceptable_line" in code
+    assert "independent.get_text_file(REPO, DOC, MAIN)" in code
+    assert "draft_pr_created" in code
+
+
+def test_hosted_issue_probe_is_pinned_to_current_authorized_merge_sha():
+    """Prevent a CI probe from silently reusing the premerge owner admission."""
+    from scripts.issue_rag_real_qwen_e2e import MAIN, COMMENT_ID
+    assert MAIN == "be69b27455f99606a03ce5cba6ca809e1082f2b4"
+    assert COMMENT_ID == 6427072933

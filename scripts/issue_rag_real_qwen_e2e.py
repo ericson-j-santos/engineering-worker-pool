@@ -20,9 +20,9 @@ from app.issue_rag_research import (
     IssueRAGResearch, official_issue_reader, research_issue,
 )
 
-MAIN = "047c77b6b867ff5d489bd74f6fd80989719ab85e"
+MAIN = "be69b27455f99606a03ce5cba6ca809e1082f2b4"
 ISSUE = 8
-COMMENT_ID = 6423646539
+COMMENT_ID = 6427072933
 DOC = "docs/ISSUE_QWEN7B_DRAFT_HANDOFF.md"
 
 
@@ -64,21 +64,94 @@ def main() -> None:
         raise RuntimeError("issue8_stale_sha_unexpectedly_admitted")
     need(planner.calls == 0, "issue8_stale_head_spent_model_calls")
 
-    observed = research_issue(approved, github_token=token)
+    # Inspect actual RAG input line numbers; never log excerpts or model reply.
+    candidate_trace: list[dict[str, object]] = []
+    observed = research_issue(
+        approved, github_token=token, diagnostic_sink=candidate_trace,
+    )
     need(observed.get("schema_version") == "worker.rag.issue-context-v1"
-         and observed.get("state") == "supported"
+         and observed.get("state") in {"supported", "insufficient_evidence"}
          and observed.get("issue_number") == ISSUE
          and observed.get("request_id") == approved.request_id
          and observed.get("base_sha") == MAIN
          and observed.get("head_sha") == MAIN
-         and observed.get("model_calls") == 2
+         and type(observed.get("model_calls")) is int
+         and 1 <= observed["model_calls"] <= 4
          and observed.get("model_process_verified") is True
          and observed.get("issue_head_readback_stable") is True
          and observed.get("execution_authorized") is False
          and observed.get("state_changed") is False,
-         "issue8_real_qwen_evidence_unproved")
+         "issue8_real_qwen_identity_unproved")
 
+    # This trace is deliberately outside the strict signed receipt schema.
+    # Validate original bytes via a separate official GitHub GET client.
     independent = official_issue_reader(token)
+    source_receipts = observed.get("sources")
+    need(type(source_receipts) is list and len(source_receipts) == 1
+         and type(candidate_trace) is list and len(candidate_trace) == 1
+         and type(observed.get("receipt_sha256")) is str
+         and digest(canonical({
+             k: value for k, value in observed.items()
+             if k != "receipt_sha256"
+         })) == observed["receipt_sha256"],
+         "issue8_candidate_receipt_unverified")
+    trace = candidate_trace[0]
+    expected_source = source_receipts[0]
+    need(type(trace) is dict
+         and set(trace) == {"path", "candidate_lines", "decision"}
+         and trace.get("path") == DOC
+         and type(trace.get("candidate_lines")) is list
+         and len(trace["candidate_lines"]) <= 5
+         and all(type(line) is int and 1 <= line <= 4096
+                 for line in trace["candidate_lines"])
+         and len(set(trace["candidate_lines"])) == len(trace["candidate_lines"])
+         and trace.get("decision") in {
+             "no_candidates", "insufficient", "supported",
+         }
+         and (len(trace["candidate_lines"]) == 0) ==
+             (trace["decision"] == "no_candidates")
+         and (trace["decision"] == "supported") ==
+             (observed["state"] == "supported")
+         and type(expected_source) is dict
+         and expected_source.get("path") == DOC
+         and expected_source.get("ref_sha") == MAIN,
+         "issue8_candidate_trace_unverified")
+    text, blob, source_digest, source_bytes = _file_data(
+        independent.get_text_file(REPO, DOC, MAIN), DOC,
+    )
+    need(expected_source.get("blob_sha") == blob
+         and expected_source.get("sha256") == source_digest
+         and expected_source.get("bytes") == source_bytes,
+         "issue8_candidate_source_drift")
+    source_lines = text.splitlines()
+    need(all(line <= len(source_lines) for line in trace["candidate_lines"]),
+         "issue8_candidate_line_out_of_bounds")
+    acceptance_candidate_seen = any(
+        "Builder" in source_lines[line - 1]
+        and "42/42" in source_lines[line - 1]
+        for line in trace["candidate_lines"]
+    )
+    # Only enumerated paths, integer line numbers and booleans are emitted.
+    print(json.dumps({
+        "result": "ISSUE8_RAG_CANDIDATE_LINES_ATTESTED",
+        "worker_sha": MAIN,
+        "run_id": run_id,
+        "source_path": DOC,
+        "source_sha256": source_digest,
+        "candidate_lines": trace["candidate_lines"],
+        "selection_decision": trace["decision"],
+        "source_contains_acceptable_line": acceptance_candidate_seen,
+        "observed_state": observed["state"],
+        "model_calls": observed["model_calls"],
+        "model_process_verified": True,
+        "independent_source_readback": True,
+        "raw_source_or_model_text_logged": False,
+        "code_modified": False, "cas_write": False,
+        "draft_pr_created": False,
+    }, sort_keys=True))
+    need(observed.get("state") == "supported"
+         and observed.get("model_calls") == 2,
+         "issue8_real_qwen_evidence_unproved")
 
     def source_reader(path: str, sha: str) -> bytes:
         need((path, sha) == (DOC, MAIN),

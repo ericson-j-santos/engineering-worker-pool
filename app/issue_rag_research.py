@@ -65,16 +65,41 @@ class IssueRAGResearch:
     """Separate read-only capability; not a worker or GitHub writer."""
 
     def __init__(self, *, reader: IssueReader, independent_reader: IssueReader,
-                 planner: Any, approved_paths: tuple[str, ...]) -> None:
+                 planner: Any, approved_paths: tuple[str, ...],
+                 diagnostic_sink: list[dict[str, Any]] | None = None) -> None:
         require(type(approved_paths) is tuple and 1 <= len(approved_paths) <= MAX_SOURCES
                 and len(set(approved_paths)) == len(approved_paths)
                 and all(type(p) is str and p in ALLOWED_SOURCES
                         for p in approved_paths),
                 "rag_source_allowlist_invalid")
+        require(diagnostic_sink is None or
+                (type(diagnostic_sink) is list and not diagnostic_sink),
+                "rag_diagnostic_sink_invalid")
+        self._diagnostic_sink = diagnostic_sink
         self.reader = reader
         self.independent_reader = independent_reader
         self.planner = planner
         self.approved_paths = approved_paths
+
+    def _record_candidates(self, path: str, lines: list[int],
+                           decision: str) -> None:
+        """Record only bounded source metadata, never model/source text."""
+        if self._diagnostic_sink is None:
+            return
+        require(type(path) is str and path in self.approved_paths
+                and type(lines) is list and len(lines) <= MAX_LINES
+                and all(type(line) is int and 1 <= line <= 4096
+                        for line in lines)
+                and len(set(lines)) == len(lines)
+                and decision in {"no_candidates", "insufficient", "supported"}
+                and ((not lines) == (decision == "no_candidates"))
+                and len(self._diagnostic_sink) < MAX_SOURCES,
+                "rag_diagnostic_metadata_invalid")
+        self._diagnostic_sink.append({
+            "path": path,
+            "candidate_lines": list(lines),
+            "decision": decision,
+        })
 
     @staticmethod
     def _read_authorized(reader: IssueReader, binding: IssueBinding) -> None:
@@ -146,6 +171,7 @@ class IssueRAGResearch:
             snippets.sort(key=lambda x: (-x["score"], x["line"]))
             snippets = snippets[:MAX_LINES]
             if not snippets:
+                self._record_candidates(chosen, [], "no_candidates")
                 continue
             selected = self.planner.select(QUESTION, [
                 {"citation_index": i, "path": s["path"], "line": s["line"],
@@ -153,6 +179,10 @@ class IssueRAGResearch:
                 for i, s in enumerate(snippets)
             ])
             candidate = AgentCoreResearchBridge._check_selection(selected, snippets)
+            self._record_candidates(
+                chosen, [s["line"] for s in snippets],
+                "insufficient" if candidate is None else "supported",
+            )
             if candidate is None:
                 continue
             citation = {**candidate, "source_sha256": sha256}
@@ -220,7 +250,8 @@ def official_issue_reader(token: str | None = None) -> IssueReader:
     return Reader(token)
 
 
-def research_issue(binding: IssueBinding, *, github_token: str | None = None) -> dict[str, Any]:
+def research_issue(binding: IssueBinding, *, github_token: str | None = None,
+                   diagnostic_sink: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Explicit DEV opt-in. Caller first obtains IssueBinding from official API."""
     from app.agent_rag_consumer import NativeQwenResearchPlanner
     from app.native_structured_ollama import NativeStructuredOllama
@@ -231,4 +262,5 @@ def research_issue(binding: IssueBinding, *, github_token: str | None = None) ->
         independent_reader=official_issue_reader(github_token),
         planner=NativeQwenResearchPlanner(),
         approved_paths=("docs/ISSUE_QWEN7B_DRAFT_HANDOFF.md",),
+        diagnostic_sink=diagnostic_sink,
     ).research(binding)
