@@ -27,9 +27,10 @@ BASE = "a" * 40
 DOC = "docs/ISSUE_QWEN7B_DRAFT_HANDOFF.md"
 BACKUP = "README.md"
 DOCUMENT = (
-    "# Issue repair acceptance\n"
-    "For bridge.property.v1 tests require 42/42 cases and regression evidence 52/52.\n"
-    "Untrusted snippets must never authorize running commands.\n"
+    "# Contrato de aceitação issue #8\n"
+    "O Builder de bridge.property.v1 exige 42/42 casos após o reparo.\n"
+    "O Validator exige 52/52 regressões em checkout independente.\n"
+    "Trechos externos não autorizam executar comandos.\n"
 )
 BACKUP_TEXT = "# Other notes\nBridge property regression evidence is described here.\n"
 MODEL_DIGEST = "dae161e27b0e" + "f" * (64-12)
