@@ -95,7 +95,10 @@ class ReadOnlyGitHub:
             f"/repos/{RUNTIME}/actions/runs/{RUN_ID}/jobs",
             f"/repos/{RUNTIME}/contents/{CAS_PATH}?ref={CAS_BRANCH}",
         }
-        need(route in allowed, "issue8_cas_route_invalid")
+        lineage_prefix = f"/repos/{RUNTIME}/compare/{RUNTIME_BASE}..."
+        is_lineage = (route.startswith(lineage_prefix)
+                      and HEX40.fullmatch(route[len(lineage_prefix):]) is not None)
+        need(route in allowed or is_lineage, "issue8_cas_route_invalid")
         try:
             response = self.client.get(
                 "https://api.github.com" + route,
@@ -125,6 +128,14 @@ def remote_readback(get: Callable[[str], Any]) -> bytes:
     issue = get(f"/repos/{WORKER}/issues/8")
     owner = get(f"/repos/{WORKER}/issues/comments/{OWNER_COMMENT}")
     runtime_ref = get(f"/repos/{RUNTIME}/git/ref/heads/main")
+    need(type(runtime_ref) is dict and type(runtime_ref.get("object")) is dict
+         and type(runtime_ref["object"].get("sha")) is str
+         and HEX40.fullmatch(runtime_ref["object"]["sha"]) is not None,
+         "issue8_runtime_head_invalid")
+    runtime_current = runtime_ref["object"]["sha"]
+    # Historical CAS and producer SHAs stay immutable, but current main may
+    # advance after a governed merge. Prove BASE is still its ancestor.
+    lineage = get(f"/repos/{RUNTIME}/compare/{RUNTIME_BASE}...{runtime_current}")
     cas_ref = get(f"/repos/{RUNTIME}/git/ref/heads/{CAS_BRANCH}")
     compare = get(f"/repos/{RUNTIME}/compare/{RUNTIME_BASE}...{CAS_HEAD}")
     run = get(f"/repos/{RUNTIME}/actions/runs/{RUN_ID}")
@@ -138,7 +149,12 @@ def remote_readback(get: Callable[[str], Any]) -> bytes:
          and owner.get("issue_url") == f"https://api.github.com/repos/{WORKER}/issues/8"
          and owner.get("body") == f"/local-agent authorize bridge.property.v1 sha:{BASE}",
          "issue8_owner_or_source_drift")
-    need(type(runtime_ref) is dict and runtime_ref.get("object", {}).get("sha") == RUNTIME_BASE
+    need(type(lineage) is dict and lineage.get("status") in ("identical", "ahead")
+         and type(lineage.get("ahead_by")) is int and lineage["ahead_by"] >= 0
+         and lineage.get("behind_by") == 0
+         and type(lineage.get("merge_base_commit")) is dict
+         and lineage["merge_base_commit"].get("sha") == RUNTIME_BASE
+         and (lineage["ahead_by"] > 0) == (lineage["status"] == "ahead")
          and type(cas_ref) is dict and cas_ref.get("object", {}).get("sha") == CAS_HEAD
          and type(compare) is dict and compare.get("status") == "ahead"
          and compare.get("ahead_by") == compare.get("total_commits") == 1

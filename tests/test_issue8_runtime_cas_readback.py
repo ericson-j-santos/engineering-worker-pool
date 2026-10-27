@@ -24,7 +24,11 @@ def fake_api(raw: bytes) -> tuple[dict[str, dict], str]:
             "issue_url": f"https://api.github.com/repos/{h.WORKER}/issues/8",
             "body": f"/local-agent authorize bridge.property.v1 sha:{h.BASE}",
         },
-        f"/repos/{h.RUNTIME}/git/ref/heads/main": {"object": {"sha": h.RUNTIME_BASE}},
+        f"/repos/{h.RUNTIME}/git/ref/heads/main": {"object": {"sha": "a10e3d4855b00e8933921571c4c868333a7b60ba"}},
+        f"/repos/{h.RUNTIME}/compare/{h.RUNTIME_BASE}...a10e3d4855b00e8933921571c4c868333a7b60ba": {
+            "status": "ahead", "ahead_by": 1, "behind_by": 0,
+            "merge_base_commit": {"sha": h.RUNTIME_BASE},
+        },
         f"/repos/{h.RUNTIME}/git/ref/heads/{h.CAS_BRANCH}": {"object": {"sha": h.CAS_HEAD}},
         f"/repos/{h.RUNTIME}/compare/{h.RUNTIME_BASE}...{h.CAS_HEAD}": {
             "status": "ahead", "ahead_by": 1, "behind_by": 0,
@@ -71,7 +75,7 @@ def test_cross_repository_metadata_and_bytes_are_verified_without_any_write(monk
         return deepcopy(records[path])
 
     assert h.remote_readback(get) == expected
-    assert len(calls) == len(records) == 9
+    assert len(calls) == len(records) == 10
     assert all(path.startswith("/repos/") for path in calls)
     assert h.remote_readback(get) == expected  # replay has no mutation/model call
 
@@ -79,7 +83,7 @@ def test_cross_repository_metadata_and_bytes_are_verified_without_any_write(monk
 @pytest.mark.parametrize("fault", [
     "owner", "main", "runtime_main", "cas_ref", "cas_compare", "run_status",
     "run_sha", "validator_skipped", "builder_wrong_runner", "bundle_bytes",
-    "file_path", "file_sha", "issue_closed",
+    "file_path", "file_sha", "issue_closed", "history_rewritten",
 ])
 def test_invalid_external_evidence_fails_closed(monkeypatch, fault):
     (records, key), raw = fixture(monkeypatch)
@@ -91,17 +95,19 @@ def test_invalid_external_evidence_fails_closed(monkeypatch, fault):
     elif fault == "runtime_main":
         records[routes[3]]["object"]["sha"] = "0" * 40
     elif fault == "cas_ref":
-        records[routes[4]]["object"]["sha"] = "0" * 40
+        records[routes[5]]["object"]["sha"] = "0" * 40
     elif fault == "cas_compare":
-        records[routes[5]]["files"].append({"filename": "unrelated.txt", "status": "added"})
+        records[routes[6]]["files"].append({"filename": "unrelated.txt", "status": "added"})
+    elif fault == "history_rewritten":
+        records[routes[4]]["merge_base_commit"]["sha"] = "0" * 40
     elif fault == "run_status":
-        records[routes[6]]["conclusion"] = "failure"
+        records[routes[7]]["conclusion"] = "failure"
     elif fault == "run_sha":
-        records[routes[6]]["head_sha"] = "0" * 40
+        records[routes[7]]["head_sha"] = "0" * 40
     elif fault == "validator_skipped":
-        records[routes[7]]["jobs"][3]["conclusion"] = "skipped"
+        records[routes[8]]["jobs"][3]["conclusion"] = "skipped"
     elif fault == "builder_wrong_runner":
-        records[routes[7]]["jobs"][1]["runner_name"] = "other-host"
+        records[routes[8]]["jobs"][1]["runner_name"] = "other-host"
     elif fault == "bundle_bytes":
         records[key]["content"] = base64.b64encode(raw + b"X").decode("ascii")
         records[key]["size"] += 1
@@ -112,8 +118,12 @@ def test_invalid_external_evidence_fails_closed(monkeypatch, fault):
         records[key]["sha"] = "0" * 40
     elif fault == "issue_closed":
         records[routes[1]]["state"] = "closed"
+    def guarded_get(path):
+        if path not in records:
+            raise h.HandoffBlocked("issue8_test_lineage_unavailable")
+        return deepcopy(records[path])
     with pytest.raises(h.HandoffBlocked):
-        h.remote_readback(lambda path: deepcopy(records[path]))
+        h.remote_readback(guarded_get)
 
 
 def test_official_transport_rejects_arbitrary_uris_and_mutating_methods():
@@ -123,6 +133,8 @@ def test_official_transport_rejects_arbitrary_uris_and_mutating_methods():
             transport("/repos/ericson-j-santos/engineering-worker-pool/git/refs")
         with pytest.raises(h.HandoffBlocked, match="issue8_cas_route_invalid"):
             transport("/repos/ericson-j-santos/engineering-worker-pool/issues/8?extra=1")
+        with pytest.raises(h.HandoffBlocked, match="issue8_cas_route_invalid"):
+            transport(f"/repos/{h.RUNTIME}/compare/{h.RUNTIME_BASE}...not-a-sha")
     finally:
         transport.close()
 
