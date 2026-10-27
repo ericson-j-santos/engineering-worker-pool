@@ -82,6 +82,23 @@ jobs:
       - name: Verify fail-closed governed merge policy
         run: node --test tests/test_governed_auto_merge.cjs
 
+      - name: Checkout approved Worker Pool source for issue8 CAS readback
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'feat/issue8-runtime-cas-readback-20261026'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ericson-j-santos/engineering-worker-pool
+          ref: 87a8de64ea5ed2e4aef1a9cde51861edb61ffe5e
+          fetch-depth: 0
+          path: _issue8_source
+          persist-credentials: false
+
+      - name: Revalidate existing Qwen issue8 runtime CAS on independent hosted checkout
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'feat/issue8-runtime-cas-readback-20261026'
+        timeout-minutes: 4
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python -m scripts.issue8_runtime_cas_readback --source-root _issue8_source
+
       - name: Checkout canonical rules for disposable E2E
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/checkout@v4
