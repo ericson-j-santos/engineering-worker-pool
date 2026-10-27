@@ -20,9 +20,9 @@ from app.issue_rag_research import (
     IssueRAGResearch, official_issue_reader, research_issue,
 )
 
-MAIN = "be69b27455f99606a03ce5cba6ca809e1082f2b4"
+MAIN = "87a8de64ea5ed2e4aef1a9cde51861edb61ffe5e"
 ISSUE = 8
-COMMENT_ID = 6427072933
+COMMENT_ID = 6430299388
 DOC = "docs/ISSUE_QWEN7B_DRAFT_HANDOFF.md"
 
 

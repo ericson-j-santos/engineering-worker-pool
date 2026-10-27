@@ -547,5 +547,6 @@ def test_real_probe_remains_get_only_and_refusal_fails_closed():
 def test_hosted_issue_probe_is_pinned_to_current_authorized_merge_sha():
     """Prevent a CI probe from silently reusing the premerge owner admission."""
     from scripts.issue_rag_real_qwen_e2e import MAIN, COMMENT_ID
-    assert MAIN == "be69b27455f99606a03ce5cba6ca809e1082f2b4"
-    assert COMMENT_ID == 6427072933
+    from scripts.issue8_runtime_cas_readback import BASE, OWNER_COMMENT
+    assert MAIN == BASE == "87a8de64ea5ed2e4aef1a9cde51861edb61ffe5e"
+    assert COMMENT_ID == OWNER_COMMENT == 6430299388
