@@ -1,0 +1,42 @@
+name: DEV routing pre-PR contract checks
+on:
+  push:
+    branches:
+      - feat/task-routing-pinned-or-pool-20261105
+    paths:
+      - app/store.py
+      - app/main.py
+      - app/work.py
+      - tests/test_execution_routing.py
+      - tests/test_api.py
+      - tests/test_work_orchestrator.py
+      - .github/workflows/host-routing-prepr.yml
+permissions:
+  contents: read
+concurrency:
+  group: host-routing-prepr-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  route-contract:
+    if: github.repository == 'ericson-j-santos/engineering-worker-pool'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify SHA-bound checkout
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install reviewed dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Syntax validation
+        run: python -m compileall -q app tests
+      - name: Routing positive, negative, replay and regression
+        run: python -m pytest -q tests/test_execution_routing.py tests/test_store.py tests/test_api.py tests/test_work_orchestrator.py
