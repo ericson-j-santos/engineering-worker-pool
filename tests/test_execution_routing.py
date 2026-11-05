@@ -170,9 +170,21 @@ def test_existing_sqlite_schema_adds_optional_route_fields(tmp_path):
     path = tmp_path / "legacy.db"
     with sqlite3.connect(path) as db:
         db.execute("""CREATE TABLE tasks (
-            task_id TEXT PRIMARY KEY, repository TEXT, state TEXT,
-            priority INTEGER, created_at TEXT, updated_at TEXT,
-            leased_by TEXT, workspace_key TEXT
+            task_id TEXT PRIMARY KEY, repository TEXT NOT NULL,
+            issue_number INTEGER NOT NULL, request_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            state TEXT NOT NULL, priority INTEGER NOT NULL,
+            branch TEXT NOT NULL, workspace_key TEXT NOT NULL,
+            base_sha TEXT, produced_sha TEXT,
+            builder_worker_id TEXT, validator_worker_id TEXT,
+            leased_by TEXT, lease_token TEXT, lease_expires_at TEXT,
+            lease_generation INTEGER NOT NULL DEFAULT 0,
+            attempt_id TEXT, fencing_required INTEGER NOT NULL DEFAULT 0,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL, blocked_reason TEXT,
+            last_error TEXT, correlation_id TEXT NOT NULL,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            last_material_progress_at TEXT NOT NULL, completed_at TEXT
         )""")
     store = WorkerPoolStore(path)
     with sqlite3.connect(path) as db:
