@@ -1,0 +1,182 @@
+"""Contrato DEV: task fixada por host ou distribuída em pool elegível.
+
+Fixtures sintéticas: não atestam runner, Gateway nem execução física.
+"""
+from __future__ import annotations
+
+import sqlite3
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from app.store import ConflictError, WorkerPoolStore
+
+
+class Clock:
+    def __init__(self):
+        self.value = datetime(2026, 11, 5, 12, 0, tzinfo=timezone.utc)
+
+    def __call__(self):
+        return self.value
+
+    def advance(self, seconds: int):
+        self.value += timedelta(seconds=seconds)
+
+
+@pytest.fixture
+def pool(tmp_path):
+    clock = Clock()
+    store = WorkerPoolStore(
+        tmp_path / "route.db", clock=clock, expected_rules_sha="a" * 40,
+        heartbeat_ttl_seconds=90, default_lease_seconds=120,
+        progress_stall_seconds=30, default_max_attempts=3,
+    )
+    return store, clock
+
+
+def worker(store, name: str, host: str, role: str = "builder"):
+    return store.register_worker(
+        worker_id=name, host=host, role=role, profile="NORMAL",
+        correlation_id="route-" + name, rules_sha="a" * 40,
+        gateway_ok=True, state_validated=True,
+        worktree_root=f"C:/dev/chatgpt-workers/{name}",
+    )
+
+
+def task(store, request_id="route-1", **extra):
+    return store.enqueue_task(
+        repository="ericson-j-santos/engineering-worker-pool",
+        issue_number=60, request_id=request_id, correlation_id="host-routing-20261105",
+        base_sha="1" * 40, **extra,
+    )
+
+
+def claim(store, name: str, role="builder", only_task_id=None):
+    return store.claim_task(
+        worker_id=name, role=role, correlation_id="route-claim-" + name,
+        only_task_id=only_task_id,
+    )
+
+
+def test_pinned_host_builder_validator_and_exact_claim_fail_closed(pool):
+    store, _ = pool
+    worker(store, "builder-desktop", "DESKTOP-PDQK954")
+    worker(store, "builder-noteri", "NOTERI")
+    worker(store, "validator-desktop", "DESKTOP-PDQK954", role="validator")
+    worker(store, "validator-noteri", "NOTERI", role="validator")
+    created, fresh = task(
+        store, execution_mode="pinned_host", target_host="DESKTOP-PDQK954"
+    )
+    assert fresh is True
+    assert created["target_host"] == "DESKTOP-PDQK954"
+    assert created["execution_mode"] == "pinned_host"
+
+    assert claim(store, "builder-noteri")[0] is None
+    assert claim(store, "builder-noteri", only_task_id=created["task_id"])[0] is None
+    selected, lease = claim(store, "builder-desktop", only_task_id=created["task_id"])
+    assert selected["task_id"] == created["task_id"] and lease is not None
+    store.start_task(task_id=created["task_id"], worker_id="builder-desktop",
+                     lease_token=lease.lease_token, correlation_id="route-start")
+    store.submit_for_validation(
+        task_id=created["task_id"], worker_id="builder-desktop",
+        lease_token=lease.lease_token, produced_sha="b" * 40,
+        correlation_id="route-handoff",
+    )
+    assert claim(store, "validator-noteri", role="validator")[0] is None
+    validated, val_lease = claim(
+        store, "validator-desktop", role="validator",
+        only_task_id=created["task_id"],
+    )
+    assert validated["produced_sha"] == "b" * 40 and val_lease is not None
+    done = store.complete_task(
+        task_id=created["task_id"], worker_id="validator-desktop",
+        lease_token=val_lease.lease_token, correlation_id="route-complete",
+    )
+    assert done["state"] == "completed"
+    assert store.get_task(created["task_id"])["target_host"] == "DESKTOP-PDQK954"
+
+
+@pytest.mark.parametrize("mode,host", [
+    ("unknown", None), ("pinned_host", None),
+    ("pinned_host", "x/other"), ("pinned_host", "x\\other"),
+    ("eligible_pool", "NOTERI"), ("eligible_pool", ""),
+])
+def test_invalid_route_is_rejected_without_enqueue(pool, mode, host):
+    store, _ = pool
+    with pytest.raises(ValueError):
+        task(store, execution_mode=mode, target_host=host)
+    assert store.snapshot()["tasks"] == []
+
+
+def test_replay_preserves_route_and_rejects_target_change(pool):
+    store, _ = pool
+    original, created = task(store, execution_mode="pinned_host", target_host="NOTERI")
+    replay, created_again = task(store, execution_mode="pinned_host", target_host="NOTERI")
+    assert created and not created_again and replay["task_id"] == original["task_id"]
+    with pytest.raises(ConflictError, match="execution_route divergente"):
+        task(store, execution_mode="pinned_host", target_host="DESKTOP-PDQK954")
+    with pytest.raises(ConflictError, match="execution_route divergente"):
+        task(store, execution_mode="eligible_pool")
+    reread = store.get_task(original["task_id"])
+    assert reread["target_host"] == "NOTERI" and reread["state"] == "queued"
+    assert len(store.snapshot()["tasks"]) == 1
+
+
+def test_legacy_pool_default_allows_other_host(pool):
+    store, _ = pool
+    worker(store, "builder-any", "NOTERI")
+    queued, created = task(store)
+    assert created and queued["execution_mode"] == "eligible_pool"
+    assert queued["target_host"] is None
+    claimed, lease = claim(store, "builder-any")
+    assert lease is not None and claimed["task_id"] == queued["task_id"]
+
+
+def test_watchdog_does_not_reroute_pinned_task_outside_host(pool):
+    store, clock = pool
+    worker(store, "desktop-a", "DESKTOP-PDQK954")
+    worker(store, "noteri-b", "NOTERI")
+    queued, _ = task(store, execution_mode="pinned_host", target_host="DESKTOP-PDQK954")
+    selected, lease = claim(store, "desktop-a")
+    assert selected and lease
+    store.start_task(task_id=queued["task_id"], worker_id="desktop-a",
+                     lease_token=lease.lease_token, correlation_id="route-start")
+    clock.advance(31)
+    result = store.recover_stalled_tasks()
+    assert result["blocked"] == 1 and result["rerouted"] == 0
+    blocked = store.get_task(queued["task_id"])
+    assert blocked["state"] == "blocked"
+    assert blocked["leased_by"] is None
+    assert claim(store, "noteri-b")[0] is None
+
+
+def test_watchdog_allows_alternative_on_same_host(pool):
+    store, clock = pool
+    worker(store, "desktop-a", "DESKTOP-PDQK954")
+    worker(store, "desktop-b", "DESKTOP-PDQK954")
+    queued, _ = task(store, execution_mode="pinned_host", target_host="DESKTOP-PDQK954")
+    selected, lease = claim(store, "desktop-a")
+    assert selected and lease
+    store.start_task(task_id=queued["task_id"], worker_id="desktop-a",
+                     lease_token=lease.lease_token, correlation_id="route-start")
+    clock.advance(31)
+    result = store.recover_stalled_tasks()
+    assert result["rerouted"] == 1 and result["blocked"] == 0
+    recovered, recovered_lease = claim(store, "desktop-b")
+    assert recovered_lease is not None and recovered["task_id"] == queued["task_id"]
+
+
+def test_existing_sqlite_schema_adds_optional_route_fields(tmp_path):
+    path = tmp_path / "legacy.db"
+    with sqlite3.connect(path) as db:
+        db.execute("""CREATE TABLE tasks (
+            task_id TEXT PRIMARY KEY, repository TEXT, state TEXT,
+            priority INTEGER, created_at TEXT, updated_at TEXT,
+            leased_by TEXT, workspace_key TEXT
+        )""")
+    store = WorkerPoolStore(path)
+    with sqlite3.connect(path) as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)")}
+    assert {"execution_mode", "target_host"}.issubset(columns)
+    queued, created = task(store, request_id="migrated")
+    assert created and queued["execution_mode"] == "eligible_pool"
