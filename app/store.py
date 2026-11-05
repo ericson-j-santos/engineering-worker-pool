@@ -1414,7 +1414,7 @@ class WorkerPoolStore:
                      why_idle=why)
             views.append(w)
         safe = ("task_id","repository","issue_number","state","priority","branch","workspace_key",
-                "base_sha","produced_sha","builder_worker_id","validator_worker_id","leased_by",
+                "execution_mode","target_host","base_sha","produced_sha","builder_worker_id","validator_worker_id","leased_by",
                 "lease_expires_at","lease_generation","attempt_id","fencing_required",
                 "attempt_count","max_attempts","blocked_reason","last_error",
                 "correlation_id","updated_at","last_material_progress_at")
