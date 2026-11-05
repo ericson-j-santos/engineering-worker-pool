@@ -234,6 +234,8 @@ class TaskCreate(BaseModel):
     target_branch: str | None = Field(default=None, max_length=200)
     max_attempts: int | None = Field(default=None, ge=1, le=20)
     fencing_required: bool = False
+    execution_mode: Literal["eligible_pool", "pinned_host"] = "eligible_pool"
+    target_host: str | None = Field(default=None, max_length=128)
 
 
 class ClaimRequest(BaseModel):
