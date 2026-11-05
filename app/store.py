@@ -16,6 +16,8 @@ STATES = ("queued", "leased", "running", "validating", "blocked", "completed", "
 ACTIVE = ("leased", "running", "validating")
 ROLES = ("builder", "validator")
 PROFILES = ("NORMAL", "ESTUDO")
+ROUTING_MODES = ("eligible_pool", "pinned_host")
+HOST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 CHECKPOINT_EFFECT_STATES = ("none", "pending", "confirmed", "not_applied", "unknown")
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -85,6 +87,23 @@ def validate_target_branch(value: str) -> str:
 
 def workspace(repository: str, task: str) -> str:
     return "worker-" + hashlib.sha256(f"{repository}|{task}".encode()).hexdigest()[:16]
+
+
+
+def normalize_route(
+    execution_mode: str, target_host: str | None
+) -> tuple[str, str | None]:
+    """Validate task routing intent; never silently turn pinned into pooled."""
+    mode = str(execution_mode or "").strip()
+    host = str(target_host).strip() if target_host is not None else None
+    if mode not in ROUTING_MODES:
+        raise ValueError("execution_mode inválido")
+    if mode == "pinned_host":
+        if not host or not HOST_ID.fullmatch(host):
+            raise ValueError("target_host obrigatório e inválido para pinned_host")
+    elif host is not None:
+        raise ValueError("eligible_pool não aceita target_host")
+    return mode, host
 
 
 @dataclass(frozen=True)
@@ -210,7 +229,10 @@ class WorkerPoolStore:
               state TEXT NOT NULL CHECK(state IN
                 ('queued','leased','running','validating','blocked','completed','failed')),
               priority INTEGER NOT NULL, branch TEXT NOT NULL,
-              workspace_key TEXT NOT NULL, base_sha TEXT, produced_sha TEXT,
+              workspace_key TEXT NOT NULL,
+              execution_mode TEXT NOT NULL DEFAULT 'eligible_pool'
+                CHECK(execution_mode IN ('eligible_pool','pinned_host')),
+              target_host TEXT, base_sha TEXT, produced_sha TEXT,
               builder_worker_id TEXT, validator_worker_id TEXT, leased_by TEXT,
               lease_token TEXT, lease_expires_at TEXT,
               lease_generation INTEGER NOT NULL DEFAULT 0 CHECK(lease_generation>=0),
@@ -301,6 +323,13 @@ class WorkerPoolStore:
                         "ALTER TABLE tasks ADD COLUMN fencing_required "
                         "INTEGER NOT NULL DEFAULT 0 CHECK(fencing_required IN (0,1))"
                     )
+                if "execution_mode" not in task_columns:
+                    db.execute(
+                        "ALTER TABLE tasks ADD COLUMN execution_mode "
+                        "TEXT NOT NULL DEFAULT 'eligible_pool'"
+                    )
+                if "target_host" not in task_columns:
+                    db.execute("ALTER TABLE tasks ADD COLUMN target_host TEXT")
                 db.executescript(
                     """CREATE TRIGGER IF NOT EXISTS guard_fenced_task_admission
                          BEFORE INSERT ON tasks
@@ -517,7 +546,9 @@ class WorkerPoolStore:
         correlation_id: str, priority: int = 100, base_sha: str | None = None,
         max_attempts: int | None = None, target_branch: str | None = None,
         fencing_required: bool = False,
+        execution_mode: str = "eligible_pool", target_host: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
+        execution_mode, target_host = normalize_route(execution_mode, target_host)
         if "/" not in repository or issue_number < 1 or not request_id.strip() or not correlation_id.strip():
             raise ValueError("identidade da task inválida")
         if base_sha and not SHA40.fullmatch(base_sha.lower()):
@@ -536,6 +567,10 @@ class WorkerPoolStore:
             self._ensure_repository_lane(db, repository.strip())
             row = db.execute("SELECT * FROM tasks WHERE idempotency_key=?", (key,)).fetchone()
             created = row is None
+            if not created and (
+                row["execution_mode"] != execution_mode or row["target_host"] != target_host
+            ):
+                raise ConflictError("execution_route divergente no replay")
             if not created and target_branch is not None and row["branch"] != task_branch:
                 raise ConflictError("target_branch divergente no replay")
             if not created and bool(row["fencing_required"]) != bool(fencing_required):
@@ -543,11 +578,11 @@ class WorkerPoolStore:
             if created:
                 db.execute("""INSERT INTO tasks(
                   task_id,repository,issue_number,request_id,idempotency_key,state,priority,
-                  branch,workspace_key,base_sha,max_attempts,correlation_id,created_at,updated_at,
-                  last_material_progress_at,fencing_required)
-                  VALUES(?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?)""",
+                  branch,workspace_key,execution_mode,target_host,base_sha,max_attempts,
+                  correlation_id,created_at,updated_at,last_material_progress_at,fencing_required)
+                  VALUES(?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?)""",
                   (tid, repository.strip(), issue_number, request_id.strip(), key, int(priority),
-                   task_branch, workspace(repository, tid),
+                   task_branch, workspace(repository, tid), execution_mode, target_host,
                    base_sha.lower() if base_sha else None, attempts,
                    correlation_id.strip(), stamp, stamp, stamp, int(bool(fencing_required))))
                 row = db.execute("SELECT * FROM tasks WHERE task_id=?", (tid,)).fetchone()
@@ -657,6 +692,8 @@ class WorkerPoolStore:
         role = "validator" if row["produced_sha"] else "builder"
         if worker["role"] != role or worker["profile"] != "NORMAL":
             return False
+        if row["execution_mode"] == "pinned_host" and worker["host"] != row["target_host"]:
+            return False
         if not worker["gateway_ok"] or not worker["state_validated"]:
             return False
         if self.expected_rules_sha and worker["rules_sha"] != self.expected_rules_sha:
@@ -761,7 +798,7 @@ class WorkerPoolStore:
                 # mutate unrelated leases as a side effect of a failed match.
                 self._recover(db)
                 self._recover_stalled(db)
-            self._ready(db, worker_id, role)
+            worker = self._ready(db, worker_id, role)
             if role == "builder":
                 row = db.execute(
                     """SELECT t.* FROM tasks t
@@ -769,6 +806,7 @@ class WorkerPoolStore:
                        WHERE t.state='queued'
                           AND t.fencing_required=?
                          AND r.enabled=1
+                         AND (t.execution_mode='eligible_pool' OR t.target_host=?)
                          AND (
                            NOT EXISTS(
                              SELECT 1 FROM worker_repository_affinity wa
@@ -792,7 +830,8 @@ class WorkerPoolStore:
                          r.repository,
                          t.priority,t.created_at,t.rowid,t.task_id
                        LIMIT 1""",
-                    (int(bool(fencing_required)), worker_id, worker_id, only_task_id, only_task_id),
+                    (int(bool(fencing_required)), worker["host"], worker_id, worker_id,
+                     only_task_id, only_task_id),
                 ).fetchone()
                 wanted, next_state = "queued", "leased"
             else:
@@ -804,6 +843,7 @@ class WorkerPoolStore:
                          AND t.leased_by IS NULL
                          AND t.produced_sha IS NOT NULL
                          AND (t.builder_worker_id IS NULL OR t.builder_worker_id<>?)
+                         AND (t.execution_mode='eligible_pool' OR t.target_host=?)
                          AND (
                            NOT EXISTS(
                              SELECT 1 FROM worker_repository_affinity wa
@@ -822,8 +862,8 @@ class WorkerPoolStore:
                          r.repository,
                          t.priority,t.updated_at,t.rowid,t.task_id
                        LIMIT 1""",
-                    (int(bool(fencing_required)), worker_id, worker_id, worker_id,
-                     only_task_id, only_task_id),
+                    (int(bool(fencing_required)), worker_id, worker["host"], worker_id,
+                     worker_id, only_task_id, only_task_id),
                 ).fetchone()
                 wanted, next_state = "validating", "validating"
             if not row:
