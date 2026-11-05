@@ -334,3 +334,32 @@ def test_work_replay_rejects_fencing_mode_drift(tmp_path: Path, monkeypatch) -> 
         json={**payload, "fencing_required": False},
     )
     assert drift.status_code == 409
+
+
+def test_work_route_contract_uses_same_pinned_task_policy(tmp_path: Path, monkeypatch) -> None:
+    _module, client, headers = load_app(tmp_path, monkeypatch)
+    payload = {
+        "repository": "example/consumer",
+        "issue_number": 60,
+        "request_id": "route-work",
+        "correlation_id": "route-work",
+        "base_sha": "1" * 40,
+        "execution_mode": "pinned_host",
+        "target_host": "DESKTOP-PDQK954",
+    }
+    first = client.post("/v1/work", headers=headers, json=payload)
+    assert first.status_code == 201
+    work = first.json()["work"]
+    assert work["task"]["execution_mode"] == "pinned_host"
+    assert work["task"]["target_host"] == "DESKTOP-PDQK954"
+    replay = client.post("/v1/work", headers=headers, json=payload)
+    assert replay.status_code == 200
+    assert replay.json()["work"]["work_id"] == work["work_id"]
+    different = client.post(
+        "/v1/work", headers=headers,
+        json={**payload, "target_host": "NOTERI"},
+    )
+    assert different.status_code == 409
+    unchanged = client.get(f"/v1/work/{work['work_id']}", headers=headers)
+    assert unchanged.status_code == 200
+    assert unchanged.json()["task"]["target_host"] == "DESKTOP-PDQK954"
