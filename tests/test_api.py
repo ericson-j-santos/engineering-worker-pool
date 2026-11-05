@@ -536,3 +536,65 @@ def test_repository_lane_and_worker_affinity_api(tmp_path: Path, monkeypatch) ->
         if item["worker_id"] == "desktop-builder-repo"
     )
     assert worker_view["repository_affinity"] == ["ericson-j-santos/painel-powerbi"]
+
+
+def test_api_pinned_route_is_enforced_and_replay_is_immutable(tmp_path: Path, monkeypatch) -> None:
+    _module, client, headers = load_app(tmp_path, monkeypatch)
+    for name, host in (("route-desktop", "DESKTOP-PDQK954"), ("route-noteri", "NOTERI")):
+        registered = client.post(
+            "/v1/workers", headers=headers,
+            json={
+                "worker_id": name, "host": host, "role": "builder",
+                "profile": "NORMAL", "rules_sha": "a" * 40,
+                "gateway_ok": True, "state_validated": True,
+                "correlation_id": "route-reg-" + name,
+            },
+        )
+        assert registered.status_code == 200
+    payload = {
+        "repository": "ericson-j-santos/engineering-worker-pool",
+        "issue_number": 60, "request_id": "api-route-1",
+        "correlation_id": "route-api", "base_sha": "1" * 40,
+        "execution_mode": "pinned_host", "target_host": "DESKTOP-PDQK954",
+    }
+    created = client.post("/v1/tasks", headers=headers, json=payload)
+    assert created.status_code == 201
+    task_id = created.json()["task"]["task_id"]
+    assert created.json()["task"]["execution_mode"] == "pinned_host"
+
+    wrong = client.post(
+        "/v1/claims/exact", headers=headers,
+        json={"task_id": task_id, "worker_id": "route-noteri",
+              "correlation_id": "route-wrong"},
+    )
+    assert wrong.status_code == 200 and wrong.json()["claimed"] is False
+
+    replay = client.post("/v1/tasks", headers=headers, json=payload)
+    assert replay.status_code == 200
+    assert replay.json()["created"] is False
+    different = client.post(
+        "/v1/tasks", headers=headers,
+        json={**payload, "target_host": "NOTERI"},
+    )
+    assert different.status_code == 409
+    missing = client.post(
+        "/v1/tasks", headers=headers,
+        json={**payload, "request_id": "api-route-missing", "target_host": None},
+    )
+    assert missing.status_code == 422
+    observed = client.get(f"/v1/tasks/{task_id}", headers=headers)
+    assert observed.status_code == 200
+    assert observed.json()["target_host"] == "DESKTOP-PDQK954"
+
+    right = client.post(
+        "/v1/claims/exact", headers=headers,
+        json={"task_id": task_id, "worker_id": "route-desktop",
+              "correlation_id": "route-right"},
+    )
+    assert right.status_code == 200 and right.json()["claimed"] is True
+    snap = client.get("/v1/snapshot", headers=headers)
+    assert snap.status_code == 200
+    target = next(t for t in snap.json()["tasks"] if t["task_id"] == task_id)
+    assert target["execution_mode"] == "pinned_host"
+    assert target["target_host"] == "DESKTOP-PDQK954"
+    assert "lease_token" not in target
