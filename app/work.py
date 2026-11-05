@@ -168,6 +168,8 @@ class WorkOrchestrator:
         max_attempts: int | None = None,
         merge_policy: str = "governed",
         fencing_required: bool = False,
+        execution_mode: str = "eligible_pool",
+        target_host: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
         if merge_policy not in MERGE_POLICIES:
             raise ValueError("merge_policy inválida")
@@ -181,6 +183,7 @@ class WorkOrchestrator:
             target_branch=target_branch,
             max_attempts=max_attempts,
             fencing_required=fencing_required,
+            execution_mode=execution_mode, target_host=target_host,
         )
         work_id = self._work_id(task)
         stamp = iso(self.clock())
