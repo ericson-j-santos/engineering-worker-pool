@@ -10,6 +10,14 @@ import pytest
 from scripts import hosted_native_ollama_ci as native
 
 
+def test_git_sha_pattern_accepts_actual_40_hex_and_rejects_invalid():
+    assert native.HEX40.fullmatch("a" * 40)
+    assert native.HEX40.fullmatch("0" * 40)
+    assert native.HEX40.fullmatch("g" * 40) is None
+    assert native.HEX40.fullmatch("a" * 39) is None
+    assert native.HEX40.fullmatch("a" * 41) is None
+
+
 def test_native_ci_requires_exact_public_repo_and_branch(monkeypatch):
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     with pytest.raises(native.NativeCiBlocked, match="ci_identity_rejected"):
