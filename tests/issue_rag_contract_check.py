@@ -540,7 +540,10 @@ def test_real_probe_remains_get_only_and_refusal_fails_closed():
     assert '"raw_source_or_model_text_logged": False' in code
     assert "issue8_real_qwen_evidence_unproved" in code
     assert "source_contains_acceptable_line" in code
-    assert "independent.get_text_file(REPO, DOC, MAIN)" in code
+    # Read the exact owner-approved version in the independent client.
+    # Historical MAIN/COMMENT_ID remain unchanged and still exercised.
+    assert "independent.get_text_file(REPO, DOC, main_sha)" in code
+    assert "run_authorized_issue(MAIN, COMMENT_ID)" in code
     assert "draft_pr_created" in code
 
 
