@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.local_code_worker import WorkerBlocked, atomic_json, process
 from app.structured_code_worker import repair, validate, git, sha256, need, StructuredBlocked
 from app.structured_ollama import MODEL, StructuredOllama
+from app.native_structured_ollama import NativeStructuredOllama
 from local_worker_e2e import context, launch_session, RULES_SHA
 from structured_acceptance import cases, INSTRUCTION
 
@@ -70,6 +71,14 @@ class DiagnosticStructuredOllama(StructuredOllama):
         if self.progress_observer is not None:
             self.progress_observer(step, "completed")
         return response
+
+
+class HostedNativeDiagnosticOllama(DiagnosticStructuredOllama, NativeStructuredOllama):
+    """Preserve CI transport instrumentation while removing Docker introspection.
+
+    The native backend still enforces local model digest and no remote provider.
+    Only the explicit GitHub-hosted fixture opts into this adapter.
+    """
 
 
 def verify_evidence(folder: Path, sha: str, correlation: str) -> dict:
@@ -137,7 +146,17 @@ def inner() -> None:
         }
         atomic_json(artifact / "task.json", task)
         (artifact / "before.py").write_bytes(before)
-        provider = DiagnosticStructuredOllama()
+        native_ci = os.environ.get("HOSTED_NATIVE_OLLAMA_CI") == "1"
+        if native_ci:
+            need(os.environ.get("GITHUB_ACTIONS") == "true"
+                 and os.environ.get("GITHUB_REPOSITORY") ==
+                 "ericson-j-santos/engineering-worker-pool"
+                 and os.environ.get("NATIVE_OLLAMA_DEV") == "1",
+                 "native_ci_admission_invalid")
+        provider = (
+            HostedNativeDiagnosticOllama() if native_ci
+            else DiagnosticStructuredOllama()
+        )
         progress_state = {"phase": "initial", "started_ns": time.monotonic_ns()}
 
         def progress(step, event):
