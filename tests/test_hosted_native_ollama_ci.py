@@ -131,3 +131,85 @@ def test_hosted_diagnostic_uses_native_model_guard_not_docker(monkeypatch):
     monkeypatch.setenv("NATIVE_MODEL_DIGEST_PREFIX", "invalid")
     with pytest.raises(Exception, match="native_digest_pin_required"):
         HostedNativeDiagnosticOllama.no_cloud()
+
+
+def _rag_receipt(**overrides):
+    proof = {
+        "rag_real_github_and_native_qwen_e2e": True,
+        "pr_head_sha": "b083a23af7c55f96ee1c7f8daabbd51167bf4de6",
+        "model_digest_prefix": native.MODEL_DIGEST_PREFIX,
+        "model_calls": 2,
+        "independent_pr_and_source_readback": True,
+        "stale_head_negative_no_model_calls": True,
+        "no_git_writes_or_worker_dispatch": True,
+    }
+    proof.update(overrides)
+    return proof
+
+
+def test_pr_rag_receipt_gate_checks_real_readonly_source_and_model(monkeypatch):
+    import json
+
+    observed = []
+
+    class Result:
+        returncode = 0
+        stdout = json.dumps(_rag_receipt())
+
+    def invoke(args, **kwargs):
+        observed.append((args, kwargs))
+        return Result()
+
+    monkeypatch.setattr(native.subprocess, "run", invoke)
+    env = {"NATIVE_OLLAMA_DEV": "1",
+           "NATIVE_MODEL_DIGEST_PREFIX": native.MODEL_DIGEST_PREFIX,
+           "OLLAMA_NO_CLOUD": "1"}
+    receipt = native.verify_readonly_rag_e2e(env)
+    assert receipt["result"] == "HOSTED_NATIVE_QWEN7B_PR_RAG_VERIFIED"
+    assert receipt["independent_readback"] is True
+    assert observed[0][0] == [sys.executable, "-m", "scripts.rag_real_qwen_e2e"]
+    assert observed[0][1]["stderr"] == native.subprocess.DEVNULL
+    assert observed[0][1]["timeout"] <= 350
+    assert observed[0][1]["env"] is env
+
+
+@pytest.mark.parametrize("bad", [
+    {"pr_head_sha": "f" * 40},
+    {"model_digest_prefix": "f" * 12},
+    {"model_calls": 0},
+    {"model_calls": True},
+    {"stale_head_negative_no_model_calls": False},
+    {"independent_pr_and_source_readback": False},
+    {"no_git_writes_or_worker_dispatch": False},
+    {"rag_real_github_and_native_qwen_e2e": False},
+])
+def test_pr_rag_receipt_gate_rejects_spoofed_proofs(monkeypatch, bad):
+    import json
+
+    class Result:
+        returncode = 0
+        stdout = json.dumps(_rag_receipt(**bad))
+
+    monkeypatch.setattr(native.subprocess, "run", lambda *_a, **_k: Result())
+    env = {"NATIVE_OLLAMA_DEV": "1",
+           "NATIVE_MODEL_DIGEST_PREFIX": native.MODEL_DIGEST_PREFIX,
+           "OLLAMA_NO_CLOUD": "1"}
+    with pytest.raises(native.NativeCiBlocked, match="rag_readonly_evidence_invalid"):
+        native.verify_readonly_rag_e2e(env)
+
+
+def test_pr_rag_process_failure_and_missing_optin_fail_closed(monkeypatch):
+    import json
+
+    class Failed:
+        returncode = 1
+        stdout = json.dumps(_rag_receipt())
+
+    monkeypatch.setattr(native.subprocess, "run", lambda *_a, **_k: Failed())
+    env = {"NATIVE_OLLAMA_DEV": "1",
+           "NATIVE_MODEL_DIGEST_PREFIX": native.MODEL_DIGEST_PREFIX,
+           "OLLAMA_NO_CLOUD": "1"}
+    with pytest.raises(native.NativeCiBlocked, match="rag_real_process_failed"):
+        native.verify_readonly_rag_e2e(env)
+    with pytest.raises(native.NativeCiBlocked, match="rag_native_context_invalid"):
+        native.verify_readonly_rag_e2e({**env, "OLLAMA_NO_CLOUD": "0"})
