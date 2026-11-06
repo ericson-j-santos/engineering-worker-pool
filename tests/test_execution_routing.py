@@ -283,3 +283,15 @@ def test_pinned_route_rejects_unready_and_study_hosts(pool):
     with pytest.raises(ConflictError, match="profile ESTUDO"):
         claim(store, "desktop-study", only_task_id=queued["task_id"])
     assert store.get_task(queued["task_id"])["state"] == "queued"
+
+
+def test_postgres_v1_manifest_remains_signed_and_routing_opted_out():
+    from app.postgres_authority import PostgresWorkerPoolStore, SCHEMA_VERSION, _MIGRATION
+
+    assert SCHEMA_VERSION == 1
+    assert _MIGRATION.name == "postgres_authority_v1.sql"
+    assert PostgresWorkerPoolStore.supports_task_routing is False
+    source = _MIGRATION.read_text(encoding="utf-8")
+    assert "CREATE TABLE tasks(" in source
+    assert "execution_mode" not in source
+    assert "target_host" not in source
