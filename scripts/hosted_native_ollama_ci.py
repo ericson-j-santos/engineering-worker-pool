@@ -138,6 +138,60 @@ def verify_model() -> str:
             raise NativeCiBlocked("model_attestation_unavailable") from None
 
 
+
+def verify_readonly_rag_e2e(env: dict[str, str]) -> dict[str, object]:
+    """Run real PR9 RAG, verify sanitized proof, never surface model/source text.
+
+    The source PR's reviewed head is independently checked by its own module.
+    This is NOT the separate Issue #8 owner authorization gate.
+    """
+    need(env.get("NATIVE_OLLAMA_DEV") == "1"
+         and env.get("NATIVE_MODEL_DIGEST_PREFIX") == MODEL_DIGEST_PREFIX
+         and env.get("OLLAMA_NO_CLOUD") == "1", "rag_native_context_invalid")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "scripts.rag_real_qwen_e2e"],
+            cwd=ROOT, env=env, timeout=350, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise NativeCiBlocked("rag_real_process_unavailable_or_timed_out") from None
+    need(result.returncode == 0, "rag_real_process_failed")
+    need(type(result.stdout) is str and len(result.stdout) <= 16384,
+         "rag_receipt_size_invalid")
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    need(len(lines) == 1 and len(lines[0]) <= 8192,
+         "rag_receipt_shape_invalid")
+    try:
+        evidence = json.loads(lines[0])
+    except (ValueError, TypeError):
+        raise NativeCiBlocked("rag_receipt_json_invalid") from None
+    need(type(evidence) is dict
+         and evidence.get("rag_real_github_and_native_qwen_e2e") is True
+         and evidence.get("pr_head_sha") ==
+             "b083a23af7c55f96ee1c7f8daabbd51167bf4de6"
+         and evidence.get("model_digest_prefix") == MODEL_DIGEST_PREFIX
+         and type(evidence.get("model_calls")) is int
+         and evidence["model_calls"] >= 2
+         and evidence.get("independent_pr_and_source_readback") is True
+         and evidence.get("stale_head_negative_no_model_calls") is True
+         and evidence.get("no_git_writes_or_worker_dispatch") is True,
+         "rag_readonly_evidence_invalid")
+    # Print only fixed, evidence-derived structured fields; no source or replies.
+    verified = {
+        "result": "HOSTED_NATIVE_QWEN7B_PR_RAG_VERIFIED",
+        "pr_head_sha": evidence["pr_head_sha"],
+        "model_digest_prefix": MODEL_DIGEST_PREFIX,
+        "model_calls": evidence["model_calls"],
+        "independent_readback": True,
+        "read_only": True,
+    }
+    print(json.dumps(verified, sort_keys=True), flush=True)
+    return verified
+
+
+
 def run() -> None:
     sha = preflight()
     runner = Path(os.environ["RUNNER_TEMP"]).resolve()
@@ -215,6 +269,9 @@ def run() -> None:
                     and receipt.get("cloud_disabled") is True,
                     "structured_receipt_unverified",
                 )
+                # Independent GitHub PR context retrieval, with a real model,
+                # in the same native loopback environment and immutable source.
+                verify_readonly_rag_e2e(app_env)
                 print(json.dumps({
                     "result": "HOSTED_NATIVE_QWEN7B_E2E_VERIFIED",
                     "source_sha": sha, "model_digest": digest,
