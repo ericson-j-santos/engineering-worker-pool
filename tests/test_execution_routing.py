@@ -192,3 +192,94 @@ def test_existing_sqlite_schema_adds_optional_route_fields(tmp_path):
     assert {"execution_mode", "target_host"}.issubset(columns)
     queued, created = task(store, request_id="migrated")
     assert created and queued["execution_mode"] == "eligible_pool"
+
+
+class LegacyPostgresV1Replica(WorkerPoolStore):
+    """Exercise the shared v1 SQL surface without touching PostgreSQL."""
+
+    supports_task_routing = False
+
+
+def test_legacy_authority_schema_keeps_pooled_builder_validator_and_snapshot(tmp_path):
+    path = tmp_path / "pg-v1-replica.db"
+    clock = Clock()
+    pool = LegacyPostgresV1Replica(
+        path, clock=clock, expected_rules_sha="a" * 40,
+        heartbeat_ttl_seconds=90, progress_stall_seconds=30,
+    )
+    # Reproduce PostgreSQL v1: the canonical v1 task table has NO routing columns.
+    with sqlite3.connect(path) as db:
+        db.execute("ALTER TABLE tasks DROP COLUMN target_host")
+        db.execute("ALTER TABLE tasks DROP COLUMN execution_mode")
+        assert not {"execution_mode", "target_host"} & {
+            row[1] for row in db.execute("PRAGMA table_info(tasks)")
+        }
+    worker(pool, "old-builder", "HOST-A")
+    worker(pool, "old-validator", "HOST-B", role="validator")
+    queued, created = task(pool, request_id="pg-legacy")
+    assert created and queued["execution_mode"] == "eligible_pool"
+    assert queued["target_host"] is None
+    replay, created_again = task(pool, request_id="pg-legacy")
+    assert not created_again and replay["task_id"] == queued["task_id"]
+    with pytest.raises(ConflictError, match="versioned_migration"):
+        task(pool, request_id="pg-pinned-denied",
+             execution_mode="pinned_host", target_host="HOST-A")
+    assert pool.get_task(queued["task_id"])["execution_mode"] == "eligible_pool"
+    started, lease = claim(pool, "old-builder")
+    assert started["task_id"] == queued["task_id"] and lease is not None
+    pool.start_task(task_id=queued["task_id"], worker_id="old-builder",
+                    lease_token=lease.lease_token, correlation_id="v1-start")
+    pool.submit_for_validation(
+        task_id=queued["task_id"], worker_id="old-builder",
+        lease_token=lease.lease_token, produced_sha="b" * 40,
+        correlation_id="v1-handoff",
+    )
+    validated, validator_lease = claim(pool, "old-validator", role="validator")
+    assert validated["task_id"] == queued["task_id"] and validator_lease is not None
+    completed = pool.complete_task(
+        task_id=queued["task_id"], worker_id="old-validator",
+        lease_token=validator_lease.lease_token, correlation_id="v1-complete",
+    )
+    assert completed["state"] == "completed"
+    assert completed["execution_mode"] == "eligible_pool"
+    snap = pool.snapshot()
+    assert snap["queue"]["completed"] == 1
+    assert snap["queue"]["queued"] == 0
+
+
+def test_legacy_authority_watchdog_reassigns_any_eligible_host(tmp_path):
+    path = tmp_path / "pg-v1-watchdog.db"
+    clock = Clock()
+    pool = LegacyPostgresV1Replica(
+        path, clock=clock, expected_rules_sha="a" * 40,
+        heartbeat_ttl_seconds=90, progress_stall_seconds=30,
+        default_lease_seconds=120,
+    )
+    with sqlite3.connect(path) as db:
+        db.execute("ALTER TABLE tasks DROP COLUMN target_host")
+        db.execute("ALTER TABLE tasks DROP COLUMN execution_mode")
+    worker(pool, "old-a", "HOST-A")
+    worker(pool, "old-b", "HOST-B")
+    queued, _ = task(pool, request_id="pg-v1-watchdog")
+    selected, lease = claim(pool, "old-a")
+    assert selected and lease
+    pool.start_task(task_id=queued["task_id"], worker_id="old-a",
+                    lease_token=lease.lease_token, correlation_id="v1-start")
+    clock.advance(31)
+    result = pool.recover_stalled_tasks()
+    assert result["rerouted"] == 1 and result["blocked"] == 0
+    after, new_lease = claim(pool, "old-b")
+    assert after["task_id"] == queued["task_id"] and new_lease is not None
+
+
+def test_pinned_route_rejects_unready_and_study_hosts(pool):
+    store, _ = pool
+    worker(store, "desktop-study", "DESKTOP-PDQK954")
+    store.heartbeat_worker("desktop-study", correlation_id="study", profile="ESTUDO")
+    worker(store, "noteri-normal", "NOTERI")
+    queued, _ = task(store, request_id="study-rejection",
+                     execution_mode="pinned_host", target_host="DESKTOP-PDQK954")
+    assert claim(store, "noteri-normal")[0] is None
+    with pytest.raises(ConflictError, match="profile ESTUDO"):
+        claim(store, "desktop-study", only_task_id=queued["task_id"])
+    assert store.get_task(queued["task_id"])["state"] == "queued"
