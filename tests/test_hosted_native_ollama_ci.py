@@ -262,3 +262,123 @@ def test_native_numeric_queue_adapter_fail_closed_and_no_docker(monkeypatch):
         with pytest.raises(local.WorkerBlocked, match="native_numeric_queue_not_admitted"):
             HostedNativeQueueOllama.no_cloud()
         monkeypatch.setenv(key, values[key])
+
+
+def test_current_owner_issue8_bindings_preserve_historical_cas_gate(monkeypatch):
+    from scripts import issue_rag_real_qwen_e2e as historical
+    from scripts import issue_rag_readonly_current_e2e as current
+
+    assert historical.MAIN == "87a8de64ea5ed2e4aef1a9cde51861edb61ffe5e"
+    assert historical.COMMENT_ID == 6430299388
+    assert current.CURRENT_MAIN == "e22aabb14e1a646e274c331e83cc06c470607a38"
+    assert current.CURRENT_OWNER_COMMENT == 6458684416
+
+    observed = []
+    monkeypatch.setattr(
+        current, "run_authorized_issue",
+        lambda sha, comment: observed.append((sha, comment)),
+    )
+    values = {
+        "GITHUB_ACTIONS": "true",
+        "GITHUB_REPOSITORY": current.REPO,
+        "GITHUB_REF": "refs/heads/" + current.BRANCH,
+        "GITHUB_EVENT_NAME": "push",
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    current.main()
+    assert observed == [(current.CURRENT_MAIN, current.CURRENT_OWNER_COMMENT)]
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
+    with pytest.raises(RuntimeError, match="current_issue_rag_ci_identity_rejected"):
+        current.main()
+    assert len(observed) == 1
+
+
+def _issue8_replies(**changes):
+    import json
+
+    base = {
+        "result": "ISSUE8_RAG_CANDIDATE_LINES_ATTESTED",
+        "worker_sha": "e22aabb14e1a646e274c331e83cc06c470607a38",
+        "source_path": "docs/ISSUE_QWEN7B_DRAFT_HANDOFF.md",
+        "source_sha256": "b" * 64,
+        "selection_decision": "supported",
+        "source_contains_acceptable_line": True,
+        "model_process_verified": True,
+        "model_calls": 2,
+        "independent_source_readback": True,
+        "raw_source_or_model_text_logged": False,
+        "code_modified": False,
+        "cas_write": False,
+        "draft_pr_created": False,
+    }
+    final = {
+        "result": "ISSUE8_REAL_QWEN_CITATION_VERIFIED",
+        "worker_sha": base["worker_sha"],
+        "source_path": base["source_path"],
+        "source_sha256": base["source_sha256"],
+        "model_digest_prefix": native.MODEL_DIGEST_PREFIX,
+        "model_calls": 2,
+        "independent_source_readback": True,
+        "stale_sha_blocked_before_model": True,
+        "code_modified": False,
+        "cas_write": False,
+        "draft_pr_created": False,
+    }
+    first, second = changes.get("first", {}), changes.get("second", {})
+    return json.dumps({**base, **first}) + "\n" + json.dumps({**final, **second})
+
+
+def test_issue8_rag_receipts_are_both_required_and_sha_bound(monkeypatch, capsys):
+    env = {
+        "NATIVE_OLLAMA_DEV": "1",
+        "NATIVE_MODEL_DIGEST_PREFIX": native.MODEL_DIGEST_PREFIX,
+        "OLLAMA_NO_CLOUD": "1",
+    }
+
+    class Result:
+        returncode = 0
+        stdout = _issue8_replies()
+
+    observed = []
+
+    def invoke(args, **kwargs):
+        observed.append((args, kwargs))
+        return Result()
+
+    monkeypatch.setattr(native.subprocess, "run", invoke)
+    proof = native.verify_readonly_issue_rag_e2e(env)
+    assert proof["result"] == "HOSTED_NATIVE_QWEN7B_ISSUE8_RAG_VERIFIED"
+    assert proof["read_only"] and proof["independent_readback"]
+    assert observed[0][0] == [
+        sys.executable, "-m", "scripts.issue_rag_readonly_current_e2e",
+    ]
+    assert observed[0][1]["stderr"] == native.subprocess.DEVNULL
+    assert observed[0][1]["env"] is env
+    assert "source_sha256" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("changes", [
+    {"first": {"worker_sha": "f" * 40}},
+    {"second": {"worker_sha": "f" * 40}},
+    {"first": {"model_calls": 3}},
+    {"second": {"model_digest_prefix": "f" * 12}},
+    {"first": {"independent_source_readback": False}},
+    {"second": {"independent_source_readback": False}},
+    {"second": {"cas_write": True}},
+    {"first": {"selection_decision": "insufficient"}},
+    {"second": {"stale_sha_blocked_before_model": False}},
+])
+def test_issue8_rag_negative_spoofed_receipts(monkeypatch, changes):
+    class Result:
+        returncode = 0
+        stdout = _issue8_replies(**changes)
+
+    monkeypatch.setattr(native.subprocess, "run", lambda *_a, **_kw: Result())
+    env = {
+        "NATIVE_OLLAMA_DEV": "1",
+        "NATIVE_MODEL_DIGEST_PREFIX": native.MODEL_DIGEST_PREFIX,
+        "OLLAMA_NO_CLOUD": "1",
+    }
+    with pytest.raises(native.NativeCiBlocked, match="issue_rag_receipt_unverified"):
+        native.verify_readonly_issue_rag_e2e(env)
