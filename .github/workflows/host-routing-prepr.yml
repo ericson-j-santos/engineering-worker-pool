@@ -12,6 +12,9 @@ on:
       - tests/test_execution_routing.py
       - tests/test_api.py
       - tests/test_work_orchestrator.py
+      - scripts/hosted_native_ollama_ci.py
+      - scripts/structured_worker_e2e.py
+      - tests/test_hosted_native_ollama_ci.py
       - .github/workflows/host-routing-prepr.yml
 permissions:
   contents: read
@@ -81,3 +84,39 @@ jobs:
         run: python -m compileall -q app tests
       - name: Exercise two Windows-only negative controls
         run: python -m pytest -q -rs tests/test_store_connection_cleanup.py::test_native_windows_real_file_removal_after_reader_close tests/test_native_remote_readback.py::test_windows_receipt_requires_protected_private_acl
+
+  native-model-proof:
+    # Isolated candidate; does not replace the existing PR E2E until proven.
+    if: >-
+      github.repository == 'ericson-j-santos/engineering-worker-pool' &&
+      github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify immutable Worker Pool SHA
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Checkout pinned historical Gateway fixture
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ericson-j-santos/chatgpt-operational-rules
+          ref: 6cd74b32a24810cae7213744b697564e00be8b25
+          path: _rules
+          persist-credentials: false
+      - name: Install reviewed Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Validate native admission negative cases before network fetch
+        run: python -m pytest -q tests/test_hosted_native_ollama_ci.py
+      - name: Native Qwen7B real repair and Validator via governed CI sandbox
+        timeout-minutes: 22
+        run: python -B scripts/hosted_native_ollama_ci.py
