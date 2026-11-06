@@ -28,4 +28,7 @@ A política é imutável para a identidade lógica `repository|issue_number|requ
 
 Testar modo fixo/compartilhado, Builder/Validator, claim exato, perfil ESTUDO, regras divergentes, replay, concorrência, watchdog com/sem alternativa, migração SQLite, API e leitura independente.
 CI e simulação em SQLite não comprovam o E2E nos PCs. Exigir teste físico SHA-bound em Desktop/Noteri somente após sua qualificação e autorização; sem esse teste o estado é PARCIAL.
+### Compatibilidade PostgreSQL existente
+A autoridade PostgreSQL v1 tem schema atestado e imutável, sem as colunas de roteamento. O código novo preserva operações `eligible_pool` nessa versão e rejeita `pinned_host` **antes de realizar qualquer INSERT**. A execução em `pinned_host` na autoridade PostgreSQL exige o plano separado de migração v2 em `docs/PG_ROUTING_MIGRATION_V2_DEV_PLAN.md`, com backup, rollback, digests, autoridade, validação real e owner approval. Isto não é deploy.
+
 Custo incremental máximo R$0,00; não iniciar cobrança, deploy, merge, instalações, alterações de serviço ou privilégios.
