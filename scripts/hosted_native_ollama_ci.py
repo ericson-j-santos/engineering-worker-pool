@@ -30,7 +30,7 @@ MODEL = "qwen2.5-coder:7b"
 MODEL_DIGEST_PREFIX = "dae161e27b0e"
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-HEX40 = re.compile(r"[0-9a-f]{40}\\Z")
+HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 
 
 class NativeCiBlocked(RuntimeError):
