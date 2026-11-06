@@ -572,8 +572,14 @@ class WorkerPoolStore:
             self._ensure_repository_lane(db, repository.strip())
             row = db.execute("SELECT * FROM tasks WHERE idempotency_key=?", (key,)).fetchone()
             created = row is None
-            recorded_mode = row["execution_mode"] if route_supported else "eligible_pool"
-            recorded_host = row["target_host"] if route_supported else None
+            recorded_mode = (
+                row["execution_mode"] if row is not None and route_supported
+                else "eligible_pool"
+            )
+            recorded_host = (
+                row["target_host"] if row is not None and route_supported
+                else None
+            )
             if not created and (recorded_mode != execution_mode or recorded_host != target_host):
                 raise ConflictError("execution_route divergente no replay")
             if not created and target_branch is not None and row["branch"] != task_branch:
