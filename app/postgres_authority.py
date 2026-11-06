@@ -521,6 +521,9 @@ class PostgresAuthority:
 
 
 class PostgresWorkerPoolStore(WorkerPoolStore):
+    # PostgreSQL authority v1 is signed/immutable; pinned host awaits v2.
+    supports_task_routing = False
+
     """The existing lifecycle, with PostgreSQL connection/clock/init hooks only."""
     def __init__(
         self, authority: PostgresAuthority, *,
