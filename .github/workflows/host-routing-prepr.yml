@@ -14,6 +14,10 @@ on:
       - tests/test_work_orchestrator.py
       - scripts/hosted_native_ollama_ci.py
       - scripts/local_worker_e2e.py
+      - scripts/issue_rag_real_qwen_e2e.py
+      - scripts/issue_rag_readonly_current_e2e.py
+      - scripts/native_gateway_preflight_e2e.py
+      - scripts/remote_native_composition_e2e.py
       - scripts/structured_worker_e2e.py
       - tests/test_hosted_native_ollama_ci.py
       - .github/workflows/host-routing-prepr.yml
@@ -120,8 +124,44 @@ jobs:
         run: python -m pip install -r requirements-rag.txt
       - name: Validate native admission and RAG spoofing negative cases
         run: python -m pytest -q tests/test_hosted_native_ollama_ci.py
-      - name: Native Qwen1.5B queue, Qwen7B repair and read-only PR RAG
+      - name: Native Qwen1.5B queue, Qwen7B repair, PR9 and owner-authorized Issue8 RAG
         timeout-minutes: 22
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python -B scripts/hosted_native_ollama_ci.py
+  native-gateway-composition:
+    # Same actual, SHA-pinned Command Gateway scripts as canonical PR CI.
+    # All effects are disposable local fixtures. No physical host or Docker.
+    if: >-
+      github.repository == 'ericson-j-santos/engineering-worker-pool' &&
+      github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify immutable Worker Pool SHA
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Checkout SHA-pinned canonical native Gateway
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ericson-j-santos/chatgpt-operational-rules
+          ref: ddd09dc616181c0aaf46d33a194e9b00a6989332
+          path: _rules_native
+          persist-credentials: false
+      - name: Install reviewed Worker Pool test dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Test actual pinned Command Gateway boundary
+        timeout-minutes: 2
+        run: python scripts/native_gateway_preflight_e2e.py --rules-scripts _rules_native/scripts
+      - name: Verify remote composition and read-only result replay
+        timeout-minutes: 2
+        run: python scripts/remote_native_composition_e2e.py --rules-scripts _rules_native/scripts
