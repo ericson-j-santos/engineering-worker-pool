@@ -213,3 +213,52 @@ def test_pr_rag_process_failure_and_missing_optin_fail_closed(monkeypatch):
         native.verify_readonly_rag_e2e(env)
     with pytest.raises(native.NativeCiBlocked, match="rag_native_context_invalid"):
         native.verify_readonly_rag_e2e({**env, "OLLAMA_NO_CLOUD": "0"})
+
+
+def test_numeric_model_identity_and_fixed_digest(monkeypatch):
+    item = _item(
+        name=native.NUMERIC_MODEL,
+        digest=native.NUMERIC_MODEL_DIGEST_PREFIX
+        + "0" * (64 - len(native.NUMERIC_MODEL_DIGEST_PREFIX)),
+    )
+    monkeypatch.setattr(native.httpx, "Client", lambda **_: FakeHttpx([item]))
+    assert native.verify_model(
+        native.NUMERIC_MODEL, native.NUMERIC_MODEL_DIGEST_PREFIX
+    ).startswith(native.NUMERIC_MODEL_DIGEST_PREFIX)
+    with pytest.raises(native.NativeCiBlocked, match="model_selection_unapproved"):
+        native.verify_model(native.NUMERIC_MODEL, native.MODEL_DIGEST_PREFIX)
+    with pytest.raises(native.NativeCiBlocked, match="model_identity_unverified"):
+        native.verify_model(native.MODEL, native.MODEL_DIGEST_PREFIX)
+
+
+def test_native_numeric_queue_adapter_fail_closed_and_no_docker(monkeypatch):
+    from scripts.local_worker_e2e import HostedNativeQueueOllama
+    import app.local_code_worker as local
+
+    def forbidden_docker(*_a, **_kw):
+        pytest.fail("Docker forbidden from native numeric queue adapter")
+
+    monkeypatch.setattr(local, "process", forbidden_docker)
+    values = {
+        "GITHUB_ACTIONS": "true",
+        "GITHUB_REPOSITORY": native.REPOSITORY,
+        "HOSTED_NATIVE_OLLAMA_CI": "1",
+        "NATIVE_OLLAMA_DEV": "1",
+        "OLLAMA_NO_CLOUD": "1",
+        "OLLAMA_HOST": "127.0.0.1:11434",
+        "NATIVE_NUMERIC_DIGEST_PREFIX": native.NUMERIC_MODEL_DIGEST_PREFIX,
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    HostedNativeQueueOllama.no_cloud()
+    for key, wrong in (
+        ("HOSTED_NATIVE_OLLAMA_CI", "0"),
+        ("GITHUB_REPOSITORY", "untrusted/other"),
+        ("OLLAMA_NO_CLOUD", "0"),
+        ("OLLAMA_HOST", "https://remote.invalid"),
+        ("NATIVE_NUMERIC_DIGEST_PREFIX", "f" * 12),
+    ):
+        monkeypatch.setenv(key, wrong)
+        with pytest.raises(local.WorkerBlocked, match="native_numeric_queue_not_admitted"):
+            HostedNativeQueueOllama.no_cloud()
+        monkeypatch.setenv(key, values[key])
