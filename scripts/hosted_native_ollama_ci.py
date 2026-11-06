@@ -29,6 +29,7 @@ RELEASE_SHA256 = "e83a089fd0cd2f79ee2933cca2085846a2065f497adbc6467c402177c68423
 MODEL = "qwen2.5-coder:7b"
 MODEL_DIGEST_PREFIX = "dae161e27b0e"
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 HEX40 = re.compile(r"[0-9a-f]{40}\\Z")
 
 
@@ -153,11 +154,13 @@ def run() -> None:
         need(archive.is_file() and 1_400_000_000 <= archive.stat().st_size
              <= 1_450_000_000, "release_size_invalid")
         need(_sha256(archive) == RELEASE_SHA256, "release_digest_invalid")
+        print("NATIVE_RELEASE_SHA256_VERIFIED", flush=True)
         _run(["tar", "--zstd", "-xf", str(archive), "-C", str(root)],
              cwd=root, timeout=140)
         archive.unlink()
         need(binary.is_file() and not binary.is_symlink(),
              "native_binary_missing")
+        print("NATIVE_BINARY_EXTRACTED", flush=True)
         os.chmod(binary, 0o700)
         models_path = root / "models"
         models_path.mkdir(mode=0o700)
@@ -199,7 +202,6 @@ def run() -> None:
                 _run([sys.executable, "scripts/structured_worker_e2e.py"],
                      cwd=ROOT, env=app_env, timeout=475)
                 from scripts.structured_acceptance import cases
-                from app.structured_code_worker import sha256 as digest_bytes
                 evidence = ROOT / "artifacts" / "structured-code-e2e" / "evidence.json"
                 need(evidence.is_file(), "structured_receipt_missing")
                 receipt = json.loads(evidence.read_text(encoding="utf-8"))
