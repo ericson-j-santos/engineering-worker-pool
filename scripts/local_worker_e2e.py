@@ -31,6 +31,29 @@ ARTIFACT = Path("artifacts/local-code-e2e")
 BASELINE = "def clamp(value, lower, upper):\n    return value\n"
 
 
+NUMERIC_NATIVE_MODEL_DIGEST_PREFIX = "d7372fd82851"
+
+
+class HostedNativeQueueOllama(LocalOllama):
+    """Scope native transport to the trusted disposable CI queue fixture."""
+
+    @staticmethod
+    def no_cloud() -> None:
+        # The daemon is separately launched under the sealed cloud-disabled
+        # environment and its live model digest is verified by the parent.
+        require(
+            os.environ.get("GITHUB_ACTIONS") == "true"
+            and os.environ.get("GITHUB_REPOSITORY") == REPOSITORY
+            and os.environ.get("HOSTED_NATIVE_OLLAMA_CI") == "1"
+            and os.environ.get("NATIVE_OLLAMA_DEV") == "1"
+            and os.environ.get("OLLAMA_NO_CLOUD") == "1"
+            and os.environ.get("OLLAMA_HOST") == "127.0.0.1:11434"
+            and os.environ.get("NATIVE_NUMERIC_DIGEST_PREFIX")
+                == NUMERIC_NATIVE_MODEL_DIGEST_PREFIX,
+            "native_numeric_queue_not_admitted",
+        )
+
+
 def context() -> tuple[Path, str, str]:
     root = Path.cwd().resolve()
     sha = os.environ.get("EXPECTED_SHA", "")
@@ -173,8 +196,18 @@ def run_inner() -> None:
                                   for lo, hi in [(-3, 3), (0, 10), (2, 2)]
                                   for v in [-10, -3, 0, 2, 3, 10, 20]],
                     }
-                    provider = LocalOllama()
+                    native_ci = os.environ.get("HOSTED_NATIVE_OLLAMA_CI") == "1"
+                    provider = (
+                        HostedNativeQueueOllama() if native_ci else LocalOllama()
+                    )
                     result = repair(repo, state, task, provider)
+                    if native_ci:
+                        require(
+                            provider.model_digest.startswith(
+                                NUMERIC_NATIVE_MODEL_DIGEST_PREFIX
+                            ),
+                            "native_numeric_model_digest_mismatch",
+                        )
                     require(provider.process_verified, "model_execution_not_proved")
                     replay_result = repair(repo, state, task, provider)
                     require(replay_result["replayed"] is True and replay_result["model_calls"] == 0
