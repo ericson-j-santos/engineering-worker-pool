@@ -13,6 +13,7 @@ on:
       - tests/test_api.py
       - tests/test_work_orchestrator.py
       - scripts/hosted_native_ollama_ci.py
+      - scripts/local_worker_e2e.py
       - scripts/structured_worker_e2e.py
       - tests/test_hosted_native_ollama_ci.py
       - .github/workflows/host-routing-prepr.yml
@@ -119,7 +120,7 @@ jobs:
         run: python -m pip install -r requirements-rag.txt
       - name: Validate native admission and RAG spoofing negative cases
         run: python -m pytest -q tests/test_hosted_native_ollama_ci.py
-      - name: Native Qwen7B real repair, Validator and read-only PR RAG
+      - name: Native Qwen1.5B queue, Qwen7B repair and read-only PR RAG
         timeout-minutes: 22
         env:
           GITHUB_TOKEN: ${{ github.token }}
