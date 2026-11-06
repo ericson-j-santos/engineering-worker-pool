@@ -521,10 +521,9 @@ class PostgresAuthority:
 
 
 class PostgresWorkerPoolStore(WorkerPoolStore):
-    # PostgreSQL authority v1 is signed/immutable; pinned host awaits v2.
-    supports_task_routing = False
+    """The existing lifecycle; the signed v1 schema has no routing columns."""
 
-    """The existing lifecycle, with PostgreSQL connection/clock/init hooks only."""
+    supports_task_routing = False
     def __init__(
         self, authority: PostgresAuthority, *,
         heartbeat_ttl_seconds: int = 90, default_lease_seconds: int = 120,
