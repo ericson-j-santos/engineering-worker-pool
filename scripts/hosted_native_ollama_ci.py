@@ -28,6 +28,8 @@ RELEASE_URL = (
 RELEASE_SHA256 = "e83a089fd0cd2f79ee2933cca2085846a2065f497adbc6467c402177c68423f9"
 MODEL = "qwen2.5-coder:7b"
 MODEL_DIGEST_PREFIX = "dae161e27b0e"
+NUMERIC_MODEL = "qwen2.5-coder:1.5b"
+NUMERIC_MODEL_DIGEST_PREFIX = "d7372fd82851"
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -113,7 +115,16 @@ def _ready(process: subprocess.Popen[bytes]) -> bool:
     return False
 
 
-def verify_model() -> str:
+def verify_model(
+    name: str = MODEL, digest_prefix: str = MODEL_DIGEST_PREFIX,
+) -> str:
+    need(
+        (name, digest_prefix) in {
+            (MODEL, MODEL_DIGEST_PREFIX),
+            (NUMERIC_MODEL, NUMERIC_MODEL_DIGEST_PREFIX),
+        },
+        "model_selection_unapproved",
+    )
     with httpx.Client(
         base_url="http://127.0.0.1:11434", timeout=10, trust_env=False,
         follow_redirects=False,
@@ -127,8 +138,8 @@ def verify_model() -> str:
             item = models[0]
             digest = item.get("digest")
             need(type(digest) is str and re.fullmatch(r"[0-9a-f]{64}", digest)
-                 and digest.startswith(MODEL_DIGEST_PREFIX)
-                 and item.get("name") == MODEL and not item.get("remote_host")
+                 and digest.startswith(digest_prefix)
+                 and item.get("name") == name and not item.get("remote_host")
                  and not item.get("remote_model"), "model_identity_unverified")
             details = item.get("details")
             need(type(details) is dict and details.get("format") == "gguf",
@@ -236,11 +247,6 @@ def run() -> None:
             try:
                 need(_ready(daemon), "native_service_not_ready")
                 print("NATIVE_OLLAMA_SERVICE_READY", flush=True)
-                # Public GGUF tag is allowed only after immutable binary verification.
-                _run([str(binary), "pull", MODEL], cwd=root, env=daemon_env,
-                     timeout=295)
-                digest = verify_model()
-                print("NATIVE_OLLAMA_MODEL_VERIFIED", flush=True)
                 app_env = dict(os.environ)
                 app_env.update({
                     "PATH": str(binary.parent) + os.pathsep
@@ -250,11 +256,53 @@ def run() -> None:
                     "OLLAMA_MODELS": str(models_path),
                     "NATIVE_OLLAMA_DEV": "1",
                     "NATIVE_MODEL_DIGEST_PREFIX": MODEL_DIGEST_PREFIX,
+                    "NATIVE_NUMERIC_DIGEST_PREFIX": NUMERIC_MODEL_DIGEST_PREFIX,
                     "HOSTED_NATIVE_OLLAMA_CI": "1",
                     "EXPECTED_SHA": sha,
                 })
+                model_env = dict(app_env)
+                model_env.pop("GITHUB_TOKEN", None)
+
+                # Stage 1 — the original numeric queue/lease/Validator/replay
+                # E2E, with exactly the reviewed local 1.5B model and no Docker.
+                _run([str(binary), "pull", NUMERIC_MODEL], cwd=root,
+                     env=daemon_env, timeout=240)
+                numeric_digest = verify_model(
+                    NUMERIC_MODEL, NUMERIC_MODEL_DIGEST_PREFIX
+                )
+                print("NATIVE_OLLAMA_NUMERIC_MODEL_VERIFIED", flush=True)
+                _run([sys.executable, "scripts/local_worker_e2e.py"],
+                     cwd=ROOT, env=model_env, timeout=300)
+                numeric_path = ROOT / "artifacts" / "local-code-e2e" / "evidence.json"
+                need(numeric_path.is_file(), "numeric_queue_receipt_missing")
+                numeric_receipt = json.loads(numeric_path.read_text(encoding="utf-8"))
+                need(
+                    numeric_receipt.get("result") == "LOCAL_CODE_E2E_PASSED"
+                    and numeric_receipt.get("expected_sha") == sha
+                    and numeric_receipt.get("model_digest") == numeric_digest
+                    and numeric_receipt.get("local_process_verified") is True
+                    and numeric_receipt.get("cloud_disabled") is True
+                    and numeric_receipt.get("queue_replay") is True
+                    and numeric_receipt.get("code_replay") is True
+                    and numeric_receipt.get("independent_validator") is True
+                    and numeric_receipt.get("negative_auth_status") == 401
+                    and numeric_receipt.get("negative_sha_status") == 409,
+                    "numeric_queue_receipt_unverified",
+                )
+                print("HOSTED_NATIVE_QWEN1_5B_QUEUE_E2E_VERIFIED", flush=True)
+                _run([str(binary), "stop", NUMERIC_MODEL],
+                     cwd=root, env=daemon_env, timeout=35)
+                _run([str(binary), "rm", NUMERIC_MODEL],
+                     cwd=root, env=daemon_env, timeout=35)
+
+                # Stage 2 — structured real-source repair and read-only PR RAG.
+                # The model inventory must now contain ONLY the pinned 7B.
+                _run([str(binary), "pull", MODEL], cwd=root, env=daemon_env,
+                     timeout=295)
+                digest = verify_model()
+                print("NATIVE_OLLAMA_MODEL_VERIFIED", flush=True)
                 _run([sys.executable, "scripts/structured_worker_e2e.py"],
-                     cwd=ROOT, env=app_env, timeout=475)
+                     cwd=ROOT, env=model_env, timeout=475)
                 from scripts.structured_acceptance import cases
                 evidence = ROOT / "artifacts" / "structured-code-e2e" / "evidence.json"
                 need(evidence.is_file(), "structured_receipt_missing")
