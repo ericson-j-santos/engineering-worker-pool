@@ -203,6 +203,70 @@ def verify_readonly_rag_e2e(env: dict[str, str]) -> dict[str, object]:
 
 
 
+
+def verify_readonly_issue_rag_e2e(env: dict[str, str]) -> dict[str, object]:
+    """Require both independent Issue #8 receipts and current owner admission."""
+    need(env.get("NATIVE_OLLAMA_DEV") == "1"
+         and env.get("NATIVE_MODEL_DIGEST_PREFIX") == MODEL_DIGEST_PREFIX
+         and env.get("OLLAMA_NO_CLOUD") == "1",
+         "issue_rag_native_context_invalid")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "scripts.issue_rag_readonly_current_e2e"],
+            cwd=ROOT, env=env, timeout=380, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise NativeCiBlocked("issue_rag_process_unavailable_or_timed_out") from None
+    need(result.returncode == 0, "issue_rag_process_failed")
+    need(type(result.stdout) is str and len(result.stdout) <= 16384,
+         "issue_rag_receipt_size_invalid")
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    need(len(lines) == 2 and all(len(line) <= 8192 for line in lines),
+         "issue_rag_receipt_shape_invalid")
+    try:
+        first, second = [json.loads(line) for line in lines]
+    except (TypeError, ValueError):
+        raise NativeCiBlocked("issue_rag_receipt_json_invalid") from None
+    from scripts.issue_rag_readonly_current_e2e import CURRENT_MAIN
+    need(
+        type(first) is dict and type(second) is dict
+        and first.get("result") == "ISSUE8_RAG_CANDIDATE_LINES_ATTESTED"
+        and second.get("result") == "ISSUE8_REAL_QWEN_CITATION_VERIFIED"
+        and first.get("worker_sha") == second.get("worker_sha") == CURRENT_MAIN
+        and first.get("source_path") ==
+            second.get("source_path") == "docs/ISSUE_QWEN7B_DRAFT_HANDOFF.md"
+        and type(first.get("source_sha256")) is str
+        and re.fullmatch(r"[0-9a-f]{64}", first["source_sha256"]) is not None
+        and first["source_sha256"] == second.get("source_sha256")
+        and first.get("selection_decision") == "supported"
+        and first.get("source_contains_acceptable_line") is True
+        and first.get("model_process_verified") is True
+        and first.get("independent_source_readback") is True
+        and first.get("raw_source_or_model_text_logged") is False
+        and second.get("model_digest_prefix") == MODEL_DIGEST_PREFIX
+        and type(second.get("model_calls")) is int
+        and first.get("model_calls") == second["model_calls"] == 2
+        and second.get("independent_source_readback") is True
+        and second.get("stale_sha_blocked_before_model") is True
+        and all(receipt.get(key) is False
+                for receipt in (first, second)
+                for key in ("code_modified", "cas_write", "draft_pr_created")),
+        "issue_rag_receipt_unverified",
+    )
+    verified = {
+        "result": "HOSTED_NATIVE_QWEN7B_ISSUE8_RAG_VERIFIED",
+        "owner_approved_main_sha": CURRENT_MAIN,
+        "model_digest_prefix": MODEL_DIGEST_PREFIX,
+        "model_calls": 2,
+        "independent_readback": True,
+        "read_only": True,
+    }
+    print(json.dumps(verified, sort_keys=True), flush=True)
+    return verified
+
+
+
 def run() -> None:
     sha = preflight()
     runner = Path(os.environ["RUNNER_TEMP"]).resolve()
@@ -320,6 +384,7 @@ def run() -> None:
                 # Independent GitHub PR context retrieval, with a real model,
                 # in the same native loopback environment and immutable source.
                 verify_readonly_rag_e2e(app_env)
+                verify_readonly_issue_rag_e2e(app_env)
                 print(json.dumps({
                     "result": "HOSTED_NATIVE_QWEN7B_E2E_VERIFIED",
                     "source_sha": sha, "model_digest": digest,
