@@ -115,8 +115,12 @@ jobs:
           persist-credentials: false
       - name: Install reviewed Python dependencies
         run: python -m pip install -r requirements.txt
-      - name: Validate native admission negative cases before network fetch
+      - name: Install reviewed SHA-pinned Agent Core RAG dependency
+        run: python -m pip install -r requirements-rag.txt
+      - name: Validate native admission and RAG spoofing negative cases
         run: python -m pytest -q tests/test_hosted_native_ollama_ci.py
-      - name: Native Qwen7B real repair and Validator via governed CI sandbox
+      - name: Native Qwen7B real repair, Validator and read-only PR RAG
         timeout-minutes: 22
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: python -B scripts/hosted_native_ollama_ci.py
