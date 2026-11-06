@@ -31,7 +31,12 @@ def need(ok: bool, code: str) -> None:
         raise RuntimeError(code)
 
 
-def main() -> None:
+def run_authorized_issue(main_sha: str, comment_id: int) -> None:
+    """Same strict read-only acceptance for a separately approved immutable SHA.
+
+    The historical main_sha/comment_id remain pinned to their CAS-bound contract.
+    Only a trusted wrapper may supply a new owner-approved current binding.
+    """
     need(os.environ.get("GITHUB_ACTIONS") == "true",
          "issue8_rag_ci_environment_required")
     need(os.environ.get("GITHUB_REPOSITORY") == REPO,
@@ -43,10 +48,10 @@ def main() -> None:
     reader = official_issue_reader(token)
     now = datetime.now(timezone.utc)
     issue = reader.get_issue(ISSUE)
-    comment = reader.get_comment(COMMENT_ID)
+    comment = reader.get_comment(comment_id)
     branch = reader.get_branch("main")
     approved = admit(
-        issue, comment, branch, base_sha=MAIN,
+        issue, comment, branch, base_sha=main_sha,
         observed_at=now.isoformat(), now=now,
     )
 
@@ -73,8 +78,8 @@ def main() -> None:
          and observed.get("state") in {"supported", "insufficient_evidence"}
          and observed.get("issue_number") == ISSUE
          and observed.get("request_id") == approved.request_id
-         and observed.get("base_sha") == MAIN
-         and observed.get("head_sha") == MAIN
+         and observed.get("base_sha") == main_sha
+         and observed.get("head_sha") == main_sha
          and type(observed.get("model_calls")) is int
          and 1 <= observed["model_calls"] <= 4
          and observed.get("model_process_verified") is True
@@ -114,10 +119,10 @@ def main() -> None:
              (observed["state"] == "supported")
          and type(expected_source) is dict
          and expected_source.get("path") == DOC
-         and expected_source.get("ref_sha") == MAIN,
+         and expected_source.get("ref_sha") == main_sha,
          "issue8_candidate_trace_unverified")
     text, blob, source_digest, source_bytes = _file_data(
-        independent.get_text_file(REPO, DOC, MAIN), DOC,
+        independent.get_text_file(REPO, DOC, main_sha), DOC,
     )
     need(expected_source.get("blob_sha") == blob
          and expected_source.get("sha256") == source_digest
@@ -134,7 +139,7 @@ def main() -> None:
     # Only enumerated paths, integer line numbers and booleans are emitted.
     print(json.dumps({
         "result": "ISSUE8_RAG_CANDIDATE_LINES_ATTESTED",
-        "worker_sha": MAIN,
+        "worker_sha": main_sha,
         "run_id": run_id,
         "source_path": DOC,
         "source_sha256": source_digest,
@@ -154,7 +159,7 @@ def main() -> None:
          "issue8_real_qwen_evidence_unproved")
 
     def source_reader(path: str, sha: str) -> bytes:
-        need((path, sha) == (DOC, MAIN),
+        need((path, sha) == (DOC, main_sha),
              "issue8_source_identity_invalid")
         value, _, _, _ = _file_data(
             independent.get_text_file(REPO, path, sha), path
@@ -167,14 +172,14 @@ def main() -> None:
     need(cited.source_path == DOC
          and "Builder" in cited.excerpt
          and "42/42" in cited.excerpt
-         and cited.base_sha == MAIN,
+         and cited.base_sha == main_sha,
          "issue8_builder_claim_not_supported")
     # The regression obligation is verified separately by the Validator.
     need("regressões" not in QUESTION.lower()
          and "casos" in QUESTION.lower(),
          "issue8_question_not_single_claim")
     current = independent.get_branch("main")
-    need(current.get("commit", {}).get("sha") == MAIN,
+    need(current.get("commit", {}).get("sha") == main_sha,
          "issue8_main_drift_after_inference")
     need(digest(canonical({
         k: value for k, value in observed.items()
@@ -186,7 +191,7 @@ def main() -> None:
         "result": "ISSUE8_REAL_QWEN_CITATION_VERIFIED",
         "correlation_id": "issue8-rag-ci-" + run_id,
         "issue_number": ISSUE,
-        "worker_sha": MAIN,
+        "worker_sha": main_sha,
         "source_path": DOC,
         "citation_line": cited.line,
         "source_sha256": cited.source_sha256,
@@ -198,6 +203,11 @@ def main() -> None:
         "cas_write": False,
         "draft_pr_created": False,
     }, sort_keys=True))
+
+
+def main() -> None:
+    # The historical v1 pin remains a separately testable, unmodified path.
+    run_authorized_issue(MAIN, COMMENT_ID)
 
 
 if __name__ == "__main__":
