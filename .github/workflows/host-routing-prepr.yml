@@ -7,6 +7,8 @@ on:
       - app/store.py
       - app/main.py
       - app/work.py
+      - app/postgres_authority.py
+      - app/migrations/postgres_authority_v1.sql
       - tests/test_execution_routing.py
       - tests/test_api.py
       - tests/test_work_orchestrator.py
