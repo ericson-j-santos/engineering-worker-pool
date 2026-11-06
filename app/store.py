@@ -118,6 +118,8 @@ class Lease:
 
 
 class WorkerPoolStore:
+    supports_task_routing = True
+
     def __init__(
         self,
         db_path: str | Path,
@@ -549,6 +551,9 @@ class WorkerPoolStore:
         execution_mode: str = "eligible_pool", target_host: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
         execution_mode, target_host = normalize_route(execution_mode, target_host)
+        route_supported = self.supports_task_routing
+        if not route_supported and execution_mode != "eligible_pool":
+            raise ConflictError("postgres_v1_pinned_host_requires_versioned_migration")
         if "/" not in repository or issue_number < 1 or not request_id.strip() or not correlation_id.strip():
             raise ValueError("identidade da task inválida")
         if base_sha and not SHA40.fullmatch(base_sha.lower()):
@@ -567,26 +572,40 @@ class WorkerPoolStore:
             self._ensure_repository_lane(db, repository.strip())
             row = db.execute("SELECT * FROM tasks WHERE idempotency_key=?", (key,)).fetchone()
             created = row is None
-            if not created and (
-                row["execution_mode"] != execution_mode or row["target_host"] != target_host
-            ):
+            recorded_mode = row["execution_mode"] if route_supported else "eligible_pool"
+            recorded_host = row["target_host"] if route_supported else None
+            if not created and (recorded_mode != execution_mode or recorded_host != target_host):
                 raise ConflictError("execution_route divergente no replay")
             if not created and target_branch is not None and row["branch"] != task_branch:
                 raise ConflictError("target_branch divergente no replay")
             if not created and bool(row["fencing_required"]) != bool(fencing_required):
                 raise ConflictError("fencing_required divergente no replay")
             if created:
-                db.execute("""INSERT INTO tasks(
-                  task_id,repository,issue_number,request_id,idempotency_key,state,priority,
-                  branch,workspace_key,execution_mode,target_host,base_sha,max_attempts,
-                  correlation_id,created_at,updated_at,last_material_progress_at,fencing_required)
-                  VALUES(?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?)""",
-                  (tid, repository.strip(), issue_number, request_id.strip(), key, int(priority),
-                   task_branch, workspace(repository, tid), execution_mode, target_host,
-                   base_sha.lower() if base_sha else None, attempts,
-                   correlation_id.strip(), stamp, stamp, stamp, int(bool(fencing_required))))
+                if route_supported:
+                    db.execute("""INSERT INTO tasks(
+                      task_id,repository,issue_number,request_id,idempotency_key,state,priority,
+                      branch,workspace_key,execution_mode,target_host,base_sha,max_attempts,
+                      correlation_id,created_at,updated_at,last_material_progress_at,fencing_required)
+                      VALUES(?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      (tid, repository.strip(), issue_number, request_id.strip(), key, int(priority),
+                       task_branch, workspace(repository, tid), execution_mode, target_host,
+                       base_sha.lower() if base_sha else None, attempts,
+                       correlation_id.strip(), stamp, stamp, stamp, int(bool(fencing_required))))
+                else:
+                    db.execute("""INSERT INTO tasks(
+                      task_id,repository,issue_number,request_id,idempotency_key,state,priority,
+                      branch,workspace_key,base_sha,max_attempts,correlation_id,created_at,updated_at,
+                      last_material_progress_at,fencing_required)
+                      VALUES(?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?)""",
+                      (tid, repository.strip(), issue_number, request_id.strip(), key, int(priority),
+                       task_branch, workspace(repository, tid),
+                       base_sha.lower() if base_sha else None, attempts,
+                       correlation_id.strip(), stamp, stamp, stamp, int(bool(fencing_required))))
                 row = db.execute("SELECT * FROM tasks WHERE task_id=?", (tid,)).fetchone()
-        return self._d(row), created
+        data = self._d(row)
+        if not route_supported:
+            data.update(execution_mode="eligible_pool", target_host=None)
+        return data, created
 
     def _ready(self, db: sqlite3.Connection, worker_id: str, role: str) -> sqlite3.Row:
         w = db.execute("SELECT * FROM workers WHERE worker_id=?", (worker_id,)).fetchone()
@@ -692,7 +711,7 @@ class WorkerPoolStore:
         role = "validator" if row["produced_sha"] else "builder"
         if worker["role"] != role or worker["profile"] != "NORMAL":
             return False
-        if row["execution_mode"] == "pinned_host" and worker["host"] != row["target_host"]:
+        if self.supports_task_routing and row["execution_mode"] == "pinned_host" and worker["host"] != row["target_host"]:
             return False
         if not worker["gateway_ok"] or not worker["state_validated"]:
             return False
@@ -799,14 +818,19 @@ class WorkerPoolStore:
                 self._recover(db)
                 self._recover_stalled(db)
             worker = self._ready(db, worker_id, role)
+            route_clause = (
+                "AND (t.execution_mode='eligible_pool' OR t.target_host=?)"
+                if self.supports_task_routing else ""
+            )
+            route_values = (worker["host"],) if self.supports_task_routing else ()
             if role == "builder":
                 row = db.execute(
-                    """SELECT t.* FROM tasks t
+                    f"""SELECT t.* FROM tasks t
                        JOIN repository_lanes r ON r.repository=t.repository
                        WHERE t.state='queued'
                           AND t.fencing_required=?
                          AND r.enabled=1
-                         AND (t.execution_mode='eligible_pool' OR t.target_host=?)
+                         {route_clause}
                          AND (
                            NOT EXISTS(
                              SELECT 1 FROM worker_repository_affinity wa
@@ -830,20 +854,20 @@ class WorkerPoolStore:
                          r.repository,
                          t.priority,t.created_at,t.rowid,t.task_id
                        LIMIT 1""",
-                    (int(bool(fencing_required)), worker["host"], worker_id, worker_id,
+                    (int(bool(fencing_required)), *route_values, worker_id, worker_id,
                      only_task_id, only_task_id),
                 ).fetchone()
                 wanted, next_state = "queued", "leased"
             else:
                 row = db.execute(
-                    """SELECT t.* FROM tasks t
+                    f"""SELECT t.* FROM tasks t
                        JOIN repository_lanes r ON r.repository=t.repository
                        WHERE t.state='validating'
                           AND t.fencing_required=?
                          AND t.leased_by IS NULL
                          AND t.produced_sha IS NOT NULL
                          AND (t.builder_worker_id IS NULL OR t.builder_worker_id<>?)
-                         AND (t.execution_mode='eligible_pool' OR t.target_host=?)
+                         {route_clause}
                          AND (
                            NOT EXISTS(
                              SELECT 1 FROM worker_repository_affinity wa
@@ -862,7 +886,7 @@ class WorkerPoolStore:
                          r.repository,
                          t.priority,t.updated_at,t.rowid,t.task_id
                        LIMIT 1""",
-                    (int(bool(fencing_required)), worker_id, worker["host"], worker_id,
+                    (int(bool(fencing_required)), worker_id, *route_values, worker_id,
                      worker_id, only_task_id, only_task_id),
                 ).fetchone()
                 wanted, next_state = "validating", "validating"
@@ -907,6 +931,8 @@ class WorkerPoolStore:
                  stamp, expires),
             )
         data = self._d(row)
+        if not self.supports_task_routing:
+            data.update(execution_mode="eligible_pool", target_host=None)
         return data, Lease(
             data["task_id"], token, worker_id, role, expires,
             int(data["lease_generation"]), attempt_id,
@@ -1348,7 +1374,10 @@ class WorkerPoolStore:
 
     def get_task(self, task_id: str) -> dict[str, Any]:
         with self._read_db() as db:
-            return self._d(db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone())
+            data = self._d(db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone())
+        if not self.supports_task_routing:
+            data.update(execution_mode="eligible_pool", target_host=None)
+        return data
 
     def list_quarantine(self) -> list[dict[str, Any]]:
         with self._read_db() as db:
@@ -1420,7 +1449,9 @@ class WorkerPoolStore:
                 "correlation_id","updated_at","last_material_progress_at")
         task_views = []
         for row in tasks:
-            item = {k: row[k] for k in safe}
+            item = {k: row[k] for k in safe if k in row.keys()}
+            if not self.supports_task_routing:
+                item.update(execution_mode="eligible_pool", target_host=None)
             item["fencing_required"] = bool(item["fencing_required"])
             progress_age = max(
                 0.0,
