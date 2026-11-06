@@ -54,3 +54,30 @@ jobs:
         run: node --test services/continuity_identity/identity.test.mjs
       - name: Verify fail-closed governed merge policy
         run: node --test tests/test_governed_auto_merge.cjs
+
+  windows-controls:
+    if: github.repository == 'ericson-j-santos/engineering-worker-pool'
+    runs-on: windows-2022
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify SHA-bound checkout
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          if ((git rev-parse HEAD).Trim() -ne $env:EXPECTED_SHA) {
+            throw 'SHA_MISMATCH'
+          }
+      - name: Install reviewed dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Syntax validation
+        run: python -m compileall -q app tests
+      - name: Exercise two Windows-only negative controls
+        run: python -m pytest -q -rs tests/test_store_connection_cleanup.py::test_native_windows_real_file_removal_after_reader_close tests/test_native_remote_readback.py::test_windows_receipt_requires_protected_private_acl
