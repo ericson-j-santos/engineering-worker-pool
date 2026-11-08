@@ -16,6 +16,29 @@ Diferenciar:
   o `produced_sha` deve ser obtido do CAS e materializado no Validator.
   Não exigir publicação do commit no remoto antes do gate.
 
+## Adaptador GitHub autenticado — incremento da Issue #61
+
+O arquivo `app/prepr_github_readback.py` implementa um leitor oficial GET-only
+para o primeiro consumidor `noteri-runtime#42`. Exige token por arquivo
+protegido e recusa alterações inesperadas de Issue, base `main`, branch,
+ancestralidade e lista de arquivos da comparação GitHub. A camada não
+interpreta o conteúdo da Issue como autorização, não cria task, modelo,
+artefato ou PR e não executa workflow do Noteri.
+
+A requisição de evidências operacionais da função `check()` passa a exigir
+`source_changed_paths` (diff da branch de origem, conferido com GitHub)
+separadamente de `changed_paths` (subconjunto autorizado para reparo por
+modelo e declarado no `TaskManifest`). O primeiro pode incluir exatamente
+o workflow aprovado no Noteri; o segundo segue o conjunto de caminhos
+permitidos pelo adaptador nativo, sem arquivos ocultos. Um caminho de reparo
+fora do diff de origem é bloqueado neste incremento. Nada disso converte
+testes HTTP simulados em prova operacional.
+
+O CI público roda as verificações de HTTP, escopo, replay e recusa de token
+ausente em ambos os jobs, usando `httpx.MockTransport`. Um runner hospedado
+não tem automaticamente a credencial de leitura de outro repositório ou
+as autoridades Qwen, TODO, CAS e Validator. **Não inferir READY_FOR_PR.**
+
 Somente uma integração futura de provedores **reais e autenticados**
 (GitHub/TODO, runtime Qwen, Git CAS, Validator independente e custo
 atestado R$0) pode avaliar evidência operacional. Os callbacks de teste
