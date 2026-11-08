@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: pre-pr-gate-contract-${{ github.ref }}
@@ -51,6 +52,17 @@ jobs:
 
       - name: Run positive, negative and replay contract
         run: python -m unittest -v tests.test_pre_pr_gate
+
+      - name: Persist SHA-bound contract status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTRACT_STATE: ${{ job.status == 'success' && 'success' || 'failure' }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$EXPECTED_SHA" \
+            -f state="$CONTRACT_STATE" \
+            -f context="pre-pr-gate/contract" \
+            -f description="Generic pre-PR gate contract on exact SHA"
 
       - name: Record bounded evidence
         if: always()
