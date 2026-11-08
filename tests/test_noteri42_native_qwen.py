@@ -148,6 +148,28 @@ def test_bad_provenance_or_reply_blocks(monkeypatch, change, reason):
     assert model.model_digest == ""
 
 
+@pytest.mark.parametrize("candidate", [
+    "pass\n" + FUNC,
+    FUNC + "\nimport os\n",
+    FUNC + "\nopen('would-run.py', 'w').write('bad')\n",
+    FUNC + "\ndef another():\n    pass\n",
+    "@decorator\n" + FUNC,
+    "def wrap():\n    " + FUNC.replace("\n", "\n    "),
+])
+def test_qwen_proposal_rejects_extra_top_level_code(candidate):
+    with pytest.raises(StructuredBlocked, match="noteri42_model_reply_shape"):
+        m._json_reply(json.dumps({"function": candidate}))
+
+
+def test_qwen_proposal_rejects_syntax_error():
+    invalid = FUNC + "\nif (\n"
+    with pytest.raises(ValueError, match="noteri42_model_function_syntax"):
+        m._json_reply(json.dumps({"function": invalid}))
+
+
+def test_qwen_proposal_accepts_exactly_one_function():
+    assert m._json_reply(json.dumps({"function": FUNC})) == FUNC
+
 def test_bogus_json_and_duplicate_json_fields_fail_closed():
     with pytest.raises((ValueError, StructuredBlocked)):
         m._json_reply("not json")
