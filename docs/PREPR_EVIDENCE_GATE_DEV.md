@@ -21,3 +21,15 @@ No READY_FOR_PR may be emitted by this source-only gate.
 Issue: https://github.com/ericson-j-santos/engineering-worker-pool/issues/60
 Noteri dependency: https://github.com/ericson-j-santos/noteri-runtime/issues/42
 Rules: v1.6.20, main@86abe65b22781c2f608a7d7286ce3a28cd48aaaf
+
+## Bound CAS envelope (new stage-only protection)
+
+Before returning stage-only evidence, the guard now parses the *canonical*
+`S3GitBundleArtifactTransport._decode` envelope, including the original
+`TaskManifest`, task/adapter identity, `lease_generation`, `attempt_id`,
+`effect_id`, `produced_sha`, exact changed paths and `evidence_sha256`.
+It refuses a fabricated bare `cas+` reference or mismatched patch digest.
+The independent Validator receipt must match those exact fence identities.
+These tests construct a **synthetic canonical envelope with non-Git test
+body**, which proves the parser and rejection behavior only: Git-object
+verification and real materialization remain the separate Validator's duty.

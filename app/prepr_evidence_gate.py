@@ -6,7 +6,8 @@ source bytes, Validator and cost. This module has no write or READY_FOR_PR path.
 import hashlib
 import re
 from pathlib import PurePosixPath
-from app.native_one_shot import DurableArtifact, NativeExecutorBlocked
+from app.native_one_shot import DurableArtifact, NativeExecutorBlocked, TaskManifest
+from app.s3_git_bundle_artifact import S3GitBundleArtifactTransport, ARTIFACT_REF_PREFIX
 
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 SHA64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -57,7 +58,16 @@ def check(request, *, live_github, model_attestor, cas_reader,
     # Untrusted task input must not cause GitHub or model callbacks on failure.
     artifact = DurableArtifact.parse(request.get("artifact"))
     need(artifact.artifact_kind == "git_bundle_v1" and
-         artifact.artifact_ref.startswith("cas+"), "prepr_cas_kind")
+         artifact.artifact_ref == ARTIFACT_REF_PREFIX + artifact.artifact_sha256,
+         "prepr_cas_kind")
+    # This is the original builder manifest, not an unbound result receipt.
+    manifest = TaskManifest.parse(request.get("task_manifest"))
+    need(manifest.repository == request["repository"] and
+         manifest.base_sha == request["base_sha"] and
+         manifest.workspace_sha == request["base_sha"] and
+         set(manifest.before_sha256) == set(paths) and
+         dict(manifest.before_sha256) == request["before_sha256"],
+         "prepr_manifest_binding_invalid")
     patch_sha = request.get("patch_sha256")
     need(type(patch_sha) is str and SHA64.fullmatch(patch_sha) is not None,
          "prepr_patch_missing")
@@ -84,6 +94,7 @@ def check(request, *, live_github, model_attestor, cas_reader,
     need(type(model) is dict and
          model.get("source") == "attested_ollama_runtime" and
          model.get("request_id") == request["request_id"] and
+         model.get("task_id") == manifest.task_id and
          model.get("produced_sha") == head and
          type(model.get("model")) is str and
          model["model"].startswith("qwen") and
@@ -100,6 +111,16 @@ def check(request, *, live_github, model_attestor, cas_reader,
          "prepr_cas_integrity")
     again = cas_reader(artifact.artifact_ref)
     need(type(again) is bytes and again == before, "prepr_cas_reread")
+    # Reuse the canonical durable Git transport's strict envelope parser.
+    # No second CAS format, no trust in a bare reported patch SHA.
+    envelope, git_bundle, result = S3GitBundleArtifactTransport._decode(
+        before, artifact.artifact_sha256, manifest, head,
+    )
+    need(result.changed_paths == tuple(paths) and
+         result.evidence_sha256 == patch_sha and
+         envelope["task_manifest"]["task_id"] == manifest.task_id and
+         len(git_bundle) > 0,
+         "prepr_cas_result_mismatch")
     different = False
     for path in paths:
         old = source_reader(base, path)
@@ -115,6 +136,10 @@ def check(request, *, live_github, model_attestor, cas_reader,
     need(type(valid) is dict and
          valid.get("source") == "independent_sha_bound_validator" and
          valid.get("request_id") == request["request_id"] and
+         valid.get("task_id") == manifest.task_id and
+         valid.get("lease_generation") == envelope["lease_generation"] and
+         valid.get("attempt_id") == envelope["attempt_id"] and
+         valid.get("effect_id") == envelope["effect_id"] and
          valid.get("base_sha") == base and
          valid.get("produced_sha") == head and
          valid.get("correlation_id") == request["correlation_id"] and

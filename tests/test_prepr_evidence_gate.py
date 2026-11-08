@@ -2,16 +2,39 @@
 import copy
 import hashlib
 import pytest
-from app.native_one_shot import NativeExecutorBlocked
+from app.native_one_shot import NativeExecutorBlocked, TaskManifest, AdapterResult
+from app.s3_git_bundle_artifact import S3GitBundleArtifactTransport, ARTIFACT_REF_PREFIX
 from app.prepr_evidence_gate import check
 
 def sha(x):
     return hashlib.sha256(x).hexdigest()
 
-OLD, NEW, OBJ = b"data = 1\n", b"data = 2\n", b"fake git bundle"
+OLD, NEW, OBJ = b"data = 1\n", b"data = 2\n", b"fixture bundle body (not real git)"
 BASE, HEAD = "a"*40, "b"*40
+TASK = "cwp-" + "1"*24
+PATCH = "d"*64
+
+def fixture_envelope():
+    manifest = TaskManifest.parse(dict(
+        schema_version=1, task_id=TASK,
+        repository="ericson-j-santos/sample", base_sha=BASE,
+        workspace_sha=BASE, adapter_id="ci.patch.v1",
+        adapter_contract_sha256="e"*64,
+        before_sha256={"app/code.py": sha(OLD)},
+    ))
+    result = AdapterResult(
+        produced_sha=HEAD, changed_paths=("app/code.py",),
+        invoked_commands=("ci.fix",), evidence_sha256=PATCH,
+    )
+    header = S3GitBundleArtifactTransport._header(
+        manifest=manifest, lease_generation=1, attempt_id="attempt-1",
+        effect_id="effect-1", result=result, bundle=OBJ,
+    )
+    raw = S3GitBundleArtifactTransport._encode(header, OBJ, 8192)
+    return manifest, raw
 
 def fixture():
+    manifest, envelope = fixture_envelope()
     req = dict(schema_version=1, repository="ericson-j-santos/sample",
                issue_number=42, base_sha=BASE, produced_sha=HEAD,
                rules_sha="c"*40, request_id="issue42-prepr-task",
@@ -20,21 +43,33 @@ def fixture():
                changed_paths=["app/code.py"],
                before_sha256={"app/code.py":sha(OLD)},
                after_sha256={"app/code.py":sha(NEW)},
+               task_manifest=dict(
+                   schema_version=manifest.schema_version,
+                   task_id=manifest.task_id,
+                   repository=manifest.repository, base_sha=manifest.base_sha,
+                   workspace_sha=manifest.workspace_sha,
+                   adapter_id=manifest.adapter_id,
+                   adapter_contract_sha256=manifest.adapter_contract_sha256,
+                   before_sha256=dict(manifest.before_sha256),
+               ),
                artifact=dict(artifact_kind="git_bundle_v1",
-                             artifact_ref="cas+git://sha256/"+sha(OBJ),
-                             artifact_sha256=sha(OBJ)),
-               patch_sha256="d"*64)
+                             artifact_ref=ARTIFACT_REF_PREFIX+sha(envelope),
+                             artifact_sha256=sha(envelope)),
+               patch_sha256=PATCH)
     live = dict(repository=req["repository"], issue_number=42,
                 issue_state="open", main_sha=BASE,
                 branch_head_sha=HEAD, base_is_ancestor=True,
                 changed_paths=["app/code.py"])
     model = dict(source="attested_ollama_runtime", request_id=req["request_id"],
-                 produced_sha=HEAD, model="qwen2.5-coder:7b",
-                 model_digest="e"*64, model_calls=1, baseline_failures=2)
+                 produced_sha=HEAD, task_id=TASK,
+                 model="qwen2.5-coder:7b", model_digest="e"*64, model_calls=1, baseline_failures=2)
     validator = dict(source="independent_sha_bound_validator",
-                     request_id=req["request_id"], base_sha=BASE,
+                     request_id=req["request_id"], task_id=TASK,
+                     lease_generation=1, attempt_id="attempt-1",
+                     effect_id="effect-1", base_sha=BASE,
                      produced_sha=HEAD, correlation_id=req["correlation_id"],
-                     artifact_sha256=sha(OBJ), patch_sha256=req["patch_sha256"],
+                     artifact_sha256=sha(envelope),
+                     patch_sha256=req["patch_sha256"],
                      materialized_git_bundle=True, independent_checkout=True,
                      builder_identity="builder-one",
                      validator_identity="validator-two", tests_passed=42,
@@ -45,7 +80,7 @@ def fixture():
         return copy.deepcopy(live)
     def cas_read(ref):
         calls.append("cas")
-        return OBJ
+        return envelope
     def source_read(commit, path):
         calls.append("source")
         return OLD if commit == BASE else NEW
@@ -80,6 +115,7 @@ def test_positive_is_only_stage_not_ready():
     ("changed_paths", ["../secret"], "prepr_path_invalid"),
     ("rules_sha", "no", "prepr_sha_invalid"),
     ("artifact", None, "durable_artifact_invalid"),
+    ("task_manifest", None, "manifest_schema"),
 ])
 def test_invalid_input_never_reads_external(field, value, reason):
     req, _, _, _, r, calls = fixture()
@@ -101,7 +137,7 @@ def test_live_drift_fails(field, value):
 @pytest.mark.parametrize("field,value", [
     ("model_calls", 0), ("model_digest", "bad"),
     ("baseline_failures", 0), ("source", "untrusted"),
-    ("produced_sha", BASE),
+    ("produced_sha", BASE), ("task_id", "cwp-" + "9"*24),
 ])
 def test_model_evidence_is_mandatory(field, value):
     req, _, model, _, r, _ = fixture()
@@ -122,7 +158,9 @@ def test_cas_mutation_and_loss_fail():
     ("independent_checkout", False), ("materialized_git_bundle", False),
     ("tests_skipped", 1), ("tests_failed", 1),
     ("tests_total", 43), ("builder_identity", "validator-two"),
-    ("produced_sha", BASE),
+    ("produced_sha", BASE), ("task_id", "cwp-" + "9"*24),
+    ("lease_generation", 2), ("attempt_id", "other-attempt"),
+    ("effect_id", "other-effect"),
 ])
 def test_validator_must_be_independent_and_complete(field, value):
     req, _, _, validator, r, _ = fixture()
@@ -162,3 +200,39 @@ def test_unavailable_adapter_cannot_prove_ready():
     with pytest.raises(NativeExecutorBlocked, match="prepr_adapter_missing"):
         check(req, **r)
     assert calls == []
+
+def test_cas_descriptor_rejects_wrong_ref_before_readback():
+    req, _, _, _, adapters, calls = fixture()
+    req["artifact"]["artifact_ref"] = "cas+git://sha256/" + "f"*64
+    with pytest.raises(NativeExecutorBlocked, match="prepr_cas_kind"):
+        check(req, **adapters)
+    assert calls == []
+
+def test_manifest_conflicts_before_external_readback():
+    req, _, _, _, adapters, calls = fixture()
+    req["task_manifest"]["repository"] = "ericson-j-santos/different"
+    with pytest.raises(NativeExecutorBlocked, match="prepr_manifest_binding_invalid"):
+        check(req, **adapters)
+    assert calls == []
+
+def test_cas_envelope_rejects_forged_patch_even_same_envelope_hash():
+    req, _, _, _, adapters, _ = fixture()
+    req["patch_sha256"] = "f"*64
+    with pytest.raises(NativeExecutorBlocked, match="prepr_cas_result_mismatch"):
+        check(req, **adapters)
+
+def test_raw_bytes_without_canonical_envelope_rejected():
+    req, _, _, _, adapters, _ = fixture()
+    value = b"not a git bundle envelope"
+    req["artifact"]["artifact_sha256"] = sha(value)
+    req["artifact"]["artifact_ref"] = ARTIFACT_REF_PREFIX + sha(value)
+    adapters["cas_reader"] = lambda _: value
+    with pytest.raises(NativeExecutorBlocked, match="artifact_integrity_invalid"):
+        check(req, **adapters)
+
+def test_bundle_envelope_proof_not_model_or_real_git_e2e():
+    req, _, _, _, adapters, _ = fixture()
+    result = check(req, **adapters)
+    assert result["result"] == "PREPR_EVIDENCE_VERIFIED_ONLY"
+    assert result["host_e2e_proved"] is False
+    assert result["ready_for_pr"] is False
