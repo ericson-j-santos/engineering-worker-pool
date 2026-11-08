@@ -12,7 +12,7 @@ from app.prepr_github_readback import (
 )
 
 BASE = "e10b3a00a9b3ec803ed4a4cc8f4f8c62b06c8928"
-SOURCE = "515ede49cc7a8b80609c64ef76c23372239a637f"
+SOURCE = "1e60b4f3db1d5ad5d59dbed087f275870aa002ad"
 TOKEN = "synthetic-example-not-a-token-567890"
 PATHS = sorted([
     ".github/workflows/noteri-control-plane-probe.yml",

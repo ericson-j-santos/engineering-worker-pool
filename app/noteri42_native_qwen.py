@@ -20,7 +20,7 @@ from app.structured_code_worker import need
 from app.local_code_worker import OLLAMA_URL
 from app.structured_ollama import MODEL
 
-SOURCE_SHA = "515ede49cc7a8b80609c64ef76c23372239a637f"
+SOURCE_SHA = "1e60b4f3db1d5ad5d59dbed087f275870aa002ad"
 TARGET_PATH = "scripts/noteri_control_plane_watchdog_uac_launcher.py"
 TARGET_FUNCTION = "attest_installed_release"
 MAX_SOURCE_BYTES = 81920

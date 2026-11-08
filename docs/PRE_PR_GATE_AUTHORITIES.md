@@ -8,7 +8,7 @@ permanece como checkpoint e não deve produzir PR concorrente.
 
 Diferenciar:
 - `base_sha`: main do repositório de destino, atualmente e10b3a00...
-- `source_sha`: checkout/branch admitido, Noteri@515ede49...
+- `source_sha`: checkout/branch admitido, Noteri@1e60b4f3...
 - `produced_sha`: commit novo produzido **pelo Builder real**, ainda não publicado na PR.
 - `task_manifest.base_sha`: igual a `source_sha`; `workspace_sha` igual à mesma origem.
 - `effect_id`: derivado da tarefa + `produced_sha` segundo `NativeOneShotExecutor`.
@@ -52,3 +52,7 @@ Não há chamada Qwen, CAS publicado ou E2E físico nesta alteração.
 Issue principal: https://github.com/ericson-j-santos/engineering-worker-pool/issues/61
 Dependência: https://github.com/ericson-j-santos/noteri-runtime/issues/42
 Regras v1.6.20/main@86abe65b22781c2f608a7d7286ce3a28cd48aaaf
+
+## Readmissão de origem verificada em 08/11/2026
+
+A branch Noteri avançou por fast-forward `515ede49...` → `1e60b4f3db1d5ad5d59dbed087f275870aa002ad` (1 commit) adicionando apenas inventário read-only do Worker Pool 8097 e testes. O blob do launcher `scripts/noteri_control_plane_watchdog_uac_launcher.py` permaneceu `67c0613cd3929a06c199ce5883e8fb7a9a5075fa`. O novo SHA passa a ser a origem admitida; a prova da execução de baseline antiga #42487645998 pertence SOMENTE ao SHA anterior e precisa ser repetida no novo checkout. A CI do Noteri #42488898078 aprovou o SHA novo. Nenhum CAS/modelo/Validator/READY ou PR é inferido dessa readmissão.
