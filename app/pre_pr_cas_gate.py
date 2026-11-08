@@ -85,7 +85,9 @@ class PrePRIntent:
                 and tuple(sorted(set(self.allowed_paths))) == self.allowed_paths
                 and all(type(p) is str and 1 <= len(p) <= 240
                         and PATH.fullmatch(p) is not None and
-                        not p.startswith(".") and "//" not in p
+                        not p.startswith(".") and
+                        all(not part.startswith(".") for part in p.split("/"))
+                        and "//" not in p
                         for p in self.allowed_paths),
                 "prepr_scope_invalid")
 
@@ -99,6 +101,8 @@ class Authority(Protocol):
 
 class ExistingPool(Protocol):
     def get_task(self, task_id: str) -> Mapping[str, Any]: ...
+    def get_latest_checkpoint(self, task_id: str
+                              ) -> Mapping[str, Any] | None: ...
 
 
 class ModelAudit(Protocol):
@@ -181,31 +185,43 @@ def _task(intent: PrePRIntent, pool: ExistingPool) -> Mapping[str, Any]:
             and task.get("produced_sha") == intent.candidate_sha
             and task.get("fencing_required") is True
             and task.get("leased_by") is None
-            and task.get("state") in ("builder_completed", "validator_completed")
+            and task.get("state") == "completed"
             and type(task.get("lease_generation")) is int
-            and task["lease_generation"] >= 1
-            and type(task.get("fence_id")) is str
-            and IDENT.fullmatch(task["fence_id"]) is not None
-            and type(task.get("builder_id")) is str
-            and IDENT.fullmatch(task["builder_id"]) is not None
-            and type(task.get("model_run_id")) is str
-            and IDENT.fullmatch(task["model_run_id"]) is not None,
+            and task["lease_generation"] >= 2
+            and type(task.get("attempt_count")) is int
+            and task["attempt_count"] >= 2
+            and type(task.get("builder_worker_id")) is str
+            and IDENT.fullmatch(task["builder_worker_id"]) is not None
+            and type(task.get("validator_worker_id")) is str
+            and IDENT.fullmatch(task["validator_worker_id"]) is not None
+            and task["builder_worker_id"] != task["validator_worker_id"],
             "prepr_fenced_builder_unproved")
-    return task
+    checkpoint = pool.get_latest_checkpoint(intent.task_id)
+    require(type(checkpoint) is dict
+            and checkpoint.get("task_id") == intent.task_id
+            and checkpoint.get("stage") == "validator_result"
+            and checkpoint.get("next_action") == "complete"
+            and checkpoint.get("lease_generation") == task["lease_generation"]
+            and type(checkpoint.get("attempt_id")) is str
+            and IDENT.fullmatch(checkpoint["attempt_id"]) is not None,
+            "prepr_validator_checkpoint_unproved")
+    return {**task, "fence_id": checkpoint["attempt_id"]}
 
 
 def _model(intent: PrePRIntent, task: Mapping[str, Any],
            provider: ModelAudit) -> Mapping[str, Any]:
     """Authenticated provider run lookup; a retrospective JSON receipt fails."""
-    run = provider.get_verified_run(task["model_run_id"])
+    run = provider.get_verified_run(intent.task_id)
     require(type(run) is dict and run.get("provider_verified") is True
-            and run.get("run_id") == task["model_run_id"]
+            and run.get("task_id") == intent.task_id
+            and type(run.get("run_id")) is str
+            and IDENT.fullmatch(run["run_id"]) is not None
             and run.get("request_id") == intent.request_id
             and run.get("base_sha") == intent.base_sha
             and run.get("produced_sha") == intent.candidate_sha
             and run.get("source_sha") == intent.source_sha
-            and run.get("builder_id") == task["builder_id"]
-            and type(run.get("model") ) is str and bool(run["model"])
+            and run.get("builder_id") == task["builder_worker_id"]
+            and type(run.get("model")) is str and bool(run["model"])
             and type(run.get("model_digest")) is str
             and SHA256.fullmatch(run["model_digest"]) is not None
             and type(run.get("call_count")) is int
@@ -278,7 +294,8 @@ def _validate(intent: PrePRIntent, task: Mapping[str, Any],
     require(type(result) is dict and
             result.get("checkout_isolated") is True
             and result.get("model_calls") == 0
-            and result.get("validator_id") != task["builder_id"]
+            and result.get("validator_id") == task["validator_worker_id"]
+            and result.get("validator_id") != task["builder_worker_id"]
             and type(result.get("validator_id")) is str
             and IDENT.fullmatch(result["validator_id"]) is not None
             and result.get("sha") == intent.candidate_sha
