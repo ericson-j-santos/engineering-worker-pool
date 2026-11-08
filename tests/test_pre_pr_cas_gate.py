@@ -92,6 +92,11 @@ class Fake:
             "repository": self.intent.repository, "issue_number": 42,
             "request_id": request_id, "idempotency_key": KEY,
             "base_sha": BASE, "candidate_sha": HEAD,
+            "source_sha": SOURCE,
+            "candidate_ref": self.intent.candidate_ref,
+            "todo_id": self.intent.todo_id,
+            "correlation_id": self.intent.correlation_id,
+            "allowed_paths": list(self.intent.allowed_paths),
         }
 
     def branch_sha(self, repository, ref):
