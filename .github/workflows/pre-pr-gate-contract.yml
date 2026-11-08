@@ -1,0 +1,58 @@
+name: Pre-PR Gate Contract
+
+on:
+  push:
+    branches:
+      - feat/pre-pr-gate-issue61-20261108
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pre-pr-gate-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      EXPECTED_SHA: ${{ github.sha }}
+    steps:
+      - name: Checkout exact source SHA
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ env.EXPECTED_SHA }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify immutable checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Compile route and tests
+        run: python -m py_compile app/pre_pr_gate.py tests/test_pre_pr_gate.py
+
+      - name: Run positive, negative and replay contract
+        run: python -m unittest -v tests.test_pre_pr_gate
+
+      - name: Record bounded evidence
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Generic pre-PR gate contract"
+            echo "SHA: $EXPECTED_SHA"
+            echo "Result: ${{ job.status }}"
+            echo "Model executed: false (contract validation only)"
+            echo "CAS written: false"
+            echo "Draft PR created: false"
+            echo "Merge authorized: false"
+            echo "Physical host touched: false"
+            echo "Artifact upload: false"
+          } >> "$GITHUB_STEP_SUMMARY"
