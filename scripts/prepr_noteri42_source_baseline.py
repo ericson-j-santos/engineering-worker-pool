@@ -63,7 +63,9 @@ def _load_launcher(root: Path):
 
 def reproduce(source_root: Path) -> dict:
     """Report a verified failing behavioral baseline, not simulated Qwen work."""
-    source_root = Path(source_root).resolve()
+    source_root = Path(source_root)
+    need(not source_root.is_symlink(), "noteri_source_checkout_redirected")
+    source_root = source_root.resolve()
     source_identity(source_root)
     launcher = _load_launcher(source_root)
     # This task meets the old S4U/boot predicate but has a WRONG/EXTRA Exec.
