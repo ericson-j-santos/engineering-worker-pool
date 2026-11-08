@@ -11,13 +11,13 @@ import json
 import re
 from typing import Any, Mapping
 
-SHA40 = re.compile(r"[0-9a-f]{40}\\Z")
-SHA256 = re.compile(r"[0-9a-f]{64}\\Z")
-REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\\Z")
-BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}\\Z")
-TODO = re.compile(r"TODO-[1-9][0-9]*\\Z")
-CORRELATION = re.compile(r"[a-z0-9][a-z0-9._-]{7,127}\\Z")
-MODEL = re.compile(r"[A-Za-z0-9_.:/-]{3,128}\\Z")
+SHA40 = re.compile(r"[0-9a-f]{40}\Z")
+SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
+BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}\Z")
+TODO = re.compile(r"TODO-[1-9][0-9]*\Z")
+CORRELATION = re.compile(r"[a-z0-9][a-z0-9._-]{7,127}\Z")
+MODEL = re.compile(r"[A-Za-z0-9_.:/-]{3,128}\Z")
 
 
 class PrePRBlocked(RuntimeError):
