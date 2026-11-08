@@ -62,6 +62,9 @@ def records():
         "patch_sha256": PATCH,
         "before_sha256": builder["before_sha256"],
         "after_sha256": builder["after_sha256"],
+        "model_id": builder["model_id"],
+        "model_digest": builder["model_digest"],
+        "model_calls": builder["model_calls"],
         "changed_paths": builder["changed_paths"],
         "independent_checkout": True,
         "validator_worker_id": "validator-noteri-20261108",
@@ -118,7 +121,13 @@ class PrePRGateTests(unittest.TestCase):
         with self.assertRaisesRegex(PrePRBlocked, "baseline_failure_unproved"):
             evaluate_pre_pr(request, builder, validator)
 
-    def test_validator_must_bind_exact_model_evidence(self):\n        request, builder, validator = records()\n        validator["model_digest"] = "0" * 64\n        with self.assertRaisesRegex(PrePRBlocked, "validator_builder_binding_invalid"):\n            evaluate_pre_pr(request, builder, validator)\n\n    def test_cas_bytes_must_be_independently_read_back(self):
+    def test_validator_must_bind_exact_model_evidence(self):
+        request, builder, validator = records()
+        validator["model_digest"] = "0" * 64
+        with self.assertRaisesRegex(PrePRBlocked, "validator_builder_binding_invalid"):
+            evaluate_pre_pr(request, builder, validator)
+
+    def test_cas_bytes_must_be_independently_read_back(self):
         request, builder, validator = records()
         validator["cas_readback_sha256"] = "0" * 64
         with self.assertRaisesRegex(PrePRBlocked, "cas_readback_mismatch"):
