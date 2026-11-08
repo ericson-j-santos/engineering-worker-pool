@@ -6,7 +6,7 @@ Esta é uma rota **opt-in e fail-closed**, não um dispatch automático.
 
 Repositório: `ericson-j-santos/noteri-runtime`  
 Issue: `#42`, TODO canônico: `TODO-54`  
-Origem admitida: `fix/noteri-probe-rules-sha-20261106@078927faf7bf970e9158631003dc2804bd26c390`  
+Origem admitida: `fix/noteri-probe-rules-sha-20261106@092ddd586e944acc85daa3a37007fcfa62fc40a8`  
 Regras: `chatgpt-operational-rules/main@86abe65b22781c2f608a7d7286ce3a28cd48aaaf`
 
 `app/noteri42_prepr_admission.py::admit_exact` liga **somente quando

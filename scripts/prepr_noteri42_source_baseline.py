@@ -16,7 +16,7 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-SOURCE_SHA = "078927faf7bf970e9158631003dc2804bd26c390"
+SOURCE_SHA = "092ddd586e944acc85daa3a37007fcfa62fc40a8"
 SOURCE_FILE = "scripts/noteri_control_plane_watchdog.py"
 LAUNCHER_FILE = "scripts/noteri_control_plane_watchdog_uac_launcher.py"
 

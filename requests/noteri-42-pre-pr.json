@@ -4,7 +4,7 @@
   "issue_number": 42,
   "todo_id": "TODO-54",
   "base_sha": "e10b3a00a9b3ec803ed4a4cc8f4f8c62b06c8928",
-  "head_sha": "078927faf7bf970e9158631003dc2804bd26c390",
+  "head_sha": "092ddd586e944acc85daa3a37007fcfa62fc40a8",
   "source_branch": "fix/noteri-probe-rules-sha-20261106",
   "correlation_id": "noteri-issue42-prepr-20261108"
 }

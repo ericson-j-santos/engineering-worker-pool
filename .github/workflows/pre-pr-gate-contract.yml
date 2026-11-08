@@ -47,7 +47,7 @@ jobs:
           from app.pre_pr_gate import validate_request
           request = json.loads(Path("requests/noteri-42-pre-pr.json").read_text())
           checked = validate_request(request)
-          assert checked["head_sha"] == "078927faf7bf970e9158631003dc2804bd26c390"
+          assert checked["head_sha"] == "092ddd586e944acc85daa3a37007fcfa62fc40a8"
           PY
 
       - name: Run positive, negative and replay contract
@@ -67,7 +67,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: ericson-j-santos/noteri-runtime
-          ref: 078927faf7bf970e9158631003dc2804bd26c390
+          ref: 092ddd586e944acc85daa3a37007fcfa62fc40a8
           path: noteri-source
           persist-credentials: false
 
@@ -93,7 +93,7 @@ jobs:
             echo "## Generic pre-PR gate contract"
             echo "SHA: $EXPECTED_SHA"
             echo "Result: ${{ job.status }}"
-            echo "Bound request: noteri-runtime#42 / TODO-54 / 078927faf7bf970e9158631003dc2804bd26c390"
+            echo "Bound request: noteri-runtime#42 / TODO-54 / 092ddd586e944acc85daa3a37007fcfa62fc40a8"
             echo "Model executed: false (contract validation only)"
             echo "READY_FOR_PR: false (self-reported JSON is not authority)"
             echo "Draft PR authorized: false"
@@ -138,7 +138,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: ericson-j-santos/noteri-runtime
-          ref: 078927faf7bf970e9158631003dc2804bd26c390
+          ref: 092ddd586e944acc85daa3a37007fcfa62fc40a8
           path: noteri-source
           persist-credentials: false
 
