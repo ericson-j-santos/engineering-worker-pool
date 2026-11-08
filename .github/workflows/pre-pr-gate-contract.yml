@@ -38,6 +38,17 @@ jobs:
       - name: Compile route and tests
         run: python -m py_compile app/pre_pr_gate.py tests/test_pre_pr_gate.py
 
+      - name: Validate SHA-bound Noteri request
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from app.pre_pr_gate import validate_request
+          request = json.loads(Path("requests/noteri-42-pre-pr.json").read_text())
+          checked = validate_request(request)
+          assert checked["head_sha"] == "515ede49cc7a8b80609c64ef76c23372239a637f"
+          PY
+
       - name: Run positive, negative and replay contract
         run: python -m unittest -v tests.test_pre_pr_gate
 
@@ -49,6 +60,7 @@ jobs:
             echo "## Generic pre-PR gate contract"
             echo "SHA: $EXPECTED_SHA"
             echo "Result: ${{ job.status }}"
+            echo "Bound request: noteri-runtime#42 / TODO-54 / 515ede49cc7a8b80609c64ef76c23372239a637f"
             echo "Model executed: false (contract validation only)"
             echo "CAS written: false"
             echo "Draft PR created: false"
