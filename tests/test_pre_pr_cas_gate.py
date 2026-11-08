@@ -41,12 +41,18 @@ class Fake:
             "correlation_id": self.intent.correlation_id,
             "base_sha": BASE, "produced_sha": HEAD,
             "fencing_required": True, "leased_by": None,
-            "state": "builder_completed", "lease_generation": 1,
-            "fence_id": "fence-noteri001", "builder_id": "builder-model001",
-            "model_run_id": RUN,
+            "state": "completed", "lease_generation": 2,
+            "attempt_count": 2, "builder_worker_id": "builder-model001",
+            "validator_worker_id": "validator-independent001",
+        }
+        self.checkpoint = {
+            "task_id": self.intent.task_id,
+            "stage": "validator_result", "next_action": "complete",
+            "lease_generation": 2, "attempt_id": "fenced-validator-02",
         }
         self.model = {
             "provider_verified": True, "run_id": RUN,
+            "task_id": self.intent.task_id,
             "request_id": self.intent.request_id, "base_sha": BASE,
             "produced_sha": HEAD, "source_sha": SOURCE,
             "builder_id": "builder-model001", "model": "verified-model",
@@ -93,6 +99,9 @@ class Fake:
 
     def get_task(self, task_id):
         return dict(self.task)
+
+    def get_latest_checkpoint(self, task_id):
+        return dict(self.checkpoint)
 
     def get_verified_run(self, run_id):
         self.model_reads += 1
