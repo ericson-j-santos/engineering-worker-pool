@@ -1,4 +1,4 @@
-name: Pre-PR Gate Contract
+name: Pre-PR Schema Contract (not READY_FOR_PR)
 
 on:
   push:
@@ -61,8 +61,8 @@ jobs:
         run: |
           gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$EXPECTED_SHA" \
             -f state="$CONTRACT_STATE" \
-            -f context="pre-pr-gate/contract" \
-            -f description="Generic pre-PR gate contract on exact SHA"
+            -f context="pre-pr-gate/schema-only" \
+            -f description="Schema-only: no independent CAS, model or PR authorization"
 
       - name: Record bounded evidence
         if: always()
@@ -74,6 +74,8 @@ jobs:
             echo "Result: ${{ job.status }}"
             echo "Bound request: noteri-runtime#42 / TODO-54 / 515ede49cc7a8b80609c64ef76c23372239a637f"
             echo "Model executed: false (contract validation only)"
+            echo "READY_FOR_PR: false (self-reported JSON is not authority)"
+            echo "Draft PR authorized: false"
             echo "CAS written: false"
             echo "Draft PR created: false"
             echo "Merge authorized: false"

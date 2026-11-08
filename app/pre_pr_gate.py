@@ -1,8 +1,9 @@
-"""Generic fail-closed pre-PR readiness policy.
+"""Schema-only pre-PR contract; NEVER grants READY_FOR_PR from JSON receipts.
 
-This module does not run a model, trust issue text, create branches, open pull
-requests, merge, deploy, or touch a physical host. Trusted adapters must supply
-the Builder CAS receipt and an independently produced Validator receipt.
+These records have no provenance: matching hashes, booleans and identities in
+self-reported JSON cannot prove model inference, Git objects, CAS durability,
+independent validation or current zero-cost attestation. The trusted live gate
+must check those authorities separately before any draft PR is authorized.
 """
 from __future__ import annotations
 
@@ -114,7 +115,7 @@ def _validate_builder(receipt: Mapping[str, Any], request: Mapping[str, Any]) ->
     require(receipt["before_sha256"] != receipt["after_sha256"],
             "repair_bytes_unchanged")
     require(type(receipt["artifact_ref"]) is str
-            and receipt["artifact_ref"].startswith("cas+git://sha256/")
+            and receipt["artifact_ref"].startswith("cas+git-bundle://sha256/")
             and receipt["artifact_ref"].endswith(receipt["artifact_sha256"])
             and len(receipt["artifact_ref"]) <= 256, "artifact_ref_invalid")
     require(type(receipt["lease_generation"]) is int
@@ -176,7 +177,7 @@ def evaluate_pre_pr(
     builder_receipt: Mapping[str, Any],
     validator_receipt: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Return READY_FOR_PR only for one exact, independently validated CAS."""
+    """Validate self-reported schema only; never authorize a draft from JSON."""
     checked = validate_request(request)
     _validate_builder(builder_receipt, checked)
     _validate_validator(validator_receipt, builder_receipt, checked)
@@ -187,7 +188,7 @@ def evaluate_pre_pr(
     }
     return {
         "schema_version": "pre-pr.decision.v1",
-        "status": "READY_FOR_PR",
+        "status": "SCHEMA_ONLY_UNVERIFIED",
         "repository": checked["repository"],
         "issue_number": checked["issue_number"],
         "todo_id": checked["todo_id"],
@@ -198,8 +199,9 @@ def evaluate_pre_pr(
         "artifact_sha256": builder_receipt["artifact_sha256"],
         "patch_sha256": builder_receipt["patch_sha256"],
         "correlation_id": checked["correlation_id"],
-        "evidence_sha256": canonical_sha256(evidence),
-        "draft_pr_authorized": True,
+        "receipt_fingerprint_sha256": canonical_sha256(evidence),
+        "independent_evidence_verified": False,
+        "draft_pr_authorized": False,
         "merge_authorized": False,
         "physical_execution_authorized": False,
     }
@@ -211,7 +213,7 @@ def replay_pre_pr(
     builder_receipt: Mapping[str, Any],
     validator_receipt: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """An exact replay is stable; any drift or new model result is rejected."""
+    """Schema-only replay is stable; neither call starts a model or grants PR."""
     observed = evaluate_pre_pr(request, builder_receipt, validator_receipt)
     require(type(expected_decision) is dict and dict(expected_decision) == observed,
             "replay_decision_drift")

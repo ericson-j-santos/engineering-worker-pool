@@ -1,5 +1,12 @@
 from copy import deepcopy
+from contextlib import redirect_stdout
+import io
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
+
+from scripts.pre_pr_gate_cli import main as cli_main
 
 from app.pre_pr_gate import PrePRBlocked, evaluate_pre_pr, replay_pre_pr
 
@@ -41,7 +48,7 @@ def records():
         "before_sha256": "1" * 64,
         "after_sha256": "2" * 64,
         "patch_sha256": PATCH,
-        "artifact_ref": "cas+git://sha256/" + ARTIFACT,
+        "artifact_ref": "cas+git-bundle://sha256/" + ARTIFACT,
         "artifact_sha256": ARTIFACT,
         "lease_generation": 2,
         "attempt_id": "attempt-noteri-20261108",
@@ -80,22 +87,50 @@ def records():
 
 
 class PrePRGateTests(unittest.TestCase):
-    def test_complete_independent_evidence_is_ready(self):
+    def test_self_consistent_untrusted_json_never_grants_ready(self):
         request, builder, validator = records()
+        # All hashes, SHA IDs, model calls and CAS flags below are synthetic.
         result = evaluate_pre_pr(request, builder, validator)
-        self.assertEqual(result["status"], "READY_FOR_PR")
-        self.assertTrue(result["draft_pr_authorized"])
+        self.assertEqual(result["status"], "SCHEMA_ONLY_UNVERIFIED")
+        self.assertFalse(result["draft_pr_authorized"])
+        self.assertFalse(result["independent_evidence_verified"])
         self.assertFalse(result["merge_authorized"])
         self.assertFalse(result["physical_execution_authorized"])
         self.assertEqual(result["source_sha"], HEAD)
-        self.assertEqual(len(result["evidence_sha256"]), 64)
+        self.assertEqual(len(result["receipt_fingerprint_sha256"]), 64)
+
+    def test_cli_self_consistent_forged_receipts_is_blocked(self):
+        request, builder, validator = records()
+        with TemporaryDirectory() as temp:
+            paths = [Path(temp) / f"{name}.json"
+                     for name in ("request", "builder", "validator")]
+            for path, value in zip(paths, (request, builder, validator)):
+                path.write_text(json.dumps(value), encoding="utf-8")
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = cli_main([
+                    "--request", str(paths[0]),
+                    "--builder", str(paths[1]),
+                    "--validator", str(paths[2]),
+                ])
+        result = json.loads(out.getvalue())
+        self.assertEqual(code, 2)
+        self.assertEqual(result["status"], "SCHEMA_ONLY_UNVERIFIED")
+        self.assertFalse(result["draft_pr_authorized"])
+
+    def test_bare_noncanonical_cas_ref_is_blocked(self):
+        request, builder, validator = records()
+        builder["artifact_ref"] = "cas+git://sha256/" + ARTIFACT
+        validator["artifact_ref"] = builder["artifact_ref"]
+        with self.assertRaisesRegex(PrePRBlocked, "artifact_ref_invalid"):
+            evaluate_pre_pr(request, builder, validator)
 
     def test_exact_replay_is_idempotent(self):
         request, builder, validator = records()
         decision = evaluate_pre_pr(request, builder, validator)
         replay = replay_pre_pr(decision, request, builder, validator)
         self.assertTrue(replay["replayed"])
-        self.assertEqual(replay["evidence_sha256"], decision["evidence_sha256"])
+        self.assertEqual(replay["receipt_fingerprint_sha256"], decision["receipt_fingerprint_sha256"])
 
     def test_replay_with_drift_fails_closed(self):
         request, builder, validator = records()

@@ -59,8 +59,10 @@ def main(argv: list[str] | None = None) -> int:
             "physical_execution_authorized": False,
         }, sort_keys=True))
         return 2
+    # The CLI reads locally supplied JSON only. Even matching receipts are not
+    # authenticated evidence and MUST NOT return a successful readiness exit.
     print(json.dumps(decision, sort_keys=True))
-    return 0
+    return 2
 
 
 if __name__ == "__main__":
