@@ -43,6 +43,7 @@ def fixture():
                correlation_id="issue42-prepr-corr",
                idempotency_key="issue42:prepr:once",
                changed_paths=["app/code.py"],
+               source_changed_paths=["app/code.py"],
                before_sha256={"app/code.py":sha(OLD)},
                after_sha256={"app/code.py":sha(NEW)},
                task_manifest=dict(
@@ -116,6 +117,10 @@ def test_positive_is_only_stage_not_ready():
     ("issue_number", True, "prepr_issue_invalid"),
     ("changed_paths", [], "prepr_paths_invalid"),
     ("changed_paths", ["../secret"], "prepr_path_invalid"),
+    ("source_changed_paths", [], "prepr_source_paths_invalid"),
+    ("source_changed_paths", ["../secret"], "prepr_source_path_invalid"),
+    ("source_changed_paths", [".github/secrets/hidden.txt"], "prepr_source_path_invalid"),
+    ("source_changed_paths", ["app/other.py"], "prepr_model_scope_outside_source"),
     ("rules_sha", "no", "prepr_sha_invalid"),
     ("source_sha", "invalid", "prepr_sha_invalid"),
     ("artifact", None, "durable_artifact_invalid"),
@@ -278,3 +283,31 @@ def test_source_git_branch_advance_fails_closed_before_model():
     with pytest.raises(NativeExecutorBlocked, match="prepr_github_drift"):
         check(req, **cb)
     assert events == ["live"]
+
+def test_source_branch_scope_may_contain_reviewed_workflow_but_patch_cannot():
+    req, live, _, _, callbacks, _ = fixture()
+    # The source branch has one additional workflow change, not part of
+    # the model's candidate patch or its trusted command manifest.
+    source_paths = sorted([
+        ".github/workflows/noteri-control-plane-probe.yml",
+        "app/code.py",
+    ])
+    req["source_changed_paths"] = source_paths
+    live["changed_paths"] = source_paths
+    result = check(req, **callbacks)
+    assert result["ready_for_pr"] is False
+    assert result["draft_pr_created"] is False
+    assert result["source_sha"] == SOURCE
+    assert result["produced_sha"] == HEAD
+
+
+def test_source_scope_must_match_live_github_not_candidate_patch():
+    req, live, _, _, callbacks, effects = fixture()
+    req["source_changed_paths"] = sorted([
+        ".github/workflows/noteri-control-plane-probe.yml",
+        "app/code.py",
+    ])
+    # Live GitHub has not proved the workflow was part of the source branch.
+    with pytest.raises(NativeExecutorBlocked, match="prepr_github_drift"):
+        check(req, **callbacks)
+    assert effects == ["live"]
