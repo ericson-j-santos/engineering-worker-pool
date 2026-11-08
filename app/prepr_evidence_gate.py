@@ -50,6 +50,26 @@ def check(request, *, live_github, model_attestor, cas_reader,
              not any(x in (".", "..") or x.startswith(".")
                      for x in PurePosixPath(p).parts), "prepr_path_invalid")
     need(paths == sorted(set(paths)), "prepr_paths_invalid")
+    # SOURCE is the already-authorized GitHub branch diff. MODEL paths are
+    # a bounded subset in TaskManifest; source workflows may be present,
+    # but cannot become executable Builder command targets.
+    source_paths = request.get("source_changed_paths")
+    need(type(source_paths) is list and 1 <= len(source_paths) <= 32
+         and source_paths == sorted(set(source_paths)),
+         "prepr_source_paths_invalid")
+    for path in source_paths:
+        need(type(path) is str and 3 <= len(path) <= 240
+             and "\\" not in path and not PurePosixPath(path).is_absolute()
+             and len(PurePosixPath(path).parts) >= 2
+             and ".." not in PurePosixPath(path).parts
+             and (all(not part.startswith(".") for part in PurePosixPath(path).parts)
+                  or (path.startswith(".github/workflows/")
+                      and len(PurePosixPath(path).parts) >= 3
+                      and all(not part.startswith(".")
+                              for part in PurePosixPath(path).parts[2:]))),
+             "prepr_source_path_invalid")
+    need(set(paths).issubset(set(source_paths)),
+         "prepr_model_scope_outside_source")
     for field in ("before_sha256", "after_sha256"):
         hashes = request.get(field)
         need(type(hashes) is dict and set(hashes) == set(paths) and
@@ -88,7 +108,7 @@ def check(request, *, live_github, model_attestor, cas_reader,
              value.get("main_sha") == base and
              value.get("branch_head_sha") == source_head and
              value.get("base_is_ancestor") is True and
-             value.get("changed_paths") == paths, "prepr_github_drift")
+             value.get("changed_paths") == source_paths, "prepr_github_drift")
         return value
 
     first = git_readback()
