@@ -121,7 +121,7 @@ def test_cloud_optin_or_digest_missing_never_contacts_model(monkeypatch):
 
 
 @pytest.mark.parametrize("change,reason", [
-    ({"/api/tags": {"models": []}}, "native_model_ambiguous_or_missing"),
+    ({"/api/tags": {"models": []}}, "native_model_inventory"),
     ({"/api/tags": {"models": [{
         "name": "qwen2.5-coder:7b", "digest": "f" * 64, "size": 100,
         "details": {"format": "gguf"},
