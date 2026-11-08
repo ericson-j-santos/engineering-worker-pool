@@ -1,0 +1,10 @@
+{
+  "schema_version": "pre-pr.request.v1",
+  "repository": "ericson-j-santos/noteri-runtime",
+  "issue_number": 42,
+  "todo_id": "TODO-54",
+  "base_sha": "e10b3a00a9b3ec803ed4a4cc8f4f8c62b06c8928",
+  "head_sha": "515ede49cc7a8b80609c64ef76c23372239a637f",
+  "source_branch": "fix/noteri-probe-rules-sha-20261106",
+  "correlation_id": "noteri-issue42-prepr-20261108"
+}
