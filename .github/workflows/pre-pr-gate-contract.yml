@@ -37,7 +37,7 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Compile route and tests
-        run: python -m py_compile app/pre_pr_gate.py app/prepr_evidence_gate.py app/prepr_github_readback.py app/noteri42_native_qwen.py scripts/prepr_live_github_readback.py scripts/prepr_noteri42_source_baseline.py tests/test_pre_pr_gate.py tests/test_prepr_evidence_gate.py tests/test_prepr_github_readback.py tests/test_prepr_noteri42_source_baseline.py tests/test_noteri42_native_qwen.py tests/test_prepr_noteri42_source_baseline.py
+        run: python -m py_compile app/pre_pr_gate.py app/prepr_evidence_gate.py app/prepr_github_readback.py app/noteri42_native_qwen.py app/noteri42_candidate.py scripts/prepr_live_github_readback.py scripts/prepr_noteri42_source_baseline.py tests/test_pre_pr_gate.py tests/test_prepr_evidence_gate.py tests/test_prepr_github_readback.py tests/test_prepr_noteri42_source_baseline.py tests/test_noteri42_native_qwen.py tests/test_noteri42_candidate.py tests/test_prepr_noteri42_source_baseline.py
 
       - name: Validate SHA-bound Noteri request
         run: |
@@ -56,7 +56,7 @@ jobs:
       - name: Verify canonical CAS envelope contract (synthetic only)
         run: |
           python -m pip install --disable-pip-version-check pytest==8.4.2 httpx==0.28.1
-          python -m pytest -q tests/test_prepr_evidence_gate.py tests/test_prepr_github_readback.py tests/test_prepr_noteri42_source_baseline.py tests/test_noteri42_native_qwen.py
+          python -m pytest -q tests/test_prepr_evidence_gate.py tests/test_prepr_github_readback.py tests/test_prepr_noteri42_source_baseline.py tests/test_noteri42_native_qwen.py tests/test_noteri42_candidate.py
 
       - name: Authenticated live GitHub source readback (not READY)
         env:
@@ -125,7 +125,7 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           python -m pip install --disable-pip-version-check pytest==8.4.2 httpx==0.28.1
-          python -m pytest -q tests/test_prepr_evidence_gate.py tests/test_prepr_github_readback.py tests/test_prepr_noteri42_source_baseline.py tests/test_noteri42_native_qwen.py
+          python -m pytest -q tests/test_prepr_evidence_gate.py tests/test_prepr_github_readback.py tests/test_prepr_noteri42_source_baseline.py tests/test_noteri42_native_qwen.py tests/test_noteri42_candidate.py
           python -m unittest -q tests.test_pre_pr_gate
           echo PREPR_SCHEMA_CAS_AND_OFFICIAL_GITHUB_HTTP_CONTRACT_OK_NO_READY_FOR_PR
 
