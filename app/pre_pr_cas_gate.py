@@ -166,7 +166,12 @@ def _revalidate(intent: PrePRIntent, authority: Authority) -> None:
             and auth.get("request_id") == intent.request_id
             and auth.get("idempotency_key") == intent.idempotency_key
             and auth.get("base_sha") == intent.base_sha
-            and auth.get("candidate_sha") == intent.candidate_sha,
+            and auth.get("candidate_sha") == intent.candidate_sha
+            and auth.get("source_sha") == intent.source_sha
+            and auth.get("candidate_ref") == intent.candidate_ref
+            and auth.get("todo_id") == intent.todo_id
+            and auth.get("correlation_id") == intent.correlation_id
+            and auth.get("allowed_paths") == list(intent.allowed_paths),
             "prepr_authority_unproved")
     require(authority.branch_sha(intent.repository, intent.base_ref)
             == intent.base_sha, "prepr_base_advanced")
@@ -344,6 +349,11 @@ def ready_for_pr(*, intent: PrePRIntent, authority: Authority,
                 and saved.get("request_id") == intent.request_id
                 and saved.get("base_sha") == intent.base_sha
                 and saved.get("head_sha") == intent.candidate_sha
+                and saved.get("source_sha") == intent.source_sha
+                and saved.get("todo_id") == intent.todo_id
+                and saved.get("task_id") == intent.task_id
+                and saved.get("changed_paths") == list(intent.allowed_paths)
+                and saved.get("validated_sha") == intent.candidate_sha
                 and saved.get("fence_id") == task["fence_id"]
                 and saved.get("lease_generation") == task["lease_generation"],
                 "prepr_replay_conflict")
@@ -355,6 +365,8 @@ def ready_for_pr(*, intent: PrePRIntent, authority: Authority,
                 "prepr_replay_artifact_unreadable")
         return {**saved, "replayed": True}
 
+    require(writer is not independent_reader,
+            "prepr_cas_readback_not_independent")
     model = _model(intent, task, model_audit)
     raw, hashes = _git_package(intent, source)
     artifact_sha = digest(raw)
@@ -420,6 +432,11 @@ def publish_single_draft(*, intent: PrePRIntent, authority: Authority,
             and ready.get("base_sha") == intent.base_sha
             and ready.get("repository") == intent.repository
             and ready.get("request_id") == intent.request_id
+            and ready.get("source_sha") == intent.source_sha
+            and ready.get("todo_id") == intent.todo_id
+            and ready.get("task_id") == intent.task_id
+            and ready.get("validated_sha") == intent.candidate_sha
+            and ready.get("changed_paths") == list(intent.allowed_paths)
             and type(ready.get("artifact_ref")) is str
             and type(ready.get("artifact_sha256")) is str
             and SHA256.fullmatch(ready["artifact_sha256"]) is not None
