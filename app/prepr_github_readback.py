@@ -20,10 +20,10 @@ API = "https://api.github.com"
 REPOSITORY = "ericson-j-santos/noteri-runtime"
 ISSUE = 42
 BRANCH = "fix/noteri-probe-rules-sha-20261106"
-SHA40 = re.compile(r"[0-9a-f]{40}\\Z")
+SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_FILES = 100
-TOKEN = re.compile(r"[!-~]{16,4096}\\Z")
+TOKEN = re.compile(r"[!-~]{16,4096}\Z")
 
 
 def _need(condition: bool, code: str) -> None:
@@ -75,7 +75,7 @@ class OfficialNoteriReadback:
 
     def _get(self, endpoint: str) -> dict:
         _need(type(endpoint) is str and endpoint.startswith("/repos/" + REPOSITORY + "/")
-              and "//" not in endpoint and "\\\\" not in endpoint
+              and "//" not in endpoint and "\\" not in endpoint
               and "?" not in endpoint and "#" not in endpoint,
               "prepr_github_route_invalid")
         url = API + endpoint
