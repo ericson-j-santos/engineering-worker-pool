@@ -7,6 +7,7 @@ The original source and acceptance tests remain outside the model's control.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -49,10 +50,22 @@ def _json_reply(reply: str) -> str:
         raise ValueError("noteri42_model_reply_json") from None
     need(type(parsed) is dict and set(parsed) == {"function"}
          and type(parsed["function"]) is str
-         and FUNCTION_START.search(parsed["function"]) is not None
          and len(parsed["function"].encode("utf-8")) <= MAX_REPLY_BYTES,
          "noteri42_model_reply_shape")
-    return parsed["function"]
+    # A model reply is untrusted source text, not an executable patch.
+    # A regex search alone also accepts statements before/after a valid def.
+    candidate = parsed["function"]
+    try:
+        tree = ast.parse(candidate, mode="exec")
+    except SyntaxError:
+        raise ValueError("noteri42_model_function_syntax") from None
+    need(len(tree.body) == 1
+         and type(tree.body[0]) is ast.FunctionDef
+         and tree.body[0].name == TARGET_FUNCTION
+         and not tree.body[0].decorator_list
+         and FUNCTION_START.match(candidate) is not None,
+         "noteri42_model_reply_shape")
+    return candidate
 
 
 class Noteri42NativeQwen(NativeStructuredOllama):
