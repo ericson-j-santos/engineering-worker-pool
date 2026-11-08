@@ -208,6 +208,58 @@ class LocalWorkerApi:
         return {"task_id": task_id, "created": reply["created"],
                 "task": readback}
 
+    def enqueue_fenced_noteri42(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Narrow transport for Noteri #42; never an unbounded issue dispatcher.
+
+        Admission, GitHub/TODO authority, host readiness and cost proofs are
+        enforced upstream. This method also binds the exact payload before
+        any POST, and re-reads the canonical task after submission. It never
+        registers a runner or asks a worker to execute.
+        """
+        from app.noteri42_prepr_admission import (
+            REPO as NOTERI_REPO, ISSUE as NOTERI_ISSUE,
+            SOURCE_SHA as NOTERI_SOURCE_SHA, BRANCH as NOTERI_BRANCH,
+            REQUEST_ID as NOTERI_REQUEST_ID,
+            CORRELATION_ID as NOTERI_CORRELATION,
+        )
+        expected = {
+            "repository": NOTERI_REPO,
+            "issue_number": NOTERI_ISSUE,
+            "request_id": NOTERI_REQUEST_ID,
+            "correlation_id": NOTERI_CORRELATION,
+            "priority": 10,
+            "base_sha": NOTERI_SOURCE_SHA,
+            "target_branch": NOTERI_BRANCH,
+            "max_attempts": 1,
+            "fencing_required": True,
+        }
+        _need(type(payload) is dict and payload == expected
+              and all(type(payload[key]) is type(value)
+                      for key, value in expected.items()),
+              "noteri42_worker_payload_invalid")
+        reply = self._request("POST", "/v1/tasks", expected,
+                              expected_statuses=(200, 201))
+        _need(type(reply.get("created")) is bool
+              and type(reply.get("task")) is dict
+              and type(reply["task"].get("task_id")) is str
+              and bool(TASK_ID.fullmatch(reply["task"]["task_id"])),
+              "noteri42_worker_enqueue_unverified")
+        task_id = reply["task"]["task_id"]
+        task = self.get_task(task_id)
+        for key in ("repository", "issue_number", "request_id",
+                    "correlation_id", "priority", "base_sha"):
+            _need(task.get(key) == expected[key],
+                  "noteri42_worker_readback_mismatch")
+        _need(task.get("branch") == NOTERI_BRANCH
+              and task.get("fencing_required") is True
+              and task.get("max_attempts") == 1
+              and task.get("state") in {
+                  "queued", "leased", "running", "validating",
+                  "completed", "blocked", "failed",
+              }, "noteri42_worker_readback_mismatch")
+        return {"created": reply["created"], "task_id": task_id,
+                "task": task}
+
     def get_task(self, task_id: str) -> dict[str, Any]:
         _id(task_id)
         return self._task(self._request("GET", f"/v1/tasks/{task_id}"), task_id)
