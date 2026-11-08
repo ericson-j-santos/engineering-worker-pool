@@ -1,0 +1,50 @@
+name: DEV pre-PR evidence validation (stage only)
+on:
+  push:
+    branches:
+      - fix/prepr-independent-evidence-stage-20261107
+permissions:
+  contents: read
+concurrency:
+  group: prepr-independent-evidence-stage
+  cancel-in-progress: true
+jobs:
+  source-contract:
+    if: github.repository == 'ericson-j-santos/engineering-worker-pool' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Checkout exact SHA
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Install pinned public test dependency
+        run: python -m pip install --disable-pip-version-check pytest==8.4.2
+      - name: Syntax
+        run: python -m compileall -q app/prepr_evidence_gate.py tests/test_prepr_evidence_gate.py
+      - name: Positive, negative and replay contract
+        run: python -m pytest -q tests/test_prepr_evidence_gate.py
+  independent-readback:
+    if: github.repository == 'ericson-j-santos/engineering-worker-pool' && github.event.repository.private == false
+    needs: source-contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Immutable checkout
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Fresh independent tests
+        run: |
+          python -m pip install --disable-pip-version-check pytest==8.4.2
+          python -m pytest -q tests/test_prepr_evidence_gate.py
+      - name: Classify actual scope
+        run: echo PREPR_STAGE_ONLY_TESTS_PASSED_NOT_READY_FOR_PR
