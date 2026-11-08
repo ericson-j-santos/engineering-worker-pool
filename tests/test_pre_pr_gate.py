@@ -118,7 +118,7 @@ class PrePRGateTests(unittest.TestCase):
         with self.assertRaisesRegex(PrePRBlocked, "baseline_failure_unproved"):
             evaluate_pre_pr(request, builder, validator)
 
-    def test_cas_bytes_must_be_independently_read_back(self):
+    def test_validator_must_bind_exact_model_evidence(self):\n        request, builder, validator = records()\n        validator["model_digest"] = "0" * 64\n        with self.assertRaisesRegex(PrePRBlocked, "validator_builder_binding_invalid"):\n            evaluate_pre_pr(request, builder, validator)\n\n    def test_cas_bytes_must_be_independently_read_back(self):
         request, builder, validator = records()
         validator["cas_readback_sha256"] = "0" * 64
         with self.assertRaisesRegex(PrePRBlocked, "cas_readback_mismatch"):
