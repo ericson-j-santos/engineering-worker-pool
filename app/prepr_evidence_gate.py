@@ -53,6 +53,14 @@ def check(request, *, live_github, model_attestor, cas_reader,
         need(type(hashes) is dict and set(hashes) == set(paths) and
              all(type(v) is str and SHA64.fullmatch(v) is not None
                  for v in hashes.values()), "prepr_hashes_invalid")
+    # Validate the full CAS descriptor before invoking any external authority.
+    # Untrusted task input must not cause GitHub or model callbacks on failure.
+    artifact = DurableArtifact.parse(request.get("artifact"))
+    need(artifact.artifact_kind == "git_bundle_v1" and
+         artifact.artifact_ref.startswith("cas+"), "prepr_cas_kind")
+    patch_sha = request.get("patch_sha256")
+    need(type(patch_sha) is str and SHA64.fullmatch(patch_sha) is not None,
+         "prepr_patch_missing")
     need(all(callable(cb) for cb in (
         live_github, model_attestor, cas_reader, source_reader,
         independent_validator, cost_attestor)), "prepr_adapter_missing")
@@ -86,12 +94,6 @@ def check(request, *, live_github, model_attestor, cas_reader,
          type(model.get("baseline_failures")) is int and
          model["baseline_failures"] >= 1, "prepr_model_unverified")
 
-    artifact = DurableArtifact.parse(request.get("artifact"))
-    need(artifact.artifact_kind == "git_bundle_v1" and
-         artifact.artifact_ref.startswith("cas+"), "prepr_cas_kind")
-    patch_sha = request.get("patch_sha256")
-    need(type(patch_sha) is str and SHA64.fullmatch(patch_sha) is not None,
-         "prepr_patch_missing")
     before = cas_reader(artifact.artifact_ref)
     need(type(before) is bytes and 0 < len(before) <= 524288 and
          digest(before) == artifact.artifact_sha256,
