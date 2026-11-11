@@ -45,12 +45,14 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           python -m py_compile scripts/issue61_qwen7b_native_probe.py
           python - <<'PY'
-          from scripts.issue61_qwen7b_native_probe import accepted, preflight
+          from scripts.issue61_qwen7b_native_probe import accepted, failed_cases, preflight
           import os
           preflight(os.environ)
           assert accepted("^TODO-[1-9][0-9]*$")
           assert not accepted("^.*$")
           assert not accepted("[A-Z]{2}")
+          assert "ACCEPTED_INVALID_'TODO-0'" in failed_cases("^TODO-.*$")
+          assert failed_cases("^TODO-[1-9][0-9]*$") == []
           print("QWEN_PROBE_BASELINE_AND_NEGATIVE_GATES_PASSED")
           PY
       - name: Install pinned Ollama native archive and run real Qwen7B inference
