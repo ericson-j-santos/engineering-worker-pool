@@ -7,6 +7,9 @@ on:
       - cas/issue61-gate-contract-20261111-v1
     paths:
       - .github/workflows/issue61-qwen7b-native-probe.yml
+      - scripts/issue61_qwen_patch_contract.py
+      - tests/test_issue61_qwen_patch_contract.py
+      - scripts/issue61_qwen7b_native_probe.py
 
 permissions:
   contents: read
@@ -43,7 +46,7 @@ jobs:
         shell: bash
         run: |
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          python -m py_compile scripts/issue61_qwen7b_native_probe.py
+          python -m py_compile scripts/issue61_qwen7b_native_probe.py scripts/issue61_qwen_patch_contract.py
           python - <<'PY'
           from scripts.issue61_qwen7b_native_probe import accepted, failed_cases, preflight
           import os
@@ -56,6 +59,11 @@ jobs:
           assert "MISSING_VALID_'TODO-54'" in failed_cases("^TODO-[1-9]$")
           print("QWEN_PROBE_BASELINE_AND_NEGATIVE_GATES_PASSED")
           PY
+      - name: Run Python AST patch gate positive and negative tests
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check --no-cache-dir pytest==8.4.2
+          python -m pytest -q -p no:cacheprovider tests/test_issue61_qwen_patch_contract.py
       - name: Install pinned Ollama native archive and run real Qwen7B inference
         shell: bash
         timeout-minutes: 17
