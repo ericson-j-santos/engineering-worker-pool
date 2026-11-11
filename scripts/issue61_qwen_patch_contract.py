@@ -59,7 +59,7 @@ def extract_model_patch(reply: str) -> tuple[str, str]:
             or not isinstance(expr.args[0].value, str)):
         raise PatchRejected("MODEL_CODE_CALL_NOT_ALLOWED")
     pattern = expr.args[0].value
-    if len(pattern) > 90 or not pattern.startswith("TODO-"):
+    if len(pattern) > 90 or not pattern.startswith(("TODO-", "^TODO-", r"\ATODO-")):
         raise PatchRejected("MODEL_PATTERN_SCOPE_INVALID")
     try:
         regex = re.compile(pattern)
