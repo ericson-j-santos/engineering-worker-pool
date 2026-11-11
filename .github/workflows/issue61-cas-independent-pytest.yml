@@ -72,7 +72,7 @@ jobs:
                   content = file[mode].encode("utf-8")
                   assert hashlib.sha256(content).hexdigest() == file[mode+"_sha256"], "CONTENT_DIGEST_MISMATCH"
               payload = file["after"].encode("utf-8")
-              git_blob_sha = hashlib.sha1(b"blob "+str(len(payload)).encode()+b"\\0"+payload).hexdigest()
+              git_blob_sha = hashlib.sha1(b"blob "+str(len(payload)).encode()+b"\0"+payload).hexdigest()
               assert git_blob_sha == file["after_blob_sha1"], "GIT_OBJECT_MISMATCH"
               output.write_bytes(payload)
           (root / "app" / "__init__.py").write_text("", encoding="utf-8")
