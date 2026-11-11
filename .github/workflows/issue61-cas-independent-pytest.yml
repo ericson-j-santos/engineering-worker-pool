@@ -83,9 +83,10 @@ jobs:
       - name: Compile exactly the recovered source and tests
         run: python -m compileall -q .issue61-independent-checkout/app .issue61-independent-checkout/tests
       - name: Run focused positive, negative and idempotency tests on recovered bytes
-        env:
-          PYTHONPATH: .issue61-independent-checkout
-        run: python -m pytest -q -p no:cacheprovider .issue61-independent-checkout/tests/test_pre_pr_cas_gate.py
+        shell: bash
+        run: |
+          cd .issue61-independent-checkout
+          python -m pytest -q -p no:cacheprovider tests/test_pre_pr_cas_gate.py
       - name: Report scope without granting READY_FOR_PR
         if: success()
         run: |
