@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "task": "engineering-worker-pool#61",
+  "task_kind": "repair_probe",
+  "source_sha": "2504c5e123f6e7cd607ea77fde80cbebf46d2790",
+  "rules_sha": "58dcd4200f412a866278027ba9e433439a03f3b3",
+  "cas_original_sha256": "dcb44976e3fcb77251d0cf5f19fa56053aaeb1ae3015a8eb97c1985289841289",
+  "candidate_produced_sha": "90f79146deec86b7d1265daf3bb9bb3b5879f3bd",
+  "created_date": "2026-11-11",
+  "status": "MODEL_REAL_INFERENCE_CONFIRMED_REPAIR_FAILED",
+  "model": "qwen2.5-coder:7b",
+  "model_digest": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364",
+  "ollama_release": "v0.40.16",
+  "ollama_release_sha256": "87bfafb2acbc89b2e6a1be0a9043de6aa75fb450696f86bc426e65fc448f788d",
+  "sample_run_id": 43094231967,
+  "token_count_per_attempt": [
+    32,
+    32,
+    32
+  ],
+  "reply_sha256": "ac66bc22bc986253877e838efb2fbf33bcc979e26e4e7d6b26af6a4fd0935ab3",
+  "unique_model_replies": 1,
+  "failed_cases": [
+    "MISSING_VALID_'TODO-1'",
+    "MISSING_VALID_'TODO-24'",
+    "MISSING_VALID_'TODO-54'",
+    "ACCEPTED_INVALID_'TODO-54-validation'"
+  ],
+  "baseline_bug_reproduced": true,
+  "controlled_feedback_attempts": 3,
+  "feedback_sampling_changed": true,
+  "actual_repair_accepted": false,
+  "validator_independently_attested": false,
+  "ready_for_pr": false,
+  "branch_published": false,
+  "noteri_used": false,
+  "model_cloud_used": false,
+  "no_docker": true,
+  "actions_hosted_public_runner": true,
+  "execution_runs": [
+    {
+      "run_id": 43093308803,
+      "head_sha": "2a03f0f7acc0949bc7cf327003610a5da7d9bc3e",
+      "result": "failure",
+      "code": "QWEN_REPAIR_TESTS_FAILED",
+      "full_receipt": false
+    },
+    {
+      "run_id": 43093714960,
+      "head_sha": "999b6ab56a9291ea3b9acd9b9040f502fa7f8cd5",
+      "result": "failure",
+      "code": "QWEN_REPAIR_FAILED_AFTER_FEEDBACK",
+      "full_receipt": true
+    },
+    {
+      "run_id": 43094231967,
+      "head_sha": "2d0e39cf6533bef580f5df8612f614f423780508",
+      "result": "failure",
+      "code": "QWEN_REPAIR_FAILED_AFTER_FEEDBACK",
+      "full_receipt": true
+    }
+  ],
+  "source_urls": [
+    "https://github.com/ericson-j-santos/engineering-worker-pool/actions/runs/43093714960",
+    "https://github.com/ericson-j-santos/engineering-worker-pool/actions/runs/43094231967"
+  ],
+  "provenance_note": "Runner logs prove native Qwen model loading and actual token generation; Qwen patch did not pass acceptance. GPT-6 candidate remains separate and is NOT retroactively attributed to Qwen.",
+  "idempotency_key": "ewp61:qwen7b:failed-repair:43094231967:v1",
+  "correlation_id": "ewp61-qwen7b-real-model-negative-repair-20261111"
+}
