@@ -1,0 +1,67 @@
+name: Issue61 native real Ollama Qwen7B repair probe (no Docker)
+run-name: Issue61 hosted native Qwen7B · ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - cas/issue61-gate-contract-20261111-v1
+    paths:
+      - .github/workflows/issue61-qwen7b-native-probe.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ewp61-real-qwen7b-one-shot-20261111
+  cancel-in-progress: false
+
+jobs:
+  qwen-native:
+    name: Authenticated Qwen7B model invocation, no publication
+    if: >-
+      github.repository == 'ericson-j-santos/engineering-worker-pool' &&
+      github.event.repository.private == false &&
+      github.actor == 'ericson-j-santos' &&
+      github.ref == 'refs/heads/cas/issue61-gate-contract-20261111-v1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      OLLAMA_NO_CLOUD: '1'
+    steps:
+      - name: Checkout exact immutable event commit
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Pin Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Verify source integrity and reproduce failing TODO ID baseline
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python -m py_compile scripts/issue61_qwen7b_native_probe.py
+          python - <<'PY'
+          from scripts.issue61_qwen7b_native_probe import accepted, preflight
+          import os
+          preflight(os.environ)
+          assert accepted("^TODO-[1-9][0-9]*$")
+          assert not accepted("^.*$")
+          assert not accepted("[A-Z]{2}")
+          print("QWEN_PROBE_BASELINE_AND_NEGATIVE_GATES_PASSED")
+          PY
+      - name: Install pinned Ollama native archive and run real Qwen7B inference
+        shell: bash
+        timeout-minutes: 17
+        run: python scripts/issue61_qwen7b_native_probe.py
+      - name: Declare exact scope, never automatic READY_FOR_PR
+        if: success()
+        run: |
+          echo "REAL_NATIVE_QWEN7B_MODEL_REPAIR_TEST_PASSED"
+          echo "TODO54_ADMISSION_NOT_USED"
+          echo "NO_SOURCE_BRANCH_PUBLISH"
+          echo "INDEPENDENT_VALIDATOR_NOT_ATTESTED"
+          echo "READY_FOR_PR=false"
