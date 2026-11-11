@@ -183,16 +183,22 @@ def main():
                         "eval_count": result["eval_count"],
                         "reply_sha256": sha(reply.encode()),
                         "acceptance_pass": len(problems) == 0,
+                        "failed_cases": problems,
                     }
                     print("QWEN_REAL_MODEL_CALL=" + json.dumps(call_receipt, sort_keys=True), flush=True)
                     if not problems:
                         break
                     if attempt < 3:
+                        # A failed response is a material new precondition: provide
+                        # grounded negative evidence and change generation sampling.
+                        request["options"]["temperature"] = 0.35 + 0.15 * attempt
+                        request["options"]["seed"] = 61 + attempt
                         request["prompt"] = (
                             prompt + "\nYour previous JSON response was:\n" +
                             reply + "\nThe independent regex acceptance tests failed:\n" +
                             "\n".join(problems) +
-                            "\nRepair the regex yourself. Return ONLY a new JSON object "
+                            "\nThink through each failing case and repair the regex yourself. "
+                            "Return ONLY a new JSON object "
                             "with key pattern. Do not repeat failed answers."
                         )
                 else:
