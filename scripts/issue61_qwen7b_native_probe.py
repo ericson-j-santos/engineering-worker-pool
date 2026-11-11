@@ -10,6 +10,8 @@ import tempfile
 import time
 import urllib.request
 
+from scripts.issue61_qwen_patch_contract import PatchRejected, extract_model_patch
+
 REPO = "ericson-j-santos/engineering-worker-pool"
 REF = "refs/heads/cas/issue61-gate-contract-20261111-v1"
 URL = "https://github.com/ollama/ollama/releases/download/v0.40.16/ollama-linux-amd64.tar.zst"
@@ -148,61 +150,65 @@ def main():
                 digest = model.get("digest", "") if model else ""
                 if not re.fullmatch("[a-f0-9]{64}", digest) or not digest.startswith(MODEL_PREFIX):
                     raise RuntimeError("QWEN_DIGEST_PIN_INVALID")
+                # New substantive output contract: author a replacement Python
+                # assignment (not a generic regex). Original broken source remains
+                # unchanged; output is AST-inspected, never evaluated or executed.
                 prompt = (
-                    "Fix a Python TODO ID regex bug. The old regex is "
-                    "[a-zA-Z0-9][a-zA-Z0-9_.:-]{7,191}\\Z. "
-                    "It rejects valid TODO-24 and TODO-54. Return only JSON "
-                    "with key pattern, a Python regex accepting TODO-1, TODO-24, "
-                    "TODO-54, TODO-999, and rejecting TODO-0, TODO-54-validation, "
-                    "TODO-54/../, lowercase todo-54 and trailing newlines."
+                    "You are repairing one REAL Python validation bug. "
+                    "In app/pre_pr_cas_gate.py the old validator is "
+                    "IDENT = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_.:-]{7,191}\\Z'), "
+                    "which incorrectly rejects canonical identifiers TODO-24 "
+                    "and TODO-54. Generate one new Python assignment named TODO_ID "
+                    "that uses re.compile with a literal regex. "
+                    "Do not alter unrelated validators. "
+                    "The regex must accept TODO-1, TODO-24, TODO-54, "
+                    "TODO-999 and TODO-123456; reject TODO-0, TODO-00, "
+                    "TODO-01, TODO-54-validation, TODO-54/.., lowercase todo-54, "
+                    "TODO-54 followed by a newline, TODO-54 followed by a space, "
+                    "TODO--1, and the empty string. "
+                    "Your replacement_line should look like a single Python "
+                    "assignment to TODO_ID, with a raw string regex inside "
+                    "re.compile; your own pattern must be inferred from tests. "
+                    "Return only a JSON object with exactly replacement_line."
                 )
-                request = {"model": MODEL, "prompt": prompt, "stream": False,
-                           "format": "json",
-                           "options": {"temperature": 0, "num_predict": 120,
-                                       "num_ctx": 1024, "num_thread": 4}}
+                schema = {
+                    "type": "object",
+                    "properties": {"replacement_line": {"type": "string"}},
+                    "required": ["replacement_line"],
+                    "additionalProperties": False,
+                }
+                request = {
+                    "model": MODEL,
+                    "system": "You are a Python bug repair model. Return only the requested JSON schema. No prose, Markdown or hidden commands.",
+                    "prompt": prompt, "stream": False, "format": schema,
+                    "options": {"temperature": 0, "num_predict": 256,
+                                "num_ctx": 2048, "num_thread": 4,
+                                "seed": 6111}
+                }
                 print("QWEN_BINARY_AND_MODEL_DIGEST_VERIFIED=" + digest, flush=True)
-                pattern = None
-                reply = ""
-                result = {}
-                for attempt in range(1, 4):
-                    result = call("/api/generate", request, timeout=300)
-                    if result.get("done") is not True or result.get("model") != MODEL:
-                        raise RuntimeError("QWEN_INFERENCE_UNCONFIRMED")
-                    if not isinstance(result.get("eval_count"), int) or result["eval_count"] <= 0:
-                        raise RuntimeError("QWEN_NO_GENERATED_TOKENS")
-                    reply = result.get("response", "")
-                    if not isinstance(reply, str) or len(reply) > 2000:
-                        raise RuntimeError("QWEN_REPLY_UNTRUSTED")
-                    try:
-                        pattern = json.loads(reply)["pattern"]
-                    except (ValueError, KeyError, TypeError):
-                        pattern = None
-                    problems = failed_cases(pattern)
-                    call_receipt = {
-                        "model_digest": digest, "attempt": attempt,
-                        "eval_count": result["eval_count"],
+                result = call("/api/generate", request, timeout=300)
+                if result.get("done") is not True or result.get("model") != MODEL:
+                    raise RuntimeError("QWEN_INFERENCE_UNCONFIRMED")
+                if not isinstance(result.get("eval_count"), int) or result["eval_count"] <= 0:
+                    raise RuntimeError("QWEN_NO_GENERATED_TOKENS")
+                reply = result.get("response", "")
+                if not isinstance(reply, str) or len(reply) > 1500:
+                    raise RuntimeError("QWEN_REPLY_UNTRUSTED")
+                try:
+                    replacement_line, pattern = extract_model_patch(reply)
+                except PatchRejected as exc:
+                    error_code = str(exc)
+                    print("QWEN_CODE_REPAIR_REJECTED=" + json.dumps({
+                        "error_code": error_code,
+                        "model_digest": digest,
                         "reply_sha256": sha(reply.encode()),
-                        "acceptance_pass": len(problems) == 0,
-                        "failed_cases": problems,
-                    }
-                    print("QWEN_REAL_MODEL_CALL=" + json.dumps(call_receipt, sort_keys=True), flush=True)
-                    if not problems:
-                        break
-                    if attempt < 3:
-                        # A failed response is a material new precondition: provide
-                        # grounded negative evidence and change generation sampling.
-                        request["options"]["temperature"] = 0.35 + 0.15 * attempt
-                        request["options"]["seed"] = 61 + attempt
-                        request["prompt"] = (
-                            prompt + "\nYour previous JSON response was:\n" +
-                            reply + "\nThe independent regex acceptance tests failed:\n" +
-                            "\n".join(problems) +
-                            "\nThink through each failing case and repair the regex yourself. "
-                            "Return ONLY a new JSON object "
-                            "with key pattern. Do not repeat failed answers."
-                        )
-                else:
-                    raise RuntimeError("QWEN_REPAIR_FAILED_AFTER_FEEDBACK")
+                        "eval_count": result["eval_count"],
+                        "source_sha": "2504c5e123f6e7cd607ea77fde80cbebf46d2790",
+                    }, sort_keys=True), flush=True)
+                    raise RuntimeError("QWEN_MODEL_CODE_PATCH_FAILED_ACCEPTANCE") from None
+                # This is the model-authored code, safe only after AST and tests.
+                # It is NOT an authorized publication or a Validator attestation.
+                print("QWEN_AUTHORED_PATCH_LINE=" + replacement_line, flush=True)
                 receipt = {
                     "status": "REAL_QWEN_REPAIR_PROBE_SUCCESS",
                     "issue": 61, "not_todo54_admission": True,
@@ -213,10 +219,13 @@ def main():
                     "prompt_sha256": sha(prompt.encode()),
                     "reply_sha256": sha(reply.encode()),
                     "regex_sha256": sha(pattern.encode()),
-                    "eval_count": result["eval_count"], "inference_attempts": attempt,
+                    "replacement_line_sha256": sha(replacement_line.encode()),
+                    "authored_replacement_line": replacement_line,
+                    "eval_count": result["eval_count"], "inference_attempts": 1,
                     "baseline_failed": True,
                     "positive_negative_tests_pass": True,
                     "builder_code_not_published": True,
+                    "source_sha": "2504c5e123f6e7cd607ea77fde80cbebf46d2790",
                     "validator_independent_not_attested": True,
                     "ready_for_pr": False,
                 }
