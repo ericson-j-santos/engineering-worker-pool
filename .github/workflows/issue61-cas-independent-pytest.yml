@@ -7,6 +7,8 @@ on:
       - cas/issue61-gate-contract-20261111-v1
     paths:
       - .github/workflows/issue61-cas-independent-pytest.yml
+      - scripts/issue61_cas_validator.py
+      - tests/test_issue61_cas_validator.py
 
 permissions:
   contents: read
@@ -41,47 +43,14 @@ jobs:
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12'
-      - name: Revalidate exact CAS bytes and materialize candidate in isolated directory
-        shell: bash
-        run: |
-          python - <<'PY'
-          import hashlib
-          import json
-          from pathlib import Path
-
-          evidence = Path("cas/issue61/20261111/prepr-artifact.json")
-          raw = evidence.read_bytes()
-          sha = hashlib.sha256(raw).hexdigest()
-          assert sha == "dcb44976e3fcb77251d0cf5f19fa56053aaeb1ae3015a8eb97c1985289841289", "CAS_SHA256_DRIFT"
-          data = json.loads(raw)
-          assert data["source_sha"] == "2504c5e123f6e7cd607ea77fde80cbebf46d2790"
-          assert data["produced_sha"] == "90f79146deec86b7d1265daf3bb9bb3b5879f3bd"
-          assert data["ready_for_pr"] is False and data["validator_verified"] is False
-          paths = {
-              "app/pre_pr_cas_gate.py",
-              "tests/test_pre_pr_cas_gate.py",
-              "docs/PRE_PR_CAS_VALIDATOR.md",
-          }
-          assert {file["path"] for file in data["files"]} == paths, "PATH_SCOPE_INVALID"
-          root = Path(".issue61-independent-checkout")
-          for file in data["files"]:
-              path = file["path"]
-              output = root / path
-              output.parent.mkdir(parents=True, exist_ok=True)
-              for mode in ("before", "after"):
-                  content = file[mode].encode("utf-8")
-                  assert hashlib.sha256(content).hexdigest() == file[mode+"_sha256"], "CONTENT_DIGEST_MISMATCH"
-              payload = file["after"].encode("utf-8")
-              git_blob_sha = hashlib.sha1(b"blob "+str(len(payload)).encode()+b"\0"+payload).hexdigest()
-              assert git_blob_sha == file["after_blob_sha1"], "GIT_OBJECT_MISMATCH"
-              output.write_bytes(payload)
-          (root / "app" / "__init__.py").write_text("", encoding="utf-8")
-          print("ISSUE61_CAS_READBACK_VERIFIED")
-          PY
+      - name: Verify original CAS and materialize candidate in an isolated directory
+        run: python scripts/issue61_cas_validator.py
       - name: Install pinned pytest without caching
         run: python -m pip install --disable-pip-version-check --no-cache-dir pytest==8.4.2
-      - name: Compile exactly the recovered source and tests
-        run: python -m compileall -q .issue61-independent-checkout/app .issue61-independent-checkout/tests
+      - name: Compile verifier and exact recovered source/tests
+        run: python -m compileall -q scripts/issue61_cas_validator.py tests/test_issue61_cas_validator.py .issue61-independent-checkout/app .issue61-independent-checkout/tests
+      - name: Run hostile CAS and harness regression controls
+        run: python -m pytest -q -p no:cacheprovider tests/test_issue61_cas_validator.py
       - name: Run focused positive, negative and idempotency tests on recovered bytes
         shell: bash
         run: |
@@ -94,3 +63,14 @@ jobs:
           echo "MODEL_DIGEST_NOT_ATTESTED"
           echo "VALIDATOR_AUTHORITY_NOT_ATTESTED"
           echo "READY_FOR_PR=false"
+          {
+            echo "## Issue 61 — independent hosted validation (test only)"
+            echo "- CAS SHA-256: $EXPECTED_ARTIFACT_SHA256"
+            echo "- Produced commit: $EXPECTED_PRODUCED_SHA"
+            echo "- Validator checkout SHA: $GITHUB_SHA"
+            echo "- Run ID: $GITHUB_RUN_ID"
+            echo "- CAS readback + negative regression + isolated candidate pytest: PASSED"
+            echo "- Builder model/digest: NOT ATTESTED"
+            echo "- Authorized independent Validator identity: NOT ATTESTED"
+            echo "- READY_FOR_PR: false"
+          } >> "$GITHUB_STEP_SUMMARY"
