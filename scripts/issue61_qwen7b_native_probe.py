@@ -84,16 +84,24 @@ def pull():
         raise RuntimeError("OLLAMA_PULL_INCOMPLETE")
 
 
-def accepted(pattern):
+def failed_cases(pattern):
     if not isinstance(pattern, str) or len(pattern) > 90 or "\n" in pattern:
-        return False
+        return ["INVALID_PATTERN_FORMAT"]
     try:
         rx = re.compile(pattern)
     except re.error:
-        return False
+        return ["INVALID_PATTERN_SYNTAX"]
     good = ("TODO-1", "TODO-24", "TODO-54", "TODO-999")
     bad = ("TODO-0", "TODO-54-validation", "TODO-54/../", "todo-54", "TODO-54\n", "")
-    return all(rx.fullmatch(s) for s in good) and not any(rx.fullmatch(s) for s in bad)
+    errors = ["MISSING_VALID_" + repr(value) for value in good
+              if rx.fullmatch(value) is None]
+    errors.extend("ACCEPTED_INVALID_" + repr(value) for value in bad
+                  if rx.fullmatch(value) is not None)
+    return errors
+
+
+def accepted(pattern):
+    return not failed_cases(pattern)
 
 
 def main():
@@ -152,20 +160,43 @@ def main():
                            "format": "json",
                            "options": {"temperature": 0, "num_predict": 120,
                                        "num_ctx": 1024, "num_thread": 4}}
-                result = call("/api/generate", request, timeout=300)
-                if result.get("done") is not True or result.get("model") != MODEL:
-                    raise RuntimeError("QWEN_INFERENCE_UNCONFIRMED")
-                if not isinstance(result.get("eval_count"), int) or result["eval_count"] <= 0:
-                    raise RuntimeError("QWEN_NO_GENERATED_TOKENS")
-                reply = result.get("response", "")
-                if not isinstance(reply, str) or len(reply) > 2000:
-                    raise RuntimeError("QWEN_REPLY_UNTRUSTED")
-                try:
-                    pattern = json.loads(reply)["pattern"]
-                except (ValueError, KeyError, TypeError) as exc:
-                    raise RuntimeError("QWEN_REPLY_SCHEMA_INVALID") from exc
-                if not accepted(pattern):
-                    raise RuntimeError("QWEN_REPAIR_TESTS_FAILED")
+                print("QWEN_BINARY_AND_MODEL_DIGEST_VERIFIED=" + digest, flush=True)
+                pattern = None
+                reply = ""
+                result = {}
+                for attempt in range(1, 4):
+                    result = call("/api/generate", request, timeout=300)
+                    if result.get("done") is not True or result.get("model") != MODEL:
+                        raise RuntimeError("QWEN_INFERENCE_UNCONFIRMED")
+                    if not isinstance(result.get("eval_count"), int) or result["eval_count"] <= 0:
+                        raise RuntimeError("QWEN_NO_GENERATED_TOKENS")
+                    reply = result.get("response", "")
+                    if not isinstance(reply, str) or len(reply) > 2000:
+                        raise RuntimeError("QWEN_REPLY_UNTRUSTED")
+                    try:
+                        pattern = json.loads(reply)["pattern"]
+                    except (ValueError, KeyError, TypeError):
+                        pattern = None
+                    problems = failed_cases(pattern)
+                    call_receipt = {
+                        "model_digest": digest, "attempt": attempt,
+                        "eval_count": result["eval_count"],
+                        "reply_sha256": sha(reply.encode()),
+                        "acceptance_pass": len(problems) == 0,
+                    }
+                    print("QWEN_REAL_MODEL_CALL=" + json.dumps(call_receipt, sort_keys=True), flush=True)
+                    if not problems:
+                        break
+                    if attempt < 3:
+                        request["prompt"] = (
+                            prompt + "\nYour previous JSON response was:\n" +
+                            reply + "\nThe independent regex acceptance tests failed:\n" +
+                            "\n".join(problems) +
+                            "\nRepair the regex yourself. Return ONLY a new JSON object "
+                            "with key pattern. Do not repeat failed answers."
+                        )
+                else:
+                    raise RuntimeError("QWEN_REPAIR_FAILED_AFTER_FEEDBACK")
                 receipt = {
                     "status": "REAL_QWEN_REPAIR_PROBE_SUCCESS",
                     "issue": 61, "not_todo54_admission": True,
@@ -176,7 +207,8 @@ def main():
                     "prompt_sha256": sha(prompt.encode()),
                     "reply_sha256": sha(reply.encode()),
                     "regex_sha256": sha(pattern.encode()),
-                    "eval_count": result["eval_count"], "baseline_failed": True,
+                    "eval_count": result["eval_count"], "inference_attempts": attempt,
+                    "baseline_failed": True,
                     "positive_negative_tests_pass": True,
                     "builder_code_not_published": True,
                     "validator_independent_not_attested": True,
