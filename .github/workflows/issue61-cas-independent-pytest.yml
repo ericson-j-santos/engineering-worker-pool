@@ -1,0 +1,95 @@
+name: Issue61 CAS independent Python contract tests
+run-name: Issue61 CAS independent pytest · ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - cas/issue61-gate-contract-20261111-v1
+    paths:
+      - .github/workflows/issue61-cas-independent-pytest.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ewp61-cas-check-20261111
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: CAS readback and independent Python pytest (no publication)
+    if: >-
+      github.repository == 'ericson-j-santos/engineering-worker-pool' &&
+      github.ref == 'refs/heads/cas/issue61-gate-contract-20261111-v1' &&
+      github.actor == 'ericson-j-santos'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 7
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PIP_NO_CACHE_DIR: '1'
+      EXPECTED_ARTIFACT_SHA256: dcb44976e3fcb77251d0cf5f19fa56053aaeb1ae3015a8eb97c1985289841289
+      EXPECTED_SOURCE_SHA: 2504c5e123f6e7cd607ea77fde80cbebf46d2790
+      EXPECTED_PRODUCED_SHA: 90f79146deec86b7d1265daf3bb9bb3b5879f3bd
+    steps:
+      - name: Checkout evidence ref by immutable event SHA
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up standard Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Revalidate exact CAS bytes and materialize candidate in isolated directory
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          evidence = Path("cas/issue61/20261111/prepr-artifact.json")
+          raw = evidence.read_bytes()
+          sha = hashlib.sha256(raw).hexdigest()
+          assert sha == "dcb44976e3fcb77251d0cf5f19fa56053aaeb1ae3015a8eb97c1985289841289", "CAS_SHA256_DRIFT"
+          data = json.loads(raw)
+          assert data["source_sha"] == "2504c5e123f6e7cd607ea77fde80cbebf46d2790"
+          assert data["produced_sha"] == "90f79146deec86b7d1265daf3bb9bb3b5879f3bd"
+          assert data["ready_for_pr"] is False and data["validator_verified"] is False
+          paths = {
+              "app/pre_pr_cas_gate.py",
+              "tests/test_pre_pr_cas_gate.py",
+              "docs/PRE_PR_CAS_VALIDATOR.md",
+          }
+          assert {file["path"] for file in data["files"]} == paths, "PATH_SCOPE_INVALID"
+          root = Path(".issue61-independent-checkout")
+          for file in data["files"]:
+              path = file["path"]
+              output = root / path
+              output.parent.mkdir(parents=True, exist_ok=True)
+              for mode in ("before", "after"):
+                  content = file[mode].encode("utf-8")
+                  assert hashlib.sha256(content).hexdigest() == file[mode+"_sha256"], "CONTENT_DIGEST_MISMATCH"
+              payload = file["after"].encode("utf-8")
+              git_blob_sha = hashlib.sha1(b"blob "+str(len(payload)).encode()+b"\\0"+payload).hexdigest()
+              assert git_blob_sha == file["after_blob_sha1"], "GIT_OBJECT_MISMATCH"
+              output.write_bytes(payload)
+          (root / "app" / "__init__.py").write_text("", encoding="utf-8")
+          print("ISSUE61_CAS_READBACK_VERIFIED")
+          PY
+      - name: Install pinned pytest without caching
+        run: python -m pip install --disable-pip-version-check --no-cache-dir pytest==8.4.2
+      - name: Compile exactly the recovered source and tests
+        run: python -m compileall -q .issue61-independent-checkout/app .issue61-independent-checkout/tests
+      - name: Run focused positive, negative and idempotency tests on recovered bytes
+        env:
+          PYTHONPATH: .issue61-independent-checkout
+        run: python -m pytest -q -p no:cacheprovider .issue61-independent-checkout/tests/test_pre_pr_cas_gate.py
+      - name: Report scope without granting READY_FOR_PR
+        if: success()
+        run: |
+          echo "ISSUE61_CAS_PYTEST_PASSED"
+          echo "MODEL_DIGEST_NOT_ATTESTED"
+          echo "VALIDATOR_AUTHORITY_NOT_ATTESTED"
+          echo "READY_FOR_PR=false"
