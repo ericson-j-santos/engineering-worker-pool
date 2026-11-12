@@ -1,0 +1,352 @@
+name: Desktop Orchestrator Sequential Recovery Readback DEV
+
+on:
+  # A request signed by the owner via an exact issue comment is the primary API path.
+  issue_comment:
+    types: [created]
+  # Retain the previously validated owner-only manual path as a fallback.
+  workflow_dispatch:
+    inputs:
+      expected_head_sha:
+        description: 'Exact SHA of current Desktop main'
+        required: true
+        type: string
+      expected_rules_sha:
+        description: 'Exact SHA of current operational rules'
+        required: true
+        type: string
+      action:
+        description: 'Only fixed isolated DEV validation, no runtime update or restart'
+        required: true
+        type: choice
+        options:
+          - VERIFY-DESKTOP-RECOVERY-SEQUENTIAL-DEV
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: desktop-orchestrator-sequential-recovery-dev
+  cancel-in-progress: false
+
+jobs:
+  admission:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.action == 'created' &&
+       github.event.issue.number == 31 &&
+       !github.event.issue.pull_request &&
+       github.actor == 'ericson-j-santos' &&
+       startsWith(github.event.comment.body, '/todo24 verify-backups '))
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    outputs:
+      rules_sha: ${{ steps.admit.outputs.rules_sha }}
+      owner_comment_id: ${{ steps.admit.outputs.owner_comment_id }}
+      idempotency_key: ${{ steps.admit.outputs.idempotency_key }}
+    steps:
+      - name: Admit only owner and current public main without charging compute
+        id: admit
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            const sha = s => typeof s === 'string' && /^[a-f0-9]{40}$/.test(s);
+            const OWNER = 'ericson-j-santos';
+            const REPO = 'desktop-pc24x7-runtime';
+            const ACTION = 'VERIFY-DESKTOP-RECOVERY-SEQUENTIAL-DEV';
+            let expectedHead;
+            let expectedRules;
+            if (context.repo.owner !== OWNER ||
+                context.repo.repo !== REPO ||
+                context.actor !== OWNER ||
+                context.ref !== 'refs/heads/main') {
+              throw new Error('SEQUENTIAL_OWNER_MAIN_SCOPE_DENIED');
+            }
+            if (context.eventName === 'workflow_dispatch') {
+              const inp = context.payload.inputs || {};
+              if (inp.action !== ACTION) {
+                throw new Error('SEQUENTIAL_OWNER_MAIN_SCOPE_DENIED');
+              }
+              expectedHead = inp.expected_head_sha;
+              expectedRules = inp.expected_rules_sha;
+            } else if (context.eventName === 'issue_comment') {
+              const issue = context.payload.issue || {};
+              const comment = context.payload.comment || {};
+              if (context.payload.action !== 'created' ||
+                  issue.number !== 31 || issue.pull_request ||
+                  comment.user?.login !== OWNER ||
+                  !Number.isSafeInteger(comment.id) || comment.id < 1 ||
+                  Number(process.env.GITHUB_RUN_ATTEMPT || '1') !== 1) {
+                throw new Error('SEQUENTIAL_ISSUE_COMMENT_DENIED');
+              }
+              // No free-form commands, URLs, paths, flags or host selection.
+              const body = comment.body;
+              const command = typeof body === 'string'
+                ? /^\/todo24 verify-backups main=([a-f0-9]{40}) rules=([a-f0-9]{40}) request=([A-Z0-9-]{8,48})$/.exec(body)
+                : null;
+              if (!command) throw new Error('SEQUENTIAL_COMMAND_INVALID');
+              expectedHead = command[1];
+              expectedRules = command[2];
+              const requestId = command[3];
+              // Independently ensure the accepted comment has not been edited.
+              const { data: currentComment } = await github.rest.issues.getComment({
+                owner: OWNER, repo: REPO, comment_id: comment.id
+              });
+              if (currentComment.id !== comment.id ||
+                  currentComment.user?.login !== OWNER ||
+                  currentComment.body !== body ||
+                  currentComment.updated_at !== currentComment.created_at) {
+                throw new Error('SEQUENTIAL_COMMENT_CHANGED');
+              }
+              // A repeated logical request must not enqueue another physical job.
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: OWNER, repo: REPO, issue_number: 31, per_page: 100
+              });
+              if (!Array.isArray(comments) || comments.length > 1000) {
+                throw new Error('SEQUENTIAL_DEDUP_READ_UNAVAILABLE');
+              }
+              if (comments.some(c =>
+                  c.id < comment.id && c.user?.login === OWNER &&
+                  typeof c.body === 'string' &&
+                  c.body.startsWith('/todo24 verify-backups ') &&
+                  c.body.endsWith(' request=' + requestId))) {
+                throw new Error('SEQUENTIAL_DUPLICATE_REQUEST_DENIED');
+              }
+              core.setOutput('owner_comment_id', String(comment.id));
+              core.setOutput('idempotency_key', requestId);
+            } else {
+              throw new Error('SEQUENTIAL_OWNER_MAIN_SCOPE_DENIED');
+            }
+            if (!sha(expectedHead) || !sha(expectedRules) ||
+                expectedHead !== context.sha) {
+              throw new Error('SEQUENTIAL_EXPECTED_SHA_INVALID');
+            }
+            const { data: repo } = await github.rest.repos.get({
+              owner: OWNER, repo: REPO
+            });
+            if (repo.private !== false) throw new Error('SEQUENTIAL_COST_PUBLIC_REQUIRED');
+            const { data: main } = await github.rest.repos.getBranch({
+              owner: OWNER, repo: REPO, branch: 'main'
+            });
+            if (main.commit.sha !== context.sha) throw new Error('SEQUENTIAL_MAIN_MOVED');
+            const { data: rules } = await github.rest.repos.getBranch({
+              owner: OWNER, repo: 'chatgpt-operational-rules', branch: 'main'
+            });
+            if (!sha(rules.commit.sha) || expectedRules !== rules.commit.sha) {
+              throw new Error('SEQUENTIAL_RULES_SHA_MOVED');
+            }
+            core.setOutput('rules_sha', rules.commit.sha);
+
+  physical:
+    name: 'Dedicated Desktop: backup, replay, shadow, fail-closed'
+    needs: admission
+    runs-on: [self-hosted, Windows, X64, pc24x7, desktop-runtime, runtime-dev, desktop-pdqk954]
+    timeout-minutes: 17
+    steps:
+      - name: Checkout immutable Desktop revision
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Checkout immutable canonical rules
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ericson-j-santos/chatgpt-operational-rules
+          ref: ${{ needs.admission.outputs.rules_sha }}
+          path: _rules
+          persist-credentials: false
+      - name: Create exclusive and validated host session
+        id: session
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'DESKTOP-PDQK954-runtime') { throw 'SEQUENTIAL_WRONG_RUNNER' }
+          $python = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
+          if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'SEQUENTIAL_PYTHON_MISSING' }
+          $root = Join-Path $env:GITHUB_WORKSPACE '_rules'
+          $rulesSha = (& git -C $root rev-parse HEAD | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $rulesSha -ne '${{ needs.admission.outputs.rules_sha }}') {
+            throw 'SEQUENTIAL_RULES_CHECKOUT_INVALID'
+          }
+          $policy = Join-Path $root 'config\command-gateway.policy.json'
+          $launcher = Join-Path $root 'scripts\session_launcher.py'
+          $args = @('--policy', $policy, '--repo', $env:GITHUB_WORKSPACE,
+            '--session-prefix', 'sequential-recovery',
+            '--correlation-id', "sequential-recovery-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT",
+            '--expected-head', $env:GITHUB_SHA, '--sync-ref', 'origin/main',
+            '--require-runner-version-preflight')
+          $raw = @(& $python $launcher @args)
+          if ($LASTEXITCODE -ne 0 -or -not $raw) { throw 'SEQUENTIAL_SESSION_LAUNCH_BLOCKED' }
+          $session = @($raw)[-1] | ConvertFrom-Json
+          if ($session.result -ne 'SESSION_LAUNCH_OK' -or
+              $session.state_validated -ne $true -or
+              $session.host -ne 'DESKTOP-PDQK954' -or
+              $session.head -ne $env:GITHUB_SHA -or
+              $session.runner_version_preflight.ok -ne $true) {
+            throw 'SEQUENTIAL_SESSION_INVALID'
+          }
+          "target_path=$($session.target_path)" | Add-Content -Path $env:GITHUB_OUTPUT
+          "session_id=$($session.session_id)" | Add-Content -Path $env:GITHUB_OUTPUT
+
+      - name: Run four approved Gateway probes in order, stop on first failed proof
+        shell: powershell
+        env:
+          TARGET_PATH: ${{ steps.session.outputs.target_path }}
+          SESSION_ID: ${{ steps.session.outputs.session_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $python = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
+          $gateway = Join-Path $env:GITHUB_WORKSPACE '_rules\scripts\command_gateway.py'
+          $policy = Join-Path $env:GITHUB_WORKSPACE '_rules\config\command-gateway.policy.json'
+          $correlation = "sequential-recovery-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+
+          function Invoke-ApprovedProbe {
+            param([string] $File, [string] $Confirm, [string] $Expected, [string] $Suffix)
+            $args = @('--policy', $policy,
+              '--correlation-id', "$correlation-$Suffix",
+              'run', '--cwd', $env:TARGET_PATH, '--session-id', $env:SESSION_ID,
+              '--risk', '2', '--timeout', '190', '--expected-head', $env:GITHUB_SHA,
+              '--', 'python', $File, '--confirm', $Confirm)
+            $raw = @(& $python $gateway @args)
+            $exit = $LASTEXITCODE
+            if ($exit -ne 0 -or -not $raw) {
+              # Report only a finite, sanitized blocker code, never stdout/DPAPI/SQLite.
+              $blocker = 'GATEWAY_OR_PROBE_BLOCKED'
+              if ($raw) {
+                try {
+                  $eventFailed = @($raw)[-1] | ConvertFrom-Json
+                  if ($eventFailed.stdout) {
+                    $proofFailed = ([string]$eventFailed.stdout) | ConvertFrom-Json
+                    # Fixed diagnostic codes only: regex-only filtering may
+                    # echo secret-shaped values that happen to match the format.
+                    $approvedBlockers = @(
+                      'CODE_BACKUP_MISMATCH',
+                      'CODE_SNAPSHOT_NAME_INVALID',
+                      'CODE_SNAPSHOT_WORKFLOW_NOT_ADMITTED',
+                      'CODE_SNAPSHOT_EXECUTION_ID_INVALID',
+                      'LIVE_PRECONDITION_CHANGED',
+                      'LIVE_POSTCONDITION_CHANGED',
+                      'HOST_OR_RUNNER_NOT_AUTHORIZED',
+                      'APPDATA_MISSING',
+                      'APPDATA_INVALID',
+                      'CONFIG_JSON_INVALID',
+                      'DPAPI_ENCRYPTED_DATA_INVALID',
+                      'DPAPI_INPUT_INVALID',
+                      'DPAPI_PROTECT_FAILED',
+                      'DPAPI_UNPROTECT_FAILED',
+                      'WORKER_OR_VERSION_MISMATCH',
+                      'SUPERVISOR_CONFIG_MISMATCH',
+                      'STARTUP_WRAPPER_INVALID',
+                      'STARTUP_WRAPPER_MISMATCH',
+                      'EXECUTION_ID_INVALID',
+                      'FIXED_FILE_CHANGED',
+                      'FIXED_FILE_READ_FAILED',
+                      'FIXED_FILE_SIZE_INVALID',
+                      'SNAPSHOT_ENTRY_INVALID',
+                      'SQLITE_SNAPSHOT_FAILED',
+                      'SQLITE_IMAGE_FLAGS_INVALID',
+                      'SQLITE_IMAGE_INVALID',
+                      'SQLITE_RESTORE_FAILED',
+                      'SQLITE_RESTORE_FORMAT_INVALID',
+                      'SQLITE_RESTORE_INTEGRITY_FAILED',
+                      'SQLITE_SIZE_INVALID',
+                      'DPAPI_WINDOWS_REQUIRED',
+                      'SNAPSHOT_CIPHER_MISMATCH',
+                      'SNAPSHOT_UNPROTECT_FAILED',
+                      'SNAPSHOT_CONFIG_CHANGED',
+                      'SNAPSHOT_MANIFEST_INVALID',
+                      'SNAPSHOT_PLAINTEXT_MISMATCH',
+                      'SNAPSHOT_PUBLISH_FAILED',
+                      'SNAPSHOT_TARGET_CHANGED',
+                      'UNEXPECTED_FILE_ERROR',
+                      'SHADOW_CODE_SNAPSHOT_MISMATCH',
+                      'SHADOW_CODE_RESTORE_INVALID',
+                      'SHADOW_READINESS_TIMEOUT',
+                      'SHADOW_PROCESS_NOT_STOPPED'
+                    )
+                    if ($proofFailed.blocker_code -is [string] -and
+                        $approvedBlockers -ccontains $proofFailed.blocker_code) {
+                      $blocker = [string]$proofFailed.blocker_code
+                    }
+                  }
+                } catch { $blocker = 'GATEWAY_OR_PROBE_BLOCKED' }
+              }
+              Write-Host "SEQUENTIAL_SANITIZED_BLOCKER_$Suffix=$blocker"
+              throw "SEQUENTIAL_GATEWAY_BLOCKED_$Suffix"
+            }
+            $event = @($raw)[-1] | ConvertFrom-Json
+            if ($event.result -ne 'ok' -or $event.gateway_exit_code -ne 0 -or
+                -not $event.stdout) { throw "SEQUENTIAL_GATEWAY_INVALID_$Suffix" }
+            $result = ([string]$event.stdout) | ConvertFrom-Json
+            if ($result.result -ne $Expected -or
+                $result.source_sha -ne $env:GITHUB_SHA -or
+                $result.host -ne 'DESKTOP-PDQK954' -or
+                $result.recovery_allowed -ne $false -or
+                $result.production_touched -ne $false) {
+              throw "SEQUENTIAL_EVIDENCE_REJECTED_$Suffix"
+            }
+            return $result
+          }
+
+          $isolated = Invoke-ApprovedProbe 'scripts/desktop_orchestrator_isolated_rollback.py' 'VERIFY-DESKTOP-ORCHESTRATOR-ISOLATED-ROLLBACK-DEV' 'ISOLATED_ROLLBACK_VERIFIED' 'isolated'
+          if ($isolated.isolated_restore_verified -ne $true -or
+              $isolated.current_service_rollback_verified -ne $false -or
+              $isolated.secrets_read -ne $false -or
+              [string]$isolated.backup_sha256 -cnotmatch '^[a-f0-9]{64}$') {
+            throw 'SEQUENTIAL_ISOLATED_RESTORE_REJECTED'
+          }
+          @('isolated_code_restore_verified=true',
+            "isolated_manifest_sha256=$($isolated.backup_sha256)") |
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+          $first = Invoke-ApprovedProbe 'scripts/desktop_orchestrator_protected_state.py' 'VERIFY-DESKTOP-ORCHESTRATOR-PROTECTED-STATE-DEV' 'PROTECTED_STATE_RESTORE_VERIFIED' 'state-1'
+          $second = Invoke-ApprovedProbe 'scripts/desktop_orchestrator_protected_state.py' 'VERIFY-DESKTOP-ORCHESTRATOR-PROTECTED-STATE-DEV' 'PROTECTED_STATE_RESTORE_VERIFIED' 'state-2'
+          foreach ($state in @($first, $second)) {
+            if ($state.user_scoped_dpapi -ne $true -or
+                $state.sqlite_restore_in_memory -ne $true -or
+                $state.config_items_verified -ne 4 -or
+                $state.raw_content_uploaded -ne $false -or
+                $state.service_rollback_verified -ne $false -or
+                $state.code_snapshot_sha256 -cne $isolated.backup_sha256) {
+              throw 'SEQUENTIAL_PROTECTED_STATE_REJECTED'
+            }
+          }
+          if ($first.replayed -ne $false -or $second.replayed -ne $true -or
+              [string]$first.snapshot_manifest_sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+              $first.snapshot_manifest_sha256 -ne $second.snapshot_manifest_sha256) {
+            throw 'SEQUENTIAL_REPLAY_REJECTED'
+          }
+
+          @('protected_state_replay_verified=true',
+            "protected_manifest_sha256=$($first.snapshot_manifest_sha256)") |
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+          $shadow = Invoke-ApprovedProbe 'scripts/desktop_orchestrator_shadow_service.py' 'VERIFY-DESKTOP-ORCHESTRATOR-SHADOW-SERVICE-DEV' 'SHADOW_ORCHESTRATOR_READY_VERIFIED' 'shadow'
+          if ($shadow.shadow_ready -ne $true -or $shadow.shadow_health -ne $true -or
+              $shadow.shadow_bind -ne '127.0.0.1' -or
+              $shadow.shadow_process_terminated -ne $true -or
+              $shadow.temporary_database_removed -ne $true -or
+              $shadow.worker_started -ne $false -or
+              $shadow.live_service_restarted -ne $false -or
+              $shadow.code_snapshot_sha256 -cne $isolated.backup_sha256 -or
+              $shadow.service_rollback_verified -ne $false -or
+              $shadow.raw_content_uploaded -ne $false) {
+            throw 'SEQUENTIAL_SHADOW_REJECTED'
+          }
+
+          @(
+            'SEQUENTIAL_RECOVERY_READBACK_VERIFIED',
+            "source_sha=$env:GITHUB_SHA",
+            "rules_sha=${{ needs.admission.outputs.rules_sha }}",
+            "correlation_id=$correlation",
+            "owner_comment_id=${{ needs.admission.outputs.owner_comment_id }}",
+            "idempotency_key=${{ needs.admission.outputs.idempotency_key }}",
+            'isolated_code_backup=true',
+            'protected_state_backup=true',
+            'replay_idempotent=true',
+            'loopback_shadow=true',
+            'live_service_rollback_verified=false',
+            'recovery_allowed=false',
+            'production_touched=false'
+          ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY

@@ -3,7 +3,7 @@
   "case_id": "desktop-pc24x7-runtime#31",
   "todo_id": "TODO-24",
   "task_kind": "repair",
-  "stage": "CANDIDATE_PATCH_CAS_ANCHORED_NOT_READY",
+  "stage": "SOURCE_AND_CANDIDATE_CAS_MATERIALIZED_NOT_READY",
   "source_repository": "ericson-j-santos/desktop-pc24x7-runtime",
   "source_base_ref": "main",
   "source_base_sha": "875ad9c2e8514fca8d20a812098d8ed58818b633",
@@ -29,9 +29,9 @@
     "tests/test_desktop_orchestrator_protected_state.py": "fb4b8e948825dc21758bbd4832f70854a739558c",
     "tests/test_desktop_orchestrator_sequential_recovery_readback.py": "157d30037dc81a05941e065e6d61500b598807b9"
   },
-  "artifact_ref": null,
-  "produced_sha": null,
-  "before_after_sha256_verified": false,
+  "artifact_ref": "https://github.com/ericson-j-santos/engineering-worker-pool/blob/4ff4f3f5368ff91d65c994ff53aac90a0cf69c44/cas/todo24/20261111/desktop-state-blocker-fix.patch",
+  "produced_sha": "88be68e54291cae90d0b60c113339f0c83d75d29",
+  "before_after_sha256_verified": true,
   "provenance": "GPT-6 chat-generated patch; authenticated model run ID and model digest not available",
   "model_run_id": null,
   "model_digest": null,
@@ -45,5 +45,46 @@
   "retention_days_requested": 30,
   "retention_guarantee_verified": false,
   "cost_incremental_brl_verified": false,
-  "notes": "Git evidence branch preserves raw patch, not a trusted build or Validator. No code branch, physical execution, merge or deploy."
+  "notes": "Original patch and eight exact source/candidate blobs anchored in CAS. Git candidate commit remains unreferenced. Model run ID/digest and independent Validator are unavailable; READY_FOR_PR=false, no code branch, dispatch, merge or deploy.",
+  "source_sha": "875ad9c2e8514fca8d20a812098d8ed58818b633",
+  "produced_tree_sha": "d94f2ea9192e96b3e8ae1506ba878a1a85cc88d1",
+  "files": [
+    {
+      "path": ".github/workflows/desktop-orchestrator-sequential-recovery-readback.yml",
+      "before_blob_sha1": "311edb4bccd0e75bb0be37ce70fd488a5d239759",
+      "after_blob_sha1": "9f7ccc7024b043f30d59e86aadad971727eedcb3",
+      "before_sha256": "468981b7cac13aec97118cfce5d93920570a7a5d1d7b7dde6e44af832eb14d00",
+      "after_sha256": "59436c25858d50f6a5a39927bb2fc38487aec98b4701f905ab3bfd1b7579bf80",
+      "before_ref": "cas/todo24/20261111/before/.github/workflows/desktop-orchestrator-sequential-recovery-readback.yml",
+      "after_ref": "cas/todo24/20261111/after/.github/workflows/desktop-orchestrator-sequential-recovery-readback.yml"
+    },
+    {
+      "path": "scripts/desktop_orchestrator_protected_state.py",
+      "before_blob_sha1": "bb72b7e22def61e5a38ffee004d3e12c6acb2ea7",
+      "after_blob_sha1": "2aed15cc43ca53ea14b6460dd608bf48fffeab0c",
+      "before_sha256": "930c2bdf3cd834846db0f2f898726f2fa810550fb759f76fe743fd121ddc6c96",
+      "after_sha256": "01035e47d72ddeb5cd1624aeeeefd72c4518e2ac845c597d2830024c7c71c6eb",
+      "before_ref": "cas/todo24/20261111/before/scripts/desktop_orchestrator_protected_state.py",
+      "after_ref": "cas/todo24/20261111/after/scripts/desktop_orchestrator_protected_state.py"
+    },
+    {
+      "path": "tests/test_desktop_orchestrator_protected_state.py",
+      "before_blob_sha1": "fb4b8e948825dc21758bbd4832f70854a739558c",
+      "after_blob_sha1": "a03869b5310be195c804ed58441d563f9efb99fc",
+      "before_sha256": "5a38aa30dc9b05a653cf5a3f0932eac3ea5584ba3e6eced4cd91bb93a4814bbc",
+      "after_sha256": "40d57eb5cc4460dc228384d0c16475fd29eccc9911931dee9472fa6767a66643",
+      "before_ref": "cas/todo24/20261111/before/tests/test_desktop_orchestrator_protected_state.py",
+      "after_ref": "cas/todo24/20261111/after/tests/test_desktop_orchestrator_protected_state.py"
+    },
+    {
+      "path": "tests/test_desktop_orchestrator_sequential_recovery_readback.py",
+      "before_blob_sha1": "157d30037dc81a05941e065e6d61500b598807b9",
+      "after_blob_sha1": "74371d733322a90d03a1ae600ee67029687dda2c",
+      "before_sha256": "3d6e85ad70a5cf52554eee9b73bda8d5609ac7fdcc47d6b2de6a66dcca8bd702",
+      "after_sha256": "bc5c7bc8e6051303ae590c82ca5e3586fec241a6e6bca20cd70ef6643a52dcfd",
+      "before_ref": "cas/todo24/20261111/before/tests/test_desktop_orchestrator_sequential_recovery_readback.py",
+      "after_ref": "cas/todo24/20261111/after/tests/test_desktop_orchestrator_sequential_recovery_readback.py"
+    }
+  ],
+  "snapshot_files_persisted": true
 }
