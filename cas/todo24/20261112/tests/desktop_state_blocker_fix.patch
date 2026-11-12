@@ -1,0 +1,125 @@
+--- a/scripts/desktop_orchestrator_protected_state.py
++++ b/scripts/desktop_orchestrator_protected_state.py
+@@ -24,6 +24,6 @@
+ from urllib.parse import quote
+ 
+ from desktop_orchestrator_isolated_rollback import (
+     EXPECTED_INSTALLED_SHA, HOST, REPO, RUNNER, RUNTIME_ROOT,
+-    _guard, code_manifest,
++    RollbackError, _guard, code_manifest,
+ )
+@@ -50,5 +50,33 @@
+ class StateError(ValueError):
+     pass
+ 
++
++# These already originate from the fixed-path/code-manifest guard. They do not
++# contain file names, arbitrary exception messages, or source file contents.
++# Keep this list identical to the readback workflow's exact literal allowlist.
++SAFE_ROLLBACK_BLOCKERS = frozenset({
++    "FIXED_PATH_MISSING",
++    "FIXED_PATH_REDIRECTED",
++    "FIXED_PATH_INVALID",
++    "CODE_FILE_SIZE_LIMIT",
++    "CODE_FILE_READ_FAILED",
++    "CODE_CHANGED_DURING_READ",
++    "CODE_ENTRY_LIMIT",
++    "CODE_PATH_REDIRECTED",
++    "CODE_FILE_TYPE_INVALID",
++    "CODE_FILE_NOT_ALLOWLISTED",
++    "CODE_VOLUME_LIMIT",
++    "CODE_CONTRACT_INCOMPLETE",
++})
++
++
++def safe_blocker_code(failure: BaseException) -> str:
++    """Preserve an approved typed failure, never report raw exception text."""
++    if isinstance(failure, StateError):
++        return str(failure)  # Existing StateError contract; workflow filters it.
++    if type(failure) is RollbackError and str(failure) in SAFE_ROLLBACK_BLOCKERS:
++        return str(failure)
++    return "UNEXPECTED_FILE_ERROR"
++
+ 
+ class _Blob(ctypes.Structure):
+@@ -376,5 +405,5 @@
+         outcome.update(result)
+         code = 0
+     except (StateError, OSError, ValueError) as failure:
+-        outcome["blocker_code"] = str(failure) if isinstance(failure, StateError) else "UNEXPECTED_FILE_ERROR"
++        outcome["blocker_code"] = safe_blocker_code(failure)
+         code = 2
+--- a/.github/workflows/desktop-orchestrator-sequential-recovery-readback.yml
++++ b/.github/workflows/desktop-orchestrator-sequential-recovery-readback.yml
+@@ -222,4 +222,16 @@
+                     # echo secret-shaped values that happen to match the format.
+                     $approvedBlockers = @(
++                      'FIXED_PATH_MISSING',
++                      'FIXED_PATH_REDIRECTED',
++                      'FIXED_PATH_INVALID',
++                      'CODE_FILE_SIZE_LIMIT',
++                      'CODE_FILE_READ_FAILED',
++                      'CODE_CHANGED_DURING_READ',
++                      'CODE_ENTRY_LIMIT',
++                      'CODE_PATH_REDIRECTED',
++                      'CODE_FILE_TYPE_INVALID',
++                      'CODE_FILE_NOT_ALLOWLISTED',
++                      'CODE_VOLUME_LIMIT',
++                      'CODE_CONTRACT_INCOMPLETE',
+                       'CODE_BACKUP_MISMATCH',
+                       'CODE_SNAPSHOT_NAME_INVALID',
+--- a/tests/test_desktop_orchestrator_protected_state.py
++++ b/tests/test_desktop_orchestrator_protected_state.py
+@@ -12,4 +12,5 @@
+ from unittest.mock import patch
+ 
+ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
++from desktop_orchestrator_isolated_rollback import RollbackError
+ import desktop_orchestrator_protected_state as m
+@@ -29,2 +30,19 @@
+ class ProtectedStateTest(unittest.TestCase):
++    def test_typed_rollback_failures_retain_only_literal_codes(self):
++        for code in sorted(m.SAFE_ROLLBACK_BLOCKERS):
++            with self.subTest(code=code):
++                self.assertEqual(m.safe_blocker_code(RollbackError(code)), code)
++        self.assertEqual(
++            m.safe_blocker_code(RollbackError("SECRET_PASSWORD_ABC123")),
++            "UNEXPECTED_FILE_ERROR",
++        )
++        self.assertEqual(
++            m.safe_blocker_code(ValueError("FIXED_PATH_MISSING")),
++            "UNEXPECTED_FILE_ERROR",
++        )
++        self.assertEqual(
++            m.safe_blocker_code(OSError("C:\\private\\secrets.json")),
++            "UNEXPECTED_FILE_ERROR",
++        )
++
+     def setUp(self):
+--- a/tests/test_desktop_orchestrator_sequential_recovery_readback.py
++++ b/tests/test_desktop_orchestrator_sequential_recovery_readback.py
+@@ -289,4 +289,24 @@
+     assert emitted <= approved, sorted(emitted - approved)
+ 
+ 
++def test_rollback_codes_are_published_only_by_fixed_literal_allowlist():
++    """Do not accept a new guard error without updating the safe workflow list."""
++    import re
++    protected = ast.parse((ROOT / "scripts/desktop_orchestrator_protected_state.py").read_text(encoding="utf-8"))
++    definitions = [node for node in protected.body if isinstance(node, ast.Assign)
++                   and any(isinstance(target, ast.Name) and target.id == "SAFE_ROLLBACK_BLOCKERS"
++                           for target in node.targets)]
++    assert len(definitions) == 1
++    safe = set(ast.literal_eval(definitions[0].value.args[0]))
++
++    workflow = WORKFLOW.read_text(encoding="utf-8")
++    match = re.search(
++        r"\$approvedBlockers = @\((.*?)\)\s+if \(\$proofFailed\.blocker_code",
++        workflow, flags=re.DOTALL,
++    )
++    assert match is not None
++    approved = set(re.findall(r"'([A-Z][A-Z0-9_]+)'", match.group(1)))
++    assert safe <= approved
++
++
+ @pytest.mark.skipif(__import__("os").name != "nt", reason="Native PowerShell is Windows-only")
