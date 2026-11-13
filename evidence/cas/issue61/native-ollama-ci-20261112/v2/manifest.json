@@ -1,0 +1,84 @@
+{
+  "schema_version": 2,
+  "case_id": "EWP-61-no-docker-ci-cleanup-repair",
+  "issue_url": "https://github.com/ericson-j-santos/engineering-worker-pool/issues/61",
+  "source_mode": "assisted",
+  "task_kind": "repair",
+  "source_repository": "ericson-j-santos/engineering-worker-pool",
+  "source_branch": "main",
+  "source_sha": "e22aabb14e1a646e274c331e83cc06c470607a38",
+  "base_sha": "e22aabb14e1a646e274c331e83cc06c470607a38",
+  "produced_sha": "960016ff97e1f3a82cd85a9b777e7e3ac7cfbaf6",
+  "produced_tree_sha": "27c5edddc5050868031bf7ed10621c51b624a9e0",
+  "previous_produced_sha": "5f588cc847be6ffe07e1ae6d2840fc165cf9e1bc",
+  "rules_sha": "58dcd4200f412a866278027ba9e433439a03f3b3",
+  "rules_version": "1.6.21",
+  "new_root_cause": "failed start could leave temp files and unverifiable daemon; stop of absent state was non-idempotent",
+  "remediation": "try/finally cleans only created private tree, terminates only owned Popen process and waits for it, fail-closed preserves files when process stop cannot be certified; absent-state stop replays safely; original four E2E steps maintained",
+  "baseline_negative_tests": {
+    "executed": true,
+    "tests_total": 3,
+    "tests_failed_before": 3,
+    "observations": [
+      "partial download leaves root",
+      "stop(absent) raises OWNED_PROCESS_NOT_VERIFIED",
+      "failed daemon identity does not terminate Popen"
+    ]
+  },
+  "isolated_validation": {
+    "environment": "ChatGPT Linux, Python 3.13.5, pytest 9.0.2",
+    "command": "python -m pytest -q -p no:cacheprovider tests/test_native_ollama_ci.py tests/test_native_ollama_ci_cleanup.py",
+    "tested_subject_bytes_match_git_blob_sha": true,
+    "tests_total": 19,
+    "tests_passed": 19,
+    "tests_failed": 0,
+    "compiled": true
+  },
+  "files": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "before_sha256": "cbf818911c8ca298afa2874252cf444b2b0165578c8c61c54bcb72a8a15165c3",
+      "before_blob_sha": "d8533142d28cfafd406b39fb3e333489ac3f7ac7",
+      "after_blob_sha": "b36a310f0f0d0dc5928100895d9520a09aa34338",
+      "after_sha256": "5a3969df77b7bb509c5a3abc5842e04cb18c8a9cdecc25495beac613269c2300"
+    },
+    {
+      "path": "scripts/native_ollama_ci.py",
+      "before_sha256": "dcc0d67c91f8a7b2d663ade5a6b5dbe75d19ad02799b460195bd7174b3759ef8",
+      "before_blob_sha": "6d4a7d3fa78ad8a5243915af4641a4beda92d460",
+      "after_blob_sha": "d0ae2f5c8dc91b15cc1e64708744a331b75701ea",
+      "after_sha256": "9850c4faae1006012099193874d6aa66e1d881ec3b802fff911196b1c4d38e28"
+    },
+    {
+      "path": "tests/test_native_ollama_ci.py",
+      "before_blob_sha": null,
+      "after_blob_sha": "e1d146e3e3f2e6fad2671b6be21e6896588e2ee6",
+      "after_sha256": "0911d22b528ca2bbf2a1f6b40d436b4ef6c011b3041877f568b7cbe766d93b44"
+    },
+    {
+      "path": "tests/test_native_ollama_ci_cleanup.py",
+      "before_blob_sha": null,
+      "after_blob_sha": "74a523256cfeb347e9a0a8af001f09edde1d8db2",
+      "after_sha256": "26955bcd635771dadb0055f25a4de5b75ac99fa93df7b0005a8e8b760f819faf"
+    }
+  ],
+  "governance": {
+    "candidate_code_branch_published": false,
+    "pr_created": false,
+    "model_run_id": null,
+    "model_digest": null,
+    "model_calls": 0,
+    "validator_independent_attested": false,
+    "ready_for_pr": false,
+    "full_ci_executed": false,
+    "ollama_daemon_tested": false,
+    "physical_hosts_touched": false,
+    "github_actions_job_dispatched": false,
+    "future_job_cost_verified": false
+  },
+  "owner": "Engineering Control Plane",
+  "next_action": "Independent validator on SHA 960016ff97e1f3a82cd85a9b777e7e3ac7cfbaf6: test whole workflow on an authorized no-Docker executor with proven cost zero, a real Ollama daemon Qwen models, SHA bound artifact+source integrity, security/negative/replay, and only then READY_FOR_PR. TODO-24 separate consumer not resolved.",
+  "event_id": "ewp61-native-ci-startup-cleanup-20261112-v2",
+  "correlation_id": "ewp61-native-ci-startup-cleanup-20261112",
+  "idempotency_key": "ewp61:native-ci-cleanup:e22aabb1:960016ff:v2"
+}
