@@ -1,0 +1,238 @@
+name: Runtime 147 Independent SHA Validation
+
+on:
+  push:
+    branches:
+      - feat/runtime147-independent-validator-20261113
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime147-validation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validator:
+    name: Independent runtime source validator
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    outputs:
+      receipt_b64: ${{ steps.receipt.outputs.receipt_b64 }}
+      receipt_sha256: ${{ steps.receipt.outputs.receipt_sha256 }}
+    env:
+      SOURCE_REPO: ericson-j-santos/desktop-pc24x7-runtime
+      SOURCE_SHA: 0bc21b60bae2029495554779f16fffc027a2b683
+      SOURCE_BASE: 2f1d6aa7487e3f2487d99c4859c486af305dd257
+      SOURCE_BRANCH: feature/lenovo-installed-inventory-readonly-147
+    steps:
+      - name: Checkout runtime immutable SHA without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ericson-j-santos/desktop-pc24x7-runtime
+          ref: 0bc21b60bae2029495554779f16fffc027a2b683
+          path: runtime-src
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Independently check source provenance, host selection and negative controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+
+          root = Path('runtime-src')
+          repo = os.environ['SOURCE_REPO']
+          head = os.environ['SOURCE_SHA']
+          base = os.environ['SOURCE_BASE']
+          branch = os.environ['SOURCE_BRANCH']
+
+          def cmd(*args):
+              return subprocess.check_output(args, text=True, timeout=90).strip()
+
+          def remote_ref(ref):
+              parts = cmd('git', 'ls-remote', 'https://github.com/' + repo + '.git', 'refs/heads/' + ref).split()
+              if len(parts) != 2 or parts[1] != 'refs/heads/' + ref:
+                  raise SystemExit('REMOTE_REF_NOT_UNIQUE:' + ref)
+              return parts[0]
+
+          if cmd('git', '-C', str(root), 'rev-parse', 'HEAD') != head:
+              raise SystemExit('IMMUTABLE_CHECKOUT_SHA_MISMATCH')
+          if remote_ref('main') != base or remote_ref(branch) != head:
+              raise SystemExit('SOURCE_BASE_OR_BRANCH_MOVED')
+          subprocess.run(
+              ['git', '-C', str(root), 'fetch', '--no-tags', '--depth=1', 'origin', 'main'],
+              check=True, timeout=90
+          )
+          changed = set(cmd('git', '-C', str(root), 'diff', '--name-only', base, head).splitlines())
+          expected = {
+              '.github/workflows/ci.yml',
+              '.github/workflows/lenovo-installed-inventory-readonly.yml',
+              'docs/lenovo-installed-inventory-readonly.md',
+              'scripts/lenovo_control_plane_installed_inventory.py',
+              'tests/test_lenovo_control_plane_installed_inventory.py',
+              'tests/test_lenovo_installed_inventory_workflow.py',
+              'tests/test_runner_selection_isolation.py',
+          }
+          if changed != expected:
+              raise SystemExit('UNEXPECTED_CHANGED_PATHS:' + str(sorted(changed ^ expected)))
+
+          workflow = (root / '.github/workflows/lenovo-installed-inventory-readonly.yml').read_text(encoding='utf-8')
+          for must in (
+              'runs-on: [self-hosted, Windows, X64, pc24x7, desktop-runtime, runtime-dev, desktop-rp23ogs]',
+              "github.ref == 'refs/heads/main'",
+              "vars.REQSYS_PC24X7_COST_ZERO_CERTIFIED_SHA == github.sha",
+              'READ_ONLY_LENOVO_INVENTORY',
+              "context.eventName !== 'workflow_dispatch'",
+              'LENOVO_INVENTORY_EXACT_CI_REQUIRED',
+              'LENOVO_INVENTORY_CI_GATES_REQUIRED',
+              "payload.get('host')!='DESKTOP-RP23OGS'",
+              "payload.get('runner_health_proven') is not False",
+              "payload.get('github_pickup_proven') is not False",
+              "payload.get('mutation_performed') is not False",
+              "payload.get('upgrade_authorized') is not False",
+          ):
+              if must not in workflow:
+                  raise SystemExit('ADMISSION_CONTRACT_MISSING:' + must)
+          selector = (root / 'tests/test_runner_selection_isolation.py').read_text(encoding='utf-8')
+          if '"lenovo-installed-inventory-readonly.yml"' not in selector or 'assert "desktop-pdqk954" not in labels' not in selector:
+              raise SystemExit('HOST_SELECTOR_GUARD_MISSING')
+          if 'runs-on: [self-hosted, Windows, X64]' in workflow:
+              raise SystemExit('GENERIC_RUNNER_BYPASS')
+          if 'shell: powershell' in workflow or 'shell: cmd' in workflow:
+              raise SystemExit('UNRESTRICTED_SHELL_IN_WORKFLOW')
+          print('INDEPENDENT_RUNTIME_SOURCE_CONTROLS_PASSED sha=' + head)
+          PY
+
+      - name: Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+
+      - name: Install exactly pinned test dependencies
+        run: python -m pip install --disable-pip-version-check pytest==8.4.2 cryptography==50.0.2 PyYAML==6.0.3
+
+      - name: Compile all sources and tests
+        working-directory: runtime-src
+        run: python -m compileall -q scripts tests
+
+      - name: Independently execute full runtime unit and negative controls
+        working-directory: runtime-src
+        run: python -m pytest -q
+
+      - name: Write immutable receipt to job output without artifact storage
+        id: receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, hashlib, json, os
+          from pathlib import Path
+
+          paths = [
+              '.github/workflows/lenovo-installed-inventory-readonly.yml',
+              'scripts/lenovo_control_plane_installed_inventory.py',
+              'tests/test_lenovo_control_plane_installed_inventory.py',
+              'tests/test_lenovo_installed_inventory_workflow.py',
+              'tests/test_runner_selection_isolation.py',
+          ]
+          digests = {p:hashlib.sha256((Path('runtime-src') / p).read_bytes()).hexdigest() for p in paths}
+          receipt = {
+              'schema_version': 1,
+              'result': 'INDEPENDENT_RUNTIME_147_VALIDATOR_PASSED',
+              'source_repository': os.environ['SOURCE_REPO'],
+              'source_sha': os.environ['SOURCE_SHA'],
+              'source_base': os.environ['SOURCE_BASE'],
+              'validator_repository': os.environ['GITHUB_REPOSITORY'],
+              'validator_workflow_sha': os.environ['GITHUB_SHA'],
+              'run_id': int(os.environ['GITHUB_RUN_ID']),
+              'run_attempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'digests': digests,
+              'tests': 'full pytest suite and negative controls',
+              'real_host_preflight': False,
+              'human_approval': False,
+          }
+          raw = (json.dumps(receipt, sort_keys=True, separators=(',', ':')) + '\n').encode()
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('receipt_b64=' + base64.b64encode(raw).decode('ascii') + '\n')
+              output.write('receipt_sha256=' + hashlib.sha256(raw).hexdigest() + '\n')
+          print('VALIDATOR_RECEIPT_SHA256=' + hashlib.sha256(raw).hexdigest())
+          PY
+
+  readback:
+    name: Independent second-runner readback
+    needs: validator
+    if: needs.validator.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    env:
+      RECEIPT_B64: ${{ needs.validator.outputs.receipt_b64 }}
+      RECEIPT_SHA256: ${{ needs.validator.outputs.receipt_sha256 }}
+      EXPECTED_SOURCE_SHA: 0bc21b60bae2029495554779f16fffc027a2b683
+      EXPECTED_SOURCE_BASE: 2f1d6aa7487e3f2487d99c4859c486af305dd257
+    steps:
+      - name: Fresh immutable checkout, distinct job identity
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ericson-j-santos/desktop-pc24x7-runtime
+          ref: 0bc21b60bae2029495554779f16fffc027a2b683
+          path: runtime-readback
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Validate SHA, receipt, negative tamper and exact files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, hashlib, json, os, subprocess
+          from pathlib import Path
+
+          encoded = os.environ['RECEIPT_B64']
+          digest = os.environ['RECEIPT_SHA256']
+          raw = base64.b64decode(encoded, validate=True)
+          if not digest or hashlib.sha256(raw).hexdigest() != digest:
+              raise SystemExit('RECEIPT_DIGEST_MISMATCH')
+          if hashlib.sha256(raw + b'changed').hexdigest() == digest:
+              raise SystemExit('NEGATIVE_TAMPER_CONTROL_FAILED')
+          receipt = json.loads(raw)
+          expected = {
+              'schema_version': 1,
+              'result': 'INDEPENDENT_RUNTIME_147_VALIDATOR_PASSED',
+              'source_repository': 'ericson-j-santos/desktop-pc24x7-runtime',
+              'source_sha': os.environ['EXPECTED_SOURCE_SHA'],
+              'source_base': os.environ['EXPECTED_SOURCE_BASE'],
+              'validator_repository': os.environ['GITHUB_REPOSITORY'],
+              'validator_workflow_sha': os.environ['GITHUB_SHA'],
+              'run_id': int(os.environ['GITHUB_RUN_ID']),
+              'run_attempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'real_host_preflight': False,
+              'human_approval': False,
+          }
+          for key,value in expected.items():
+              if receipt.get(key) != value:
+                  raise SystemExit('RECEIPT_FIELD_INVALID:' + key)
+          checkout = subprocess.check_output(
+              ['git', '-C', 'runtime-readback', 'rev-parse', 'HEAD'], text=True, timeout=30
+          ).strip()
+          if checkout != expected['source_sha']:
+              raise SystemExit('SECOND_RUNNER_SHA_MISMATCH')
+          expected_paths = {
+              '.github/workflows/lenovo-installed-inventory-readonly.yml',
+              'scripts/lenovo_control_plane_installed_inventory.py',
+              'tests/test_lenovo_control_plane_installed_inventory.py',
+              'tests/test_lenovo_installed_inventory_workflow.py',
+              'tests/test_runner_selection_isolation.py',
+          }
+          if set(receipt['digests']) != expected_paths:
+              raise SystemExit('DIGEST_FILE_SET_INVALID')
+          for path, original in receipt['digests'].items():
+              actual = hashlib.sha256((Path('runtime-readback') / path).read_bytes()).hexdigest()
+              if original != actual:
+                  raise SystemExit('SOURCE_READBACK_DIFFERENT:' + path)
+          print('INDEPENDENT_RUNTIME_READBACK_PASSED sha=' + checkout)
+          print('RECEIPT_SHA256=' + digest)
+          print('HUMAN_APPROVAL_AND_PHYSICAL_PREFLIGHT_NOT_ATTESTED')
+          PY
