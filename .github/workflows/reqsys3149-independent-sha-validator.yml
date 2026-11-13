@@ -1,0 +1,256 @@
+name: Independent ReqSys SHA Review - Issue 3149
+
+on:
+  push:
+    branches:
+      - feat/reqsys3149-independent-validator-20261113
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: reqsys3149-independent-\${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  validator:
+    name: Independent Validator - exact ReqSys SHA
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      receipt_b64: \${{ steps.receipt.outputs.receipt_b64 }}
+      receipt_sha256: \${{ steps.receipt.outputs.receipt_sha256 }}
+    env:
+      SOURCE_REPO: ericson-j-santos/reqsys-v2-enterprise-real
+      SOURCE_SHA: 457f8ea26a190f2a4321effed79868100a649d07
+      BASE_SHA: a05e64bbc58a15314b42cfa9314f1d415535b05b
+      SOURCE_BRANCH: feat/catalogo-aplicacoes-3149-20261113
+    steps:
+      - name: Checkout immutable consumer source without token
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ericson-j-santos/reqsys-v2-enterprise-real
+          ref: 457f8ea26a190f2a4321effed79868100a649d07
+          path: reqsys
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check trusted SHA, diff, access boundary and negative contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          root = Path('reqsys')
+          head = os.environ['SOURCE_SHA']
+          base = os.environ['BASE_SHA']
+          repository = os.environ['SOURCE_REPO']
+          branch = os.environ['SOURCE_BRANCH']
+
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True, timeout=45).strip()
+
+          def remote_sha(name):
+              result = git('ls-remote', 'https://github.com/' + repository + '.git', 'refs/heads/' + name)
+              parts = result.split()
+              if len(parts) != 2 or parts[1] != 'refs/heads/' + name:
+                  raise SystemExit('SOURCE_REF_NOT_UNIQUE_OR_NOT_FOUND:' + name)
+              return parts[0]
+
+          if git('-C', str(root), 'rev-parse', 'HEAD') != head:
+              raise SystemExit('SOURCE_SHA_MISMATCH')
+          if remote_sha(branch) != head or remote_sha('main') != base:
+              raise SystemExit('SOURCE_BRANCH_OR_MAIN_MOVED')
+
+          subprocess.run(['git', '-C', str(root), 'fetch', '--no-tags', '--depth=1', 'origin', 'main'], check=True, timeout=60)
+          changed = set(git('-C', str(root), 'diff', '--name-only', base, head).splitlines())
+          expected = {
+              '.sdd/specs/reqsys-aplicacoes-inventario-3149.requirements.md',
+              '.sdd/specs/reqsys-aplicacoes-inventario-3149.spec.json',
+              'frontend/src/components/CatalogoAplicacoes.vue',
+              'frontend/src/components/__tests__/CatalogoAplicacoes.test.js',
+              'frontend/src/data/catalogoAplicacoes.js',
+              'frontend/src/router/catalogoAcesso.spec.js',
+              'frontend/src/router/index.js',
+              'frontend/src/views/PainelProjetosView.vue',
+              'scripts/pre_pr_readiness.py',
+              'tests/test_pre_pr_readiness.py',
+          }
+          if changed != expected:
+              raise SystemExit('UNEXPECTED_DIFF_PATHS:' + str(sorted(changed ^ expected)))
+
+          data = (root / 'frontend/src/data/catalogoAplicacoes.js').read_text(encoding='utf-8')
+          match = re.search(r'\{[^{}]*"id": "REQ-CONTRACTS"[^{}]*\}', data, re.S)
+          if match is None:
+              raise SystemExit('CONTRACT_ENTRY_MISSING')
+          entry = match.group()
+          for value in (
+              '"repositorio": "ericson-j-santos/pdf-cnpj-processor"',
+              '"gitShaFonte": "7fa0dae0c7b98669c398707b43af068e43805242"',
+              '"caminho": "feat/central-lotes-contratos-site-20261112"',
+              '"e2eComprovado": false',
+          ):
+              if value not in entry:
+                  raise SystemExit('PROVENANCE_INTEGRITY_MISSING:' + value)
+          if '"repositorio": "ericson-j-santos/reqsys-v2-enterprise-real"' in entry:
+              raise SystemExit('OLD_PROVENANCE_NOT_REJECTED')
+          ids = re.findall(r'"id": "([A-Z0-9-]+)"', data)
+          if len(ids) != 15 or len(set(ids)) != 15 or data.count('"e2eComprovado": false') != 15:
+              raise SystemExit('CATALOG_COUNT_OR_FALSE_E2E')
+          tests = (root / 'frontend/src/components/__tests__/CatalogoAplicacoes.test.js').read_text(encoding='utf-8')
+          if "not.toBe('ericson-j-santos/reqsys-v2-enterprise-real')" not in tests:
+              raise SystemExit('NEGATIVE_PROVENANCE_TEST_MISSING')
+          router = (root / 'frontend/src/router/index.js').read_text(encoding='utf-8')
+          if "if (!to.meta.public && auth.autenticado && !auth.usuario)" not in router:
+              raise SystemExit('MISSING_IDENTITY_FAIL_CLOSED')
+          if "if (to.meta.recurso && !auth.pode(to.meta.recurso))" not in router:
+              raise SystemExit('MISSING_RBAC_FAIL_CLOSED')
+          if "if (to.meta.recurso && auth.usuario && !auth.pode(to.meta.recurso))" in router:
+              raise SystemExit('AUTH_BYPASS_PRESENT')
+          spec = json.loads((root / '.sdd/specs/reqsys-aplicacoes-inventario-3149.spec.json').read_text(encoding='utf-8'))
+          if spec['origin']['base_sha'] != base or len(spec['sdd_gate']['tests']) != 5:
+              raise SystemExit('SDD_SOURCE_MISMATCH')
+          print('SOURCE_INTEGRITY_AND_SECURITY_CONTROLS_PASSED sha=' + head)
+          PY
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '20'
+      - name: Install exact frontend dependencies
+        working-directory: reqsys/frontend
+        run: npm ci --no-audit --no-fund
+      - name: Execute independent Vitest regressions
+        working-directory: reqsys/frontend
+        run: >-
+          npm run test:unit --
+          src/components/__tests__/CatalogoAplicacoes.test.js
+          src/router/catalogoAcesso.spec.js
+          src/router/painelProjetosRoute.spec.js
+          src/stores/__tests__/auth.test.js
+      - name: Build frontend in isolated runner
+        working-directory: reqsys/frontend
+        run: npm run build
+      - name: Seal bounded validation receipt without uploaded artifacts
+        id: receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          files = [
+              '.sdd/specs/reqsys-aplicacoes-inventario-3149.spec.json',
+              'frontend/src/components/__tests__/CatalogoAplicacoes.test.js',
+              'frontend/src/data/catalogoAplicacoes.js',
+              'frontend/src/router/index.js',
+          ]
+          digests = {
+              path: hashlib.sha256((Path('reqsys') / path).read_bytes()).hexdigest()
+              for path in files
+          }
+          receipt = {
+              'schema_version': 1,
+              'result': 'ISOLATED_VALIDATOR_TESTS_PASSED',
+              'source_repository': os.environ['SOURCE_REPO'],
+              'source_sha': os.environ['SOURCE_SHA'],
+              'base_sha': os.environ['BASE_SHA'],
+              'validator_repository': os.environ['GITHUB_REPOSITORY'],
+              'validator_workflow_sha': os.environ['GITHUB_SHA'],
+              'run_id': int(os.environ['GITHUB_RUN_ID']),
+              'run_attempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'source_file_sha256': digests,
+              'test_scope': '4 Vitest files plus frontend build and SHA-bound security controls',
+              'independent_human_approval': False,
+              'physical_e2e': False,
+          }
+          raw = (json.dumps(receipt, sort_keys=True, separators=(',', ':')) + '\n').encode()
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('receipt_b64=' + base64.b64encode(raw).decode('ascii') + '\n')
+              output.write('receipt_sha256=' + hashlib.sha256(raw).hexdigest() + '\n')
+          print('VALIDATOR_RECEIPT_SHA256=' + hashlib.sha256(raw).hexdigest())
+          PY
+
+  independent_readback:
+    name: Independent readback - fresh runner and SHA
+    needs: validator
+    if: needs.validator.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    env:
+      RECEIPT_B64: \${{ needs.validator.outputs.receipt_b64 }}
+      RECEIPT_SHA256: \${{ needs.validator.outputs.receipt_sha256 }}
+      EXPECTED_SOURCE_SHA: 457f8ea26a190f2a4321effed79868100a649d07
+      EXPECTED_BASE_SHA: a05e64bbc58a15314b42cfa9314f1d415535b05b
+    steps:
+      - name: Fresh SHA-pinned checkout for independent readback
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ericson-j-santos/reqsys-v2-enterprise-real
+          ref: 457f8ea26a190f2a4321effed79868100a649d07
+          path: source-readback
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify receipt, negative tamper control and source readback
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          raw = base64.b64decode(os.environ['RECEIPT_B64'], validate=True)
+          expected = os.environ['RECEIPT_SHA256']
+          if not expected or hashlib.sha256(raw).hexdigest() != expected:
+              raise SystemExit('RECEIPT_HASH_MISMATCH')
+          if hashlib.sha256(raw + b'tampered').hexdigest() == expected:
+              raise SystemExit('NEGATIVE_TAMPER_CONTROL_FAILED')
+          data = json.loads(raw)
+          checks = {
+              'schema_version': 1,
+              'result': 'ISOLATED_VALIDATOR_TESTS_PASSED',
+              'source_repository': 'ericson-j-santos/reqsys-v2-enterprise-real',
+              'source_sha': os.environ['EXPECTED_SOURCE_SHA'],
+              'base_sha': os.environ['EXPECTED_BASE_SHA'],
+              'validator_repository': os.environ['GITHUB_REPOSITORY'],
+              'validator_workflow_sha': os.environ['GITHUB_SHA'],
+              'run_id': int(os.environ['GITHUB_RUN_ID']),
+              'run_attempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'independent_human_approval': False,
+              'physical_e2e': False,
+          }
+          for key, value in checks.items():
+              if data.get(key) != value:
+                  raise SystemExit('RECEIPT_FIELD_MISMATCH:' + key)
+          checkout = subprocess.check_output(
+              ['git', '-C', 'source-readback', 'rev-parse', 'HEAD'], text=True, timeout=30
+          ).strip()
+          if checkout != checks['source_sha']:
+              raise SystemExit('FRESH_CHECKOUT_SHA_MISMATCH')
+          for path, digest in data['source_file_sha256'].items():
+              if path not in {
+                  '.sdd/specs/reqsys-aplicacoes-inventario-3149.spec.json',
+                  'frontend/src/components/__tests__/CatalogoAplicacoes.test.js',
+                  'frontend/src/data/catalogoAplicacoes.js',
+                  'frontend/src/router/index.js',
+              }:
+                  raise SystemExit('UNEXPECTED_RECEIPT_PATH')
+              if hashlib.sha256((Path('source-readback') / path).read_bytes()).hexdigest() != digest:
+                  raise SystemExit('SOURCE_FILE_DIGEST_MISMATCH:' + path)
+          print('INDEPENDENT_READBACK_PASSED source_sha=' + checkout)
+          print('RECEIPT_SHA256=' + expected)
+          print('HUMAN_APPROVAL_AND_PHYSICAL_E2E_NOT_ATTESTED')
+          PY
