@@ -22,7 +22,7 @@ jobs:
       receipt_sha256: ${{ steps.receipt.outputs.receipt_sha256 }}
     env:
       SOURCE_REPO: ericson-j-santos/desktop-pc24x7-runtime
-      SOURCE_SHA: 0bc21b60bae2029495554779f16fffc027a2b683
+      SOURCE_SHA: 7d219f657e1e22245c4c7e6f513b5186e45c1085
       SOURCE_BASE: 2f1d6aa7487e3f2487d99c4859c486af305dd257
       SOURCE_BRANCH: feature/lenovo-installed-inventory-readonly-147
     steps:
@@ -30,7 +30,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ericson-j-santos/desktop-pc24x7-runtime
-          ref: 0bc21b60bae2029495554779f16fffc027a2b683
+          ref: 7d219f657e1e22245c4c7e6f513b5186e45c1085
           path: runtime-src
           persist-credentials: false
           fetch-depth: 1
@@ -76,6 +76,7 @@ jobs:
               'tests/test_lenovo_control_plane_installed_inventory.py',
               'tests/test_lenovo_installed_inventory_workflow.py',
               'tests/test_runner_selection_isolation.py',
+              'tests/test_dedicated_runner_queue_watchdog.py',
           }
           if changed != expected:
               raise SystemExit('UNEXPECTED_CHANGED_PATHS:' + str(sorted(changed ^ expected)))
@@ -138,6 +139,7 @@ jobs:
               'tests/test_lenovo_control_plane_installed_inventory.py',
               'tests/test_lenovo_installed_inventory_workflow.py',
               'tests/test_runner_selection_isolation.py',
+              'tests/test_dedicated_runner_queue_watchdog.py',
           ]
           digests = {p:hashlib.sha256((Path('runtime-src') / p).read_bytes()).hexdigest() for p in paths}
           receipt = {
@@ -171,14 +173,14 @@ jobs:
     env:
       RECEIPT_B64: ${{ needs.validator.outputs.receipt_b64 }}
       RECEIPT_SHA256: ${{ needs.validator.outputs.receipt_sha256 }}
-      EXPECTED_SOURCE_SHA: 0bc21b60bae2029495554779f16fffc027a2b683
+      EXPECTED_SOURCE_SHA: 7d219f657e1e22245c4c7e6f513b5186e45c1085
       EXPECTED_SOURCE_BASE: 2f1d6aa7487e3f2487d99c4859c486af305dd257
     steps:
       - name: Fresh immutable checkout, distinct job identity
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ericson-j-santos/desktop-pc24x7-runtime
-          ref: 0bc21b60bae2029495554779f16fffc027a2b683
+          ref: 7d219f657e1e22245c4c7e6f513b5186e45c1085
           path: runtime-readback
           persist-credentials: false
           fetch-depth: 1
@@ -225,6 +227,7 @@ jobs:
               'tests/test_lenovo_control_plane_installed_inventory.py',
               'tests/test_lenovo_installed_inventory_workflow.py',
               'tests/test_runner_selection_isolation.py',
+              'tests/test_dedicated_runner_queue_watchdog.py',
           }
           if set(receipt['digests']) != expected_paths:
               raise SystemExit('DIGEST_FILE_SET_INVALID')
