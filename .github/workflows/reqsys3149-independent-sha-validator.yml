@@ -10,7 +10,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: reqsys3149-independent-\${{ github.sha }}
+  group: reqsys3149-independent-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -19,8 +19,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
-      receipt_b64: \${{ steps.receipt.outputs.receipt_b64 }}
-      receipt_sha256: \${{ steps.receipt.outputs.receipt_sha256 }}
+      receipt_b64: ${{ steps.receipt.outputs.receipt_b64 }}
+      receipt_sha256: ${{ steps.receipt.outputs.receipt_sha256 }}
     env:
       SOURCE_REPO: ericson-j-santos/reqsys-v2-enterprise-real
       SOURCE_SHA: 457f8ea26a190f2a4321effed79868100a649d07
@@ -187,8 +187,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 6
     env:
-      RECEIPT_B64: \${{ needs.validator.outputs.receipt_b64 }}
-      RECEIPT_SHA256: \${{ needs.validator.outputs.receipt_sha256 }}
+      RECEIPT_B64: ${{ needs.validator.outputs.receipt_b64 }}
+      RECEIPT_SHA256: ${{ needs.validator.outputs.receipt_sha256 }}
       EXPECTED_SOURCE_SHA: 457f8ea26a190f2a4321effed79868100a649d07
       EXPECTED_BASE_SHA: a05e64bbc58a15314b42cfa9314f1d415535b05b
     steps:
