@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "issue_url": "https://github.com/ericson-j-santos/engineering-worker-pool/issues/61",
+  "case_id": "EWP61-native-ci-removes-Docker",
+  "change_kind": "repair",
+  "source_mode": "assisted",
+  "not_model_authored": true,
+  "phase": "UNPUBLISHED_CANDIDATE_PENDING_MODEL_AND_INDEPENDENT_VALIDATOR",
+  "source_repository": "ericson-j-santos/engineering-worker-pool",
+  "source_branch": "main",
+  "base_sha": "e22aabb14e1a646e274c331e83cc06c470607a38",
+  "source_sha": "e22aabb14e1a646e274c331e83cc06c470607a38",
+  "produced_sha": "5f588cc847be6ffe07e1ae6d2840fc165cf9e1bc",
+  "produced_tree_sha": "e0148cc593d804f6d8e01732ea39f8280a03a679",
+  "rules_repository": "ericson-j-santos/chatgpt-operational-rules",
+  "rules_sha": "58dcd4200f412a866278027ba9e433439a03f3b3",
+  "rules_version": "1.6.21",
+  "original_ci_cause": "Main CI had docker run/exec/rm in PR E2E, violating the approved no-Docker policy.",
+  "changed_paths": [
+    ".github/workflows/ci.yml",
+    "scripts/native_ollama_ci.py",
+    "tests/test_native_ollama_ci.py"
+  ],
+  "files": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "before_git_blob": "1bb643875ba4ac49786a97b4ffac6669dc7f0313",
+      "before_sha256": "14c278f94e3f296fd0725845b7fdbb7cdbdfbac5a74da2047dbc64a2b296ad32",
+      "after_git_blob": "d8533142d28cfafd406b39fb3e333489ac3f7ac7",
+      "after_sha256": "cbf818911c8ca298afa2874252cf444b2b0165578c8c61c54bcb72a8a15165c3"
+    },
+    {
+      "path": "scripts/native_ollama_ci.py",
+      "before": "absent",
+      "after_git_blob": "6d4a7d3fa78ad8a5243915af4641a4beda92d460",
+      "after_sha256": "dcc0d67c91f8a7b2d663ade5a6b5dbe75d19ad02799b460195bd7174b3759ef8"
+    },
+    {
+      "path": "tests/test_native_ollama_ci.py",
+      "before": "absent",
+      "after_git_blob": "e1d146e3e3f2e6fad2671b6be21e6896588e2ee6",
+      "after_sha256": "0911d22b528ca2bbf2a1f6b40d436b4ef6c011b3041877f568b7cbe766d93b44"
+    }
+  ],
+  "test_results": {
+    "local_python_version": "Python 3.13.5",
+    "unit_cases_executed": 16,
+    "unit_cases_passed": 16,
+    "source_hashes_match_exact_persisted_sources": true,
+    "workflow_static_checks_passed": 11,
+    "workflow_static_checks_total": 11,
+    "python_advanced_ci_suite_executed": false,
+    "workflow_gh_actions_executed": false,
+    "ollama_binary_downloaded": false,
+    "qwen_real_inference_executed": false,
+    "independent_validator_attested": false,
+    "physical_hosts_touched": false
+  },
+  "full_e2e_preserved_in_workflow": [
+    "local_worker_e2e.py",
+    "rag_real_qwen_e2e",
+    "issue_rag_real_qwen_e2e",
+    "structured_worker_e2e.py"
+  ],
+  "pinned_archive": {
+    "url": "https://github.com/ollama/ollama/releases/download/v0.40.16/ollama-linux-amd64.tar.zst",
+    "sha256": "87bfafb2acbc89b2e6a1be0a9043de6aa75fb450696f86bc426e65fc448f788d",
+    "model_digest_prefix_1_5b": "d7372fd82851",
+    "model_digest_prefix_7b": "dae161e27b0e"
+  },
+  "ci_timeout_changed_minutes": {
+    "before": 22,
+    "candidate": 55
+  },
+  "critical_limits": [
+    "hosted large download and 7B inference not tested",
+    "billing/budget of a future job not attested",
+    "full workflow regression not run",
+    "process lifecycle not tested with a real Ollama daemon",
+    "issue-specific Builder for TODO-24 not implemented",
+    "CAS reference is a candidate, not READY_FOR_PR"
+  ],
+  "model_run_id": null,
+  "model_digest": null,
+  "model_calls": 0,
+  "validator_run_id": null,
+  "validator_verified": false,
+  "ready_for_pr": false,
+  "branch_published_for_code": false,
+  "pr_created": false,
+  "merge_or_deploy": false,
+  "cost_extra_confirmed_for_future_ci": false,
+  "retention_contract_certified": false,
+  "event_id": "ewp61-native-ci-candidate-20261112-v1",
+  "correlation_id": "ewp61-no-docker-prototype-20261112",
+  "idempotency_key": "ewp61:native-ci:e22aabb1:5f588cc8:v1",
+  "next_owner": "Engineering Control Plane",
+  "next_action": "Independent checkout at produced SHA and rigorous Windows/Linux, positive/negative tests, cost admission, actual model invocation only on approved host/runner, independent Validator. Do not publish code PR before READY_FOR_PR."
+}
