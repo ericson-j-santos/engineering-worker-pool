@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BEFORE = ROOT / "_desktop_before" / "scripts" / "ollama_cpu_pilot.py"
 AFTER = ROOT / "_desktop_candidate" / "scripts" / "ollama_cpu_pilot.py"
 BEFORE_BLOB = "0b4df798cdcd72e7f86e1cf884424edcd8afe8c9"
-AFTER_BLOB = "227884c61847604c5f008c947347f0342d2c"
+AFTER_BLOB = "227884c61847604c5f008c947347f0342d2b5d2c"
 
 
 def git_blob_sha(data: bytes) -> str:
