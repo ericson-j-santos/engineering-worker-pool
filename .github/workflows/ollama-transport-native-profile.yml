@@ -8,12 +8,16 @@ on:
       - app/ollama_transport_repair_profile.py
       - tests/test_ollama_transport_repair_profile.py
       - tests/test_ollama_transport_real_sources.py
+      - app/ollama_transport_native_adapter.py
+      - tests/test_ollama_transport_native_adapter.py
       - .github/workflows/ollama-transport-native-profile.yml
   pull_request:
     paths:
       - app/ollama_transport_repair_profile.py
       - tests/test_ollama_transport_repair_profile.py
       - tests/test_ollama_transport_real_sources.py
+      - app/ollama_transport_native_adapter.py
+      - tests/test_ollama_transport_native_adapter.py
       - .github/workflows/ollama-transport-native-profile.yml
 
 permissions:
@@ -58,8 +62,11 @@ jobs:
           echo "source-byte-count-before:"; wc -c < _desktop_before/scripts/ollama_cpu_pilot.py
           echo "source-byte-count-after:"; wc -c < _desktop_candidate/scripts/ollama_cpu_pilot.py
       - name: Compile contract and tests
-        run: python -m py_compile app/ollama_transport_repair_profile.py tests/test_ollama_transport_repair_profile.py tests/test_ollama_transport_real_sources.py
+        run: python -m py_compile app/ollama_transport_repair_profile.py app/ollama_transport_native_adapter.py tests/test_ollama_transport_repair_profile.py tests/test_ollama_transport_real_sources.py tests/test_ollama_transport_native_adapter.py
       - name: Positive, negative, replay and security policy tests
         run: python -m unittest discover -s tests -p 'test_ollama_transport_repair_profile.py' -v
       - name: Validate real Desktop source, failure and repaired behavior
         run: python -m unittest discover -s tests -p 'test_ollama_transport_real_sources.py' -v
+
+      - name: Validate local Qwen Builder/Validator adapter contract (simulated provider only)
+        run: python -m unittest discover -s tests -p 'test_ollama_transport_native_adapter.py' -v
