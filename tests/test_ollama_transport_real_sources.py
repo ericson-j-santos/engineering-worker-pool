@@ -64,8 +64,12 @@ class RealDesktopSourceContract(unittest.TestCase):
         if not BEFORE.is_file() or not AFTER.is_file():
             raise AssertionError("exact_desktop_sources_missing")
         cls.before, cls.after = BEFORE.read_bytes(), AFTER.read_bytes()
-        if git_blob_sha(cls.before) != BEFORE_BLOB or git_blob_sha(cls.after) != AFTER_BLOB:
-            raise AssertionError("desktop_source_blob_sha_mismatch")
+        observed_before, observed_after = git_blob_sha(cls.before), git_blob_sha(cls.after)
+        if observed_before != BEFORE_BLOB or observed_after != AFTER_BLOB:
+            raise AssertionError(
+                "desktop_source_blob_sha_mismatch "
+                f"before={observed_before} after={observed_after}"
+            )
         cls.original_script = load_script(BEFORE, "ollama_pilot_original_contract")
         cls.candidate_script = load_script(AFTER, "ollama_pilot_candidate_contract")
 
