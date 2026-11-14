@@ -51,6 +51,12 @@ jobs:
         run: |
           test "$(git -C _desktop_before rev-parse HEAD)" = "b038a770117e0d3d4d1297a3f4bec112ff68a744"
           test "$(git -C _desktop_candidate rev-parse HEAD)" = "cceafa0dedbe9df707d166a22b21e2f9a7b02166"
+          echo "source-index-before:"; git -C _desktop_before ls-files -s scripts/ollama_cpu_pilot.py
+          echo "source-index-after:"; git -C _desktop_candidate ls-files -s scripts/ollama_cpu_pilot.py
+          echo "source-worktree-before:"; git -C _desktop_before hash-object scripts/ollama_cpu_pilot.py
+          echo "source-worktree-after:"; git -C _desktop_candidate hash-object scripts/ollama_cpu_pilot.py
+          echo "source-byte-count-before:"; wc -c < _desktop_before/scripts/ollama_cpu_pilot.py
+          echo "source-byte-count-after:"; wc -c < _desktop_candidate/scripts/ollama_cpu_pilot.py
       - name: Compile contract and tests
         run: python -m py_compile app/ollama_transport_repair_profile.py tests/test_ollama_transport_repair_profile.py tests/test_ollama_transport_real_sources.py
       - name: Positive, negative, replay and security policy tests
