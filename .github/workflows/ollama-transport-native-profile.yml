@@ -7,11 +7,13 @@ on:
     paths:
       - app/ollama_transport_repair_profile.py
       - tests/test_ollama_transport_repair_profile.py
+      - tests/test_ollama_transport_real_sources.py
       - .github/workflows/ollama-transport-native-profile.yml
   pull_request:
     paths:
       - app/ollama_transport_repair_profile.py
       - tests/test_ollama_transport_repair_profile.py
+      - tests/test_ollama_transport_real_sources.py
       - .github/workflows/ollama-transport-native-profile.yml
 
 permissions:
@@ -20,7 +22,7 @@ permissions:
 jobs:
   native-static-profile:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 8
     steps:
       - name: Exact SHA checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -31,7 +33,27 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Read exact original Desktop SHA (without credentials)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ericson-j-santos/desktop-pc24x7-runtime
+          ref: b038a770117e0d3d4d1297a3f4bec112ff68a744
+          path: _desktop_before
+          persist-credentials: false
+      - name: Read exact candidate Desktop SHA (without credentials)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ericson-j-santos/desktop-pc24x7-runtime
+          ref: cceafa0dedbe9df707d166a22b21e2f9a7b02166
+          path: _desktop_candidate
+          persist-credentials: false
+      - name: Verify both independent Desktop checkouts
+        run: |
+          test "$(git -C _desktop_before rev-parse HEAD)" = "b038a770117e0d3d4d1297a3f4bec112ff68a744"
+          test "$(git -C _desktop_candidate rev-parse HEAD)" = "cceafa0dedbe9df707d166a22b21e2f9a7b02166"
       - name: Compile contract and tests
-        run: python -m py_compile app/ollama_transport_repair_profile.py tests/test_ollama_transport_repair_profile.py
+        run: python -m py_compile app/ollama_transport_repair_profile.py tests/test_ollama_transport_repair_profile.py tests/test_ollama_transport_real_sources.py
       - name: Positive, negative, replay and security policy tests
         run: python -m unittest discover -s tests -p 'test_ollama_transport_repair_profile.py' -v
+      - name: Validate real Desktop source, failure and repaired behavior
+        run: python -m unittest discover -s tests -p 'test_ollama_transport_real_sources.py' -v
