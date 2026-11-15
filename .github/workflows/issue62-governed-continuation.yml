@@ -39,27 +39,25 @@ jobs:
     runs-on: [self-hosted, pc24x7, runtime-dev]
     timeout-minutes: 10
     env:
-      EWP_WORKER_POOL_URL: ${{ vars.EWP_WORKER_POOL_URL }}
-      EWP_WORKER_POOL_TOKEN: ${{ secrets.EWP_WORKER_POOL_TOKEN }}
+      # Local service only. The token stays in an already-protected host file.
+      # Remote origins and event-provided bearer values are forbidden.
+      EWP_WORKER_POOL_PORT: ${{ vars.EWP_WORKER_POOL_PORT }}
+      EWP_WORKER_POOL_TOKEN_FILE: ${{ vars.EWP_WORKER_POOL_TOKEN_FILE }}
       EWP_TASK_ID: ${{ github.event.client_payload.task_id || inputs.task_id }}
-      EWP_EXPECTED_REPOSITORY: ${{ github.event.client_payload.repository || 'ericson-j-santos/engineering-worker-pool' }}
+      EWP_EXPECTED_REPOSITORY: ericson-j-santos/engineering-worker-pool
       EWP_EXPECTED_ISSUE: ${{ github.event.client_payload.issue_number || inputs.expected_issue }}
       EWP_EXPECTED_REQUEST_ID: ${{ github.event.client_payload.request_id || inputs.request_id }}
       EWP_EXPECTED_BASE_SHA: ${{ github.event.client_payload.base_sha || inputs.expected_base_sha || github.sha }}
       EWP_EXPECTED_COST_ZERO_SHA: ${{ github.event.client_payload.cost_zero_sha || vars.EWP_COST_ZERO_CERTIFIED_SHA }}
       EWP_COST_ZERO_CERTIFIED_SHA: ${{ vars.EWP_COST_ZERO_CERTIFIED_SHA }}
-      EWP_HANDLER_ATTESTED: ${{ vars.EWP_HANDLER_ATTESTED }}
-      EWP_GATEWAY_ATTESTED: ${{ vars.EWP_GATEWAY_ATTESTED }}
-      EWP_HANDLER_ID: ${{ vars.EWP_HANDLER_ID }}
-      EWP_HANDLER_ENTRYPOINT: ${{ vars.EWP_HANDLER_ENTRYPOINT }}
-      EWP_SESSION_LAUNCH_OK: ${{ vars.EWP_SESSION_LAUNCH_OK }}
-      EWP_STATE_VALIDATED: ${{ vars.EWP_STATE_VALIDATED }}
-      EWP_CHECKED_OUT_SHA: ${{ github.event.client_payload.base_sha || inputs.expected_base_sha || github.sha }}
-    steps:
+      # This checkout pins workflow code, never an untrusted task source SHA.
+      # The task base SHA is checked independently against canonical API state.
+      EWP_CHECKED_OUT_SHA: ${{ github.sha }}
+        steps:
       - name: Checkout exact source SHA
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          ref: ${{ env.EWP_CHECKED_OUT_SHA }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Setup Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
