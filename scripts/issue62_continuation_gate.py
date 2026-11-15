@@ -5,11 +5,9 @@ preinstalled, attested handler. It never interprets queue text as a command.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
-import sys
 import urllib.error
 import urllib.request
 from typing import Any
@@ -24,8 +22,8 @@ REQUIRED_COST_VAR = "EWP_COST_ZERO_CERTIFIED_SHA"
 
 
 def blocked(code: str, **extra: Any) -> int:
-    payload = {"result": "CONTINUATION_BLOCKED", "code": code, **extra}
-    print(json.dumps(payload, sort_keys=True))
+    print(json.dumps({"result": "CONTINUATION_BLOCKED", "code": code, **extra},
+                     sort_keys=True))
     return 2
 
 
@@ -34,18 +32,14 @@ def require(value: bool, code: str) -> None:
         raise NativeExecutorBlocked(code)
 
 
-def api_json(base: str, token: str, method: str, path: str,
-             data: dict[str, Any] | None = None) -> dict[str, Any]:
+def api_json(base: str, token: str, method: str, path: str) -> dict[str, Any]:
     require(re.fullmatch(r"https?://[^/]{1,255}", base) is not None,
             "worker_pool_url_invalid")
     require(token and len(token) <= 4096, "worker_pool_token_missing")
     request = urllib.request.Request(
-        base + path,
-        method=method,
+        base + path, method=method,
         headers={"Authorization": "Bearer " + token,
-                 "Accept": "application/json",
-                 "Content-Type": "application/json"},
-        data=None if data is None else json.dumps(data).encode(),
+                 "Accept": "application/json"},
     )
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
@@ -73,10 +67,11 @@ def main() -> int:
         require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
                 is not None and issue > 0, "task_binding_invalid")
         require(request_id and len(request_id) <= 128
-                and SHA40.fullmatch(base_sha) is not None, "request_binding_invalid")
+                and SHA40.fullmatch(base_sha) is not None,
+                "request_binding_invalid")
         require(expected_cost_sha == os.environ.get(REQUIRED_COST_VAR),
                 "cost_zero_certificate_missing_or_mismatched")
-        require(os.environ.get("GITHUB_SHA") == base_sha,
+        require(os.environ.get("EWP_CHECKED_OUT_SHA") == base_sha,
                 "source_sha_mismatch")
 
         task = api_json(base, token, "GET", f"/v1/tasks/{task_id}")
@@ -106,11 +101,8 @@ def main() -> int:
         require(os.environ.get("EWP_SESSION_LAUNCH_OK") == "1"
                 and os.environ.get("EWP_STATE_VALIDATED") == "true",
                 "session_not_attested")
-
-        # The installed handler is deliberately invoked through the existing
-        # trusted host entrypoint. The hosted workflow never fabricates it.
-        entrypoint = os.environ.get("EWP_HANDLER_ENTRYPOINT", "")
-        require(entrypoint == "scripts/native_live_driver.py",
+        require(os.environ.get("EWP_HANDLER_ENTRYPOINT")
+                == "scripts/native_live_driver.py",
                 "handler_entrypoint_not_allowed")
         print(json.dumps({"result": "CONTINUATION_READY_FOR_HANDLER",
                            "state": role, "handler": handler_id,
