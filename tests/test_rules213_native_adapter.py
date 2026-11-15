@@ -83,7 +83,7 @@ def adapter(*, baseline=None, model=None, report=None, main=None, issue=None):
 class AdapterTests(unittest.TestCase):
     def test_descriptor_has_distinct_builder_stage_commit_and_validator(self):
         self.assertEqual(NATIVE_DESCRIPTOR.builder_commands,
-                         ("rules213.commit", "rules213.repair", "rules213.stage"))
+                         ("rules213.apply", "rules213.commit", "rules213.propose", "rules213.stage"))
         self.assertEqual(NATIVE_DESCRIPTOR.validator_commands,
                          ("rules213.validate",))
         self.assertEqual(set(NATIVE_DESCRIPTOR.allowed_paths), set(SOURCE_FUNCTIONS))
@@ -97,7 +97,8 @@ class AdapterTests(unittest.TestCase):
                 write_sources(root, CHANGED)
                 return {"result": "GOVERNED_COMMAND_VERIFIED"}
             commands = {
-                "rules213.repair": repair,
+                "rules213.propose": lambda: {"result": "GOVERNED_COMMAND_VERIFIED"},
+                "rules213.apply": repair,
                 "rules213.stage": lambda: {"result": "GOVERNED_COMMAND_VERIFIED"},
                 "rules213.commit": lambda: {
                     "result": "GOVERNED_COMMAND_VERIFIED", "head": PRODUCED},
@@ -114,7 +115,7 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(result.produced_sha, PRODUCED)
             self.assertEqual(result.changed_paths, tuple(sorted(CHANGED)))
             self.assertEqual(result.invoked_commands, (
-                "rules213.repair", "rules213.stage", "rules213.commit"))
+                "rules213.propose", "rules213.apply", "rules213.stage", "rules213.commit"))
             self.assertEqual(len(result.evidence_sha256), 64)
 
     def test_main_drift_blocks_before_command(self):
@@ -150,35 +151,83 @@ class AdapterTests(unittest.TestCase):
             write_sources(root,ORIGINAL)
             a=adapter(model=lambda: {"model":"wrong"})
             calls=[]
-            def repair():
-                calls.append("repair")
+            def propose():
+                calls.append("propose")
+                return {"result":"GOVERNED_COMMAND_VERIFIED"}
+            def apply():
+                calls.append("apply")
                 write_sources(root,CHANGED)
                 return {"result":"GOVERNED_COMMAND_VERIFIED"}
             def stage():
                 calls.append("stage")
-            commands={"rules213.repair":repair,"rules213.stage":stage,
+            commands={"rules213.propose":propose,"rules213.apply":apply,
+                      "rules213.stage":stage,
                       "rules213.commit":stage,"rules213.validate":stage}
             ctx=AdapterContext(root,make_manifest(ORIGINAL),NATIVE_DESCRIPTOR,
                                commands,"builder")
             with self.assertRaisesRegex(Rules213Blocked,"provenance_unattested"):
                 a.build(ctx)
-            self.assertEqual(calls,["repair"])
+            self.assertEqual(calls,["propose"])
 
     def test_scope_violation_blocks_before_commit(self):
         with TemporaryDirectory() as td:
             root=Path(td)
             write_sources(root,ORIGINAL)
-            def repair():
+            def apply():
                 write_sources(root,CHANGED)
                 (root / sorted(CHANGED)[0]).write_bytes(
                     b"unexpected = 1\n" + CHANGED[sorted(CHANGED)[0]])
                 return {"result":"GOVERNED_COMMAND_VERIFIED"}
             ctx=AdapterContext(root,make_manifest(ORIGINAL),NATIVE_DESCRIPTOR,
-              {"rules213.repair":repair,"rules213.stage":lambda:None,
+              {"rules213.propose":lambda:{"result":"GOVERNED_COMMAND_VERIFIED"},
+               "rules213.apply":apply,"rules213.stage":lambda:None,
                "rules213.commit":lambda:None,"rules213.validate":lambda:None},
               "builder")
             with self.assertRaisesRegex(Rules213Blocked,"outside_function_changed"):
                 adapter().build(ctx)
+
+    def test_proposal_cannot_touch_source_before_provenance_attestation(self):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            write_sources(root,ORIGINAL)
+            calls=[]
+            def malicious_proposal():
+                calls.append("propose")
+                write_sources(root,CHANGED)
+                return {"result":"GOVERNED_COMMAND_VERIFIED"}
+            def forbidden():
+                calls.append("apply")
+                return {"result":"GOVERNED_COMMAND_VERIFIED"}
+            ctx=AdapterContext(root,make_manifest(ORIGINAL),NATIVE_DESCRIPTOR,
+                {"rules213.propose":malicious_proposal,
+                 "rules213.apply":forbidden,
+                 "rules213.stage":forbidden,"rules213.commit":forbidden,
+                 "rules213.validate":forbidden},"builder")
+            with self.assertRaisesRegex(Rules213Blocked,"proposal_changed_source"):
+                adapter().build(ctx)
+            self.assertEqual(calls,["propose"])
+
+    def test_apply_hash_mismatch_stops_before_stage_or_commit(self):
+        with TemporaryDirectory() as td:
+            root=Path(td)
+            write_sources(root,ORIGINAL)
+            calls=[]
+            def apply_wrong():
+                calls.append("apply")
+                write_sources(root,{path: data.replace(b"return 1",b"return 3")
+                                   for path,data in ORIGINAL.items()})
+                return {"result":"GOVERNED_COMMAND_VERIFIED"}
+            def forbidden():
+                calls.append("stage_or_commit")
+                return {"result":"GOVERNED_COMMAND_VERIFIED"}
+            ctx=AdapterContext(root,make_manifest(ORIGINAL),NATIVE_DESCRIPTOR,
+                {"rules213.propose":lambda:{"result":"GOVERNED_COMMAND_VERIFIED"},
+                 "rules213.apply":apply_wrong,
+                 "rules213.stage":forbidden,"rules213.commit":forbidden,
+                 "rules213.validate":forbidden},"builder")
+            with self.assertRaisesRegex(Rules213Blocked,"applied_candidate_hash_mismatch"):
+                adapter().build(ctx)
+            self.assertEqual(calls,["apply"])
 
     def test_missing_issue_blocks_before_model(self):
         with TemporaryDirectory() as td:
