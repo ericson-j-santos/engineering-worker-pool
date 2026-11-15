@@ -33,7 +33,7 @@ OFFICIAL_DIGEST = "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4
 NATIVE_DESCRIPTOR = AdapterDescriptor(
     adapter_id=NATIVE_PROFILE,
     allowed_paths=tuple(sorted(SOURCE_FUNCTIONS)),
-    builder_commands=("rules213.commit", "rules213.repair", "rules213.stage"),
+    builder_commands=("rules213.apply", "rules213.commit", "rules213.propose", "rules213.stage"),
     validator_commands=("rules213.validate",),
 )
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -110,8 +110,8 @@ class Rules213NativeAdapter:
                 and manifest.workspace_sha == (
                     BASE_SHA if role == "builder" else produced_sha),
                 "rules213_native_manifest_drift")
-        require(type(self.live_main_reader()) is str
-                and self.live_main_reader() == BASE_SHA,
+        live_main = self.live_main_reader()
+        require(type(live_main) is str and live_main == BASE_SHA,
                 "rules213_native_main_advanced")
         issue = self.issue_reader()
         require(type(issue) is dict
@@ -149,14 +149,15 @@ class Rules213NativeAdapter:
                 and type(baseline.get("case_id")) is str
                 and CASE.fullmatch(baseline["case_id"]) is not None,
                 "rules213_failing_baseline_missing")
-        governed = context.invoke("rules213.repair")
-        require(type(governed) is dict
-                and governed.get("result") == "GOVERNED_COMMAND_VERIFIED",
-                "rules213_repair_command_unverified")
-        after = _read_sources(context.root)
-        scope = check_generated_scope(self.original, after)
-        # The receipt MUST come from an independent trusted reader of the actual
-        # local model transport, never a queue manifest or model-authored payload.
+        # PHASE 1: propose in a trusted external receipt WITHOUT writing source.
+        proposed = context.invoke("rules213.propose")
+        require(type(proposed) is dict
+                and proposed.get("result") == "GOVERNED_COMMAND_VERIFIED",
+                "rules213_propose_command_unverified")
+        require(_read_sources(context.root) == self.original,
+                "rules213_proposal_changed_source")
+        # Independent trusted model-transport reader must bind its receipt to
+        # this task, base, exact pinned model and the candidate file hashes.
         model = self.model_receipt_reader()
         require(type(model) is dict
                 and model.get("task_id") == self.task_id
@@ -167,10 +168,23 @@ class Rules213NativeAdapter:
                 and model.get("origin") == "http://127.0.0.1:11434"
                 and type(model.get("model_calls")) is int
                 and 1 <= model["model_calls"] <= 2
-                and model.get("after_sha256") == {
-                    path: _sha(after[path]) for path in sorted(SOURCE_FUNCTIONS)
-                },
+                and type(model.get("after_sha256")) is dict
+                and set(model["after_sha256"]) == set(SOURCE_FUNCTIONS)
+                and all(type(item) is str and SHA64.fullmatch(item)
+                        for item in model["after_sha256"].values()),
                 "rules213_model_provenance_unattested")
+        # PHASE 2: only the fixed, trusted, Gateway-mediated 'apply' command
+        # may mutate the repo. Its result must match the independently-read
+        # Qwen proposal exactly; otherwise no Git stage or commit is allowed.
+        applied = context.invoke("rules213.apply")
+        require(type(applied) is dict
+                and applied.get("result") == "GOVERNED_COMMAND_VERIFIED",
+                "rules213_apply_command_unverified")
+        after = _read_sources(context.root)
+        scope = check_generated_scope(self.original, after)
+        require(model["after_sha256"] == {
+            path: _sha(after[path]) for path in sorted(SOURCE_FUNCTIONS)
+        }, "rules213_applied_candidate_hash_mismatch")
         staged = context.invoke("rules213.stage")
         require(type(staged) is dict
                 and staged.get("result") == "GOVERNED_COMMAND_VERIFIED",
