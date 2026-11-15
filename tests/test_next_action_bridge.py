@@ -195,3 +195,39 @@ def test_bad_handler_registry_is_rejected_before_any_read():
     with pytest.raises(NativeExecutorBlocked, match="continuation_handlers_invalid"):
         continue_once(api, handlers={"shell": lambda: None}, **BINDING)
     assert api.calls == []
+
+
+def test_issue62_self_declared_flags_must_not_authorize_execution(monkeypatch, capsys):
+    """Regression: repo variables are claims, not a real Launcher/Gateway receipt."""
+    import json
+    from scripts import issue62_continuation_gate as gate
+
+    environment = {
+        "EWP_WORKER_POOL_URL": "http://127.0.0.1:8787",
+        "EWP_WORKER_POOL_TOKEN": "fixture-token-only",
+        "EWP_TASK_ID": TASK,
+        "EWP_EXPECTED_REPOSITORY": REPO,
+        "EWP_EXPECTED_ISSUE": "62",
+        "EWP_EXPECTED_REQUEST_ID": "issue-62",
+        "EWP_EXPECTED_BASE_SHA": BASE,
+        "EWP_EXPECTED_COST_ZERO_SHA": BASE,
+        "EWP_COST_ZERO_CERTIFIED_SHA": BASE,
+        "EWP_CHECKED_OUT_SHA": BASE,
+        "EWP_HANDLER_ATTESTED": "1",
+        "EWP_GATEWAY_ATTESTED": "1",
+        "EWP_HANDLER_ID": "issue-qwen7b-native-v1",
+        "EWP_HANDLER_ENTRYPOINT": "scripts/native_live_driver.py",
+        "EWP_SESSION_LAUNCH_OK": "1",
+        "EWP_STATE_VALIDATED": "true",
+    }
+    for key, value in environment.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(gate, "api_json", lambda _base, _token, _method, path: (
+        task() if path.endswith(TASK)
+        else {"checkpoint": None}
+    ))
+    outcome = gate.main()
+    result = json.loads(capsys.readouterr().out)
+    assert outcome == 2, "Environment flags are not actual session evidence"
+    assert result["result"] == "CONTINUATION_BLOCKED"
+    assert "READY" not in json.dumps(result)
