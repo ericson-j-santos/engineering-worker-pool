@@ -1,115 +1,111 @@
-"""Governed Issue 62 continuation entrypoint.
+"""Read-only, fail-closed continuation admission from GitHub Actions.
 
-Reads one authenticated Worker Pool task/checkpoint and routes only to a
-preinstalled, attested handler. It never interprets queue text as a command.
+A workflow can inspect the next action, but it cannot authorize code execution
+with environment booleans. A native session, Gateway, exact fenced claim and
+independent result reconciliation are required before handler execution; this
+script deliberately does not run a handler or claim a task.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
-import urllib.error
-import urllib.request
+from pathlib import Path
 from typing import Any
 
-from app.next_action_bridge import decide_next_action
 from app.native_one_shot import NativeExecutorBlocked
+from app.native_pool_http import LocalWorkerApi
+from app.next_action_bridge import decide_next_action
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 TASK_ID = re.compile(r"^cwp-[0-9a-f]{24}$")
-ALLOWED_HANDLERS = {"issue-qwen7b-native-v1"}
-REQUIRED_COST_VAR = "EWP_COST_ZERO_CERTIFIED_SHA"
+REPOSITORY = "ericson-j-santos/engineering-worker-pool"
 
 
 def blocked(code: str, **extra: Any) -> int:
-    print(json.dumps({"result": "CONTINUATION_BLOCKED", "code": code, **extra},
-                     sort_keys=True))
+    print(json.dumps({"result": "CONTINUATION_BLOCKED", "code": code,
+                      "executed": False, **extra}, sort_keys=True))
     return 2
 
 
-def require(value: bool, code: str) -> None:
-    if not value:
+def require(condition: bool, code: str) -> None:
+    if not condition:
         raise NativeExecutorBlocked(code)
 
 
-def api_json(base: str, token: str, method: str, path: str) -> dict[str, Any]:
-    require(re.fullmatch(r"https?://[^/]{1,255}", base) is not None,
-            "worker_pool_url_invalid")
-    require(token and len(token) <= 4096, "worker_pool_token_missing")
-    request = urllib.request.Request(
-        base + path, method=method,
-        headers={"Authorization": "Bearer " + token,
-                 "Accept": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            require(response.status in {200, 201}, "worker_pool_http_status")
-            value = json.loads(response.read(2_000_000))
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
-            json.JSONDecodeError):
-        raise NativeExecutorBlocked("worker_pool_readback_unavailable") from None
-    require(type(value) is dict, "worker_pool_payload_invalid")
-    return value
+def _connect() -> LocalWorkerApi:
+    """Use the existing private-file, fixed-loopback Worker Pool transport.
+
+    Never accept a task/dispatch-provided URL, a bearer token from the event,
+    or a nonlocal network origin. LocalWorkerApi checks the credential file
+    permissions and explicitly disables proxy and redirect handling.
+    """
+    raw_port = os.environ.get("EWP_WORKER_POOL_PORT", "")
+    token_file = os.environ.get("EWP_WORKER_POOL_TOKEN_FILE", "")
+    require(re.fullmatch(r"[0-9]{1,5}", raw_port) is not None
+            and 1 <= int(raw_port) <= 65535, "worker_pool_port_invalid")
+    require(bool(token_file) and Path(token_file).is_absolute(),
+            "worker_pool_private_token_file_missing")
+    return LocalWorkerApi(port=int(raw_port), token_file=Path(token_file))
 
 
 def main() -> int:
     try:
-        base = os.environ["EWP_WORKER_POOL_URL"].rstrip("/")
-        token = os.environ["EWP_WORKER_POOL_TOKEN"]
+        # A repository_dispatch client_payload is a request for inspection,
+        # not an authorization to run arbitrary code on a self-hosted runner.
+        require(os.environ.get("GITHUB_ACTIONS") == "true"
+                and os.environ.get("GITHUB_REPOSITORY") == REPOSITORY
+                and os.environ.get("GITHUB_EVENT_NAME") in {
+                    "workflow_dispatch", "repository_dispatch",
+                }, "continuation_github_origin_unverified")
+        code_sha = os.environ.get("GITHUB_SHA", "")
+        require(SHA40.fullmatch(code_sha) is not None
+                and code_sha == os.environ.get("EWP_CHECKED_OUT_SHA"),
+                "continuation_code_sha_unverified")
+
         task_id = os.environ["EWP_TASK_ID"]
         repository = os.environ["EWP_EXPECTED_REPOSITORY"]
-        issue = int(os.environ["EWP_EXPECTED_ISSUE"])
+        raw_issue = os.environ["EWP_EXPECTED_ISSUE"]
         request_id = os.environ["EWP_EXPECTED_REQUEST_ID"]
         base_sha = os.environ["EWP_EXPECTED_BASE_SHA"]
-        expected_cost_sha = os.environ["EWP_EXPECTED_COST_ZERO_SHA"]
-
         require(TASK_ID.fullmatch(task_id) is not None, "task_id_invalid")
-        require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
-                is not None and issue > 0, "task_binding_invalid")
-        require(request_id and len(request_id) <= 128
+        require(repository == REPOSITORY, "repository_not_allowlisted")
+        require(re.fullmatch(r"[1-9][0-9]*", raw_issue) is not None,
+                "issue_number_invalid")
+        require(bool(request_id) and len(request_id) <= 128
                 and SHA40.fullmatch(base_sha) is not None,
                 "request_binding_invalid")
-        require(expected_cost_sha == os.environ.get(REQUIRED_COST_VAR),
-                "cost_zero_certificate_missing_or_mismatched")
-        require(os.environ.get("EWP_CHECKED_OUT_SHA") == base_sha,
-                "source_sha_mismatch")
 
-        task = api_json(base, token, "GET", f"/v1/tasks/{task_id}")
-        checkpoint_payload = api_json(
-            base, token, "GET", f"/v1/tasks/{task_id}/checkpoints/latest")
-        checkpoint = checkpoint_payload.get("checkpoint")
-        require(checkpoint is None or type(checkpoint) is dict,
-                "checkpoint_payload_invalid")
+        # SHA equality is just a binding check, NOT financial certification.
+        # No paid service, self-hosted handler or model is invoked here.
+        certificate = os.environ.get("EWP_COST_ZERO_CERTIFIED_SHA", "")
+        require(SHA40.fullmatch(certificate) is not None
+                and certificate == base_sha
+                and certificate == os.environ.get("EWP_EXPECTED_COST_ZERO_SHA"),
+                "cost_zero_binding_missing_or_mismatched")
 
+        with _connect() as api:
+            task = api.get_task(task_id)
+            checkpoint = api.get_latest_checkpoint(task_id)
         role = decide_next_action(
             task, checkpoint, task_id=task_id,
-            expected_repository=repository, expected_issue=issue,
+            expected_repository=repository, expected_issue=int(raw_issue),
             expected_request_id=request_id, expected_base_sha=base_sha,
         )
         if role in {"wait", "blocked", "done"}:
             print(json.dumps({"result": "CONTINUATION_NO_EXECUTION",
-                               "state": role, "task_id": task_id},
-                              sort_keys=True))
+                              "state": role, "task_id": task_id,
+                              "executed": False}, sort_keys=True))
             return 0
 
-        require(os.environ.get("EWP_HANDLER_ATTESTED") == "1",
-                "handler_not_attested")
-        require(os.environ.get("EWP_GATEWAY_ATTESTED") == "1",
-                "gateway_not_attested")
-        handler_id = os.environ.get("EWP_HANDLER_ID", "")
-        require(handler_id in ALLOWED_HANDLERS, "handler_profile_not_allowed")
-        require(os.environ.get("EWP_SESSION_LAUNCH_OK") == "1"
-                and os.environ.get("EWP_STATE_VALIDATED") == "true",
-                "session_not_attested")
-        require(os.environ.get("EWP_HANDLER_ENTRYPOINT")
-                == "scripts/native_live_driver.py",
-                "handler_entrypoint_not_allowed")
-        print(json.dumps({"result": "CONTINUATION_READY_FOR_HANDLER",
-                           "state": role, "handler": handler_id,
-                           "task_id": task_id}, sort_keys=True))
-        return 0
-    except KeyError as exc:
-        return blocked("required_environment_missing", variable=str(exc))
+        # False attestation regression: environment flags like
+        # EWP_GATEWAY_ATTESTED=1 or EWP_SESSION_LAUNCH_OK=1 are NOT receipts.
+        # Do not claim a lease or invoke a handler until a separate, genuine
+        # Session Launcher/Gateway native entrypoint is wired and E2E tested.
+        return blocked("native_session_gateway_and_handler_not_attested",
+                       next_action=role, task_id=task_id)
+    except KeyError:
+        return blocked("required_environment_missing")
     except (ValueError, NativeExecutorBlocked) as exc:
         return blocked(str(exc) or "continuation_blocked")
     except Exception:
