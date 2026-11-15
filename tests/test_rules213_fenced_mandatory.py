@@ -89,7 +89,7 @@ class FencedRules213Tests(unittest.TestCase):
         self.receipts = ReceiptStore(self.root / "receipts")
         self.commands = {key: lambda: None for key in NATIVE_DESCRIPTOR.command_keys}
 
-    def executor(self, api, *, attest=False, cas=False):
+    def executor(self, api, *, attest=False, cas=False, head=BASE_SHA):
         return NativeOneShotExecutor(
             api=api, workspace=self.workspace,
             receipts=self.receipts,
@@ -98,7 +98,7 @@ class FencedRules213Tests(unittest.TestCase):
             boundary=ExecutionBoundary(
                 session_id="ewp-r213-fence-tests",
                 correlation_id="ewp-r213-fence-test-20261115",
-                expected_head=BASE_SHA,
+                expected_head=head,
                 state_validated=True, gateway_verified=True),
             artifact_transport=FakeCAS() if cas else None,
             fenced_adapter_ids=frozenset({NATIVE_PROFILE}) if attest
@@ -144,6 +144,17 @@ class FencedRules213Tests(unittest.TestCase):
         api = ObservedApi(False)
         with self.assertRaisesRegex(NativeExecutorBlocked, "rules213_requires_fenced_task"):
             self.executor(api).run(self.manifest, role="builder", worker_id="builder.dev")
+        self.assertEqual(api.legacy_claims, 0)
+        self.assertEqual(api.fenced_claims, 0)
+
+    def test_validator_also_rejects_unfenced_rules213_task(self):
+        api = ObservedApi(False)
+        manifest = dict(self.manifest)
+        validator_sha = "b" * 40
+        manifest["workspace_sha"] = validator_sha
+        with self.assertRaisesRegex(NativeExecutorBlocked, "rules213_requires_fenced_task"):
+            self.executor(api, head=validator_sha).run(
+                manifest, role="validator", worker_id="validator.dev")
         self.assertEqual(api.legacy_claims, 0)
         self.assertEqual(api.fenced_claims, 0)
 
