@@ -53,8 +53,8 @@ jobs:
       # This checkout pins workflow code, never an untrusted task source SHA.
       # The task base SHA is checked independently against canonical API state.
       EWP_CHECKED_OUT_SHA: ${{ github.sha }}
-        steps:
-      - name: Checkout exact source SHA
+    steps:
+      - name: Checkout trusted workflow code SHA
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           ref: ${{ github.sha }}
