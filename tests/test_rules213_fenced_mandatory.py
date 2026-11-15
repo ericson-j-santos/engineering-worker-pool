@@ -13,7 +13,7 @@ from app.native_one_shot import (
     ExecutionBoundary, NativeExecutorBlocked, NativeOneShotExecutor, ReceiptStore,
 )
 from app.rules213_native_adapter import NATIVE_DESCRIPTOR, NATIVE_PROFILE
-from app.rules213_updater_profile import BASE_SHA, REPOSITORY, SOURCE_FUNCTIONS
+from app.rules213_updater_profile import BASE_SHA, REPOSITORY, SOURCE_FUNCTIONS, DESCRIPTOR, PROFILE
 
 TASK_ID = "cwp-" + "a" * 24
 
@@ -104,6 +104,41 @@ class FencedRules213Tests(unittest.TestCase):
             fenced_adapter_ids=frozenset({NATIVE_PROFILE}) if attest
             else frozenset(),
         )
+
+    def test_pre_admission_descriptor_cannot_dispatch_legacy_rules213_repair(self):
+        api = ObservedApi(False)
+        manifest = dict(self.manifest)
+        manifest["adapter_id"] = PROFILE
+        manifest["adapter_contract_sha256"] = DESCRIPTOR.contract_sha256
+
+        class PreAdmissionOnly:
+            descriptor = DESCRIPTOR
+
+            def build(self, context):
+                raise AssertionError("PRE_ADMISSION_MUST_NEVER_BUILD")
+
+            def validate(self, context, sha):
+                raise AssertionError("PRE_ADMISSION_MUST_NEVER_VALIDATE")
+
+        executor = NativeOneShotExecutor(
+            api=api, workspace=self.workspace, receipts=self.receipts,
+            adapters={PROFILE: PreAdmissionOnly()},
+            command_registries={PROFILE: {
+                key: lambda: None for key in DESCRIPTOR.command_keys
+            }},
+            boundary=ExecutionBoundary(
+                session_id="ewp-r213-fence-tests",
+                correlation_id="ewp-r213-fence-test-20261115",
+                expected_head=BASE_SHA, state_validated=True,
+                gateway_verified=True,
+            ),
+        )
+        with self.assertRaisesRegex(
+            NativeExecutorBlocked, "rules213_preadmission_not_executable"
+        ):
+            executor.run(manifest, role="builder", worker_id="builder.dev")
+        self.assertEqual(api.legacy_claims, 0)
+        self.assertEqual(api.fenced_claims, 0)
 
     def test_rejects_explicit_unfenced_task_before_any_legacy_claim(self):
         api = ObservedApi(False)
