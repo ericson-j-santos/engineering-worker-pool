@@ -56,18 +56,10 @@ jobs:
       EWP_STATE_VALIDATED: ${{ vars.EWP_STATE_VALIDATED }}
       EWP_CHECKED_OUT_SHA: ${{ github.event.client_payload.base_sha || inputs.expected_base_sha || github.sha }}
     steps:
-      - name: Resolve expected source SHA
-        id: source
-        env:
-          EXPECTED_SHA: ${{ env.EWP_CHECKED_OUT_SHA }}
-        run: |
-          test "${EXPECTED_SHA}" != ""
-          test "${EXPECTED_SHA}" = "${EXPECTED_SHA#????????????????????????????????????????}"
-          echo "sha=${EXPECTED_SHA}" >> "${GITHUB_OUTPUT}"
       - name: Checkout exact source SHA
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          ref: ${{ steps.source.outputs.sha }}
+          ref: ${{ env.EWP_CHECKED_OUT_SHA }}
           persist-credentials: false
       - name: Setup Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
