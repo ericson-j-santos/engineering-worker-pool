@@ -23,7 +23,7 @@ jobs:
       receipt_sha256: ${{ steps.receipt.outputs.receipt_sha256 }}
     env:
       SOURCE_REPO: ericson-j-santos/reqsys-v2-enterprise-real
-      SOURCE_SHA: 457f8ea26a190f2a4321effed79868100a649d07
+      SOURCE_SHA: 5354358a182c7f595f6a06f4ee5daa2e51fa7cae
       BASE_SHA: a05e64bbc58a15314b42cfa9314f1d415535b05b
       SOURCE_BRANCH: feat/catalogo-aplicacoes-3149-20261113
     steps:
@@ -31,7 +31,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ericson-j-santos/reqsys-v2-enterprise-real
-          ref: 457f8ea26a190f2a4321effed79868100a649d07
+          ref: 5354358a182c7f595f6a06f4ee5daa2e51fa7cae
           path: reqsys
           fetch-depth: 1
           persist-credentials: false
@@ -75,7 +75,9 @@ jobs:
               '.sdd/specs/reqsys-aplicacoes-inventario-3149.spec.json',
               'frontend/src/components/CatalogoAplicacoes.vue',
               'frontend/src/components/__tests__/CatalogoAplicacoes.test.js',
+              'frontend/src/components/__tests__/DiagnosticoIntegracoes.test.js',
               'frontend/src/data/catalogoAplicacoes.js',
+              'frontend/src/data/diagnosticoIntegracoes.mjs',
               'frontend/src/router/catalogoAcesso.spec.js',
               'frontend/src/router/index.js',
               'frontend/src/views/PainelProjetosView.vue',
@@ -101,11 +103,17 @@ jobs:
           if '"repositorio": "ericson-j-santos/reqsys-v2-enterprise-real"' in entry:
               raise SystemExit('OLD_PROVENANCE_NOT_REJECTED')
           ids = re.findall(r'"id": "([A-Z0-9-]+)"', data)
-          if len(ids) != 15 or len(set(ids)) != 15 or data.count('"e2eComprovado": false') != 15:
+          if len(ids) != 18 or len(set(ids)) != 18 or data.count('"e2eComprovado": false') != 18:
               raise SystemExit('CATALOG_COUNT_OR_FALSE_E2E')
           tests = (root / 'frontend/src/components/__tests__/CatalogoAplicacoes.test.js').read_text(encoding='utf-8')
           if "not.toBe('ericson-j-santos/reqsys-v2-enterprise-real')" not in tests:
               raise SystemExit('NEGATIVE_PROVENANCE_TEST_MISSING')
+          detector = (root / 'frontend/src/data/diagnosticoIntegracoes.mjs').read_text(encoding='utf-8')
+          regression = (root / 'frontend/src/components/__tests__/DiagnosticoIntegracoes.test.js').read_text(encoding='utf-8')
+          if "repositorio.startsWith('NAO_VINCULADO_')" not in detector:
+              raise SystemExit('ORIGIN_SENTINEL_FALSE_NEGATIVE_NOT_FIXED')
+          if "NAO_VINCULADO_A_VERSAO_PUBLICADA" not in regression:
+              raise SystemExit('ORIGIN_SENTINEL_REGRESSION_NOT_PRESENT')
           router = (root / 'frontend/src/router/index.js').read_text(encoding='utf-8')
           if "if (!to.meta.public && auth.autenticado && !auth.usuario)" not in router:
               raise SystemExit('MISSING_IDENTITY_FAIL_CLOSED')
@@ -130,6 +138,7 @@ jobs:
         run: >-
           npm run test:unit --
           src/components/__tests__/CatalogoAplicacoes.test.js
+          src/components/__tests__/DiagnosticoIntegracoes.test.js
           src/router/catalogoAcesso.spec.js
           src/router/painelProjetosRoute.spec.js
           src/stores/__tests__/auth.test.js
@@ -151,7 +160,9 @@ jobs:
           files = [
               '.sdd/specs/reqsys-aplicacoes-inventario-3149.spec.json',
               'frontend/src/components/__tests__/CatalogoAplicacoes.test.js',
+              'frontend/src/components/__tests__/DiagnosticoIntegracoes.test.js',
               'frontend/src/data/catalogoAplicacoes.js',
+              'frontend/src/data/diagnosticoIntegracoes.mjs',
               'frontend/src/router/index.js',
           ]
           digests = {
@@ -169,7 +180,7 @@ jobs:
               'run_id': int(os.environ['GITHUB_RUN_ID']),
               'run_attempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
               'source_file_sha256': digests,
-              'test_scope': '4 Vitest files plus frontend build and SHA-bound security controls',
+              'test_scope': '5 Vitest files plus frontend build and SHA-bound security controls',
               'independent_human_approval': False,
               'physical_e2e': False,
           }
@@ -189,14 +200,14 @@ jobs:
     env:
       RECEIPT_B64: ${{ needs.validator.outputs.receipt_b64 }}
       RECEIPT_SHA256: ${{ needs.validator.outputs.receipt_sha256 }}
-      EXPECTED_SOURCE_SHA: 457f8ea26a190f2a4321effed79868100a649d07
+      EXPECTED_SOURCE_SHA: 5354358a182c7f595f6a06f4ee5daa2e51fa7cae
       EXPECTED_BASE_SHA: a05e64bbc58a15314b42cfa9314f1d415535b05b
     steps:
       - name: Fresh SHA-pinned checkout for independent readback
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ericson-j-santos/reqsys-v2-enterprise-real
-          ref: 457f8ea26a190f2a4321effed79868100a649d07
+          ref: 5354358a182c7f595f6a06f4ee5daa2e51fa7cae
           path: source-readback
           fetch-depth: 1
           persist-credentials: false
@@ -244,7 +255,9 @@ jobs:
               if path not in {
                   '.sdd/specs/reqsys-aplicacoes-inventario-3149.spec.json',
                   'frontend/src/components/__tests__/CatalogoAplicacoes.test.js',
+              'frontend/src/components/__tests__/DiagnosticoIntegracoes.test.js',
                   'frontend/src/data/catalogoAplicacoes.js',
+              'frontend/src/data/diagnosticoIntegracoes.mjs',
                   'frontend/src/router/index.js',
               }:
                   raise SystemExit('UNEXPECTED_RECEIPT_PATH')
