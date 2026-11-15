@@ -198,13 +198,16 @@ def test_bad_handler_registry_is_rejected_before_any_read():
 
 
 def test_issue62_self_declared_flags_must_not_authorize_execution(monkeypatch, capsys):
-    """Regression: repo variables are claims, not a real Launcher/Gateway receipt."""
+    """A repository variable is not a Session Launcher or Gateway receipt."""
     import json
     from scripts import issue62_continuation_gate as gate
 
     environment = {
-        "EWP_WORKER_POOL_URL": "http://127.0.0.1:8787",
-        "EWP_WORKER_POOL_TOKEN": "fixture-token-only",
+        "GITHUB_ACTIONS": "true",
+        "GITHUB_REPOSITORY": REPO,
+        "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "GITHUB_SHA": BASE,
+        "EWP_CHECKED_OUT_SHA": BASE,
         "EWP_TASK_ID": TASK,
         "EWP_EXPECTED_REPOSITORY": REPO,
         "EWP_EXPECTED_ISSUE": "62",
@@ -212,22 +215,126 @@ def test_issue62_self_declared_flags_must_not_authorize_execution(monkeypatch, c
         "EWP_EXPECTED_BASE_SHA": BASE,
         "EWP_EXPECTED_COST_ZERO_SHA": BASE,
         "EWP_COST_ZERO_CERTIFIED_SHA": BASE,
-        "EWP_CHECKED_OUT_SHA": BASE,
         "EWP_HANDLER_ATTESTED": "1",
         "EWP_GATEWAY_ATTESTED": "1",
         "EWP_HANDLER_ID": "issue-qwen7b-native-v1",
         "EWP_HANDLER_ENTRYPOINT": "scripts/native_live_driver.py",
         "EWP_SESSION_LAUNCH_OK": "1",
         "EWP_STATE_VALIDATED": "true",
+        # A secret in the environment may never authorize, or leak to, a URL.
+        "EWP_WORKER_POOL_URL": "https://attacker.example.invalid",
+        "EWP_WORKER_POOL_TOKEN": "never-expose-this-value",
     }
     for key, value in environment.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr(gate, "api_json", lambda _base, _token, _method, path: (
-        task() if path.endswith(TASK)
-        else {"checkpoint": None}
-    ))
-    outcome = gate.main()
+
+    class Canonical:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def get_task(self, task_id):
+            assert task_id == TASK
+            return task()
+
+        def get_latest_checkpoint(self, task_id):
+            assert task_id == TASK
+            return None
+
+    monkeypatch.setattr(gate, "_connect", lambda: Canonical())
+    assert gate.main() == 2
     result = json.loads(capsys.readouterr().out)
-    assert outcome == 2, "Environment flags are not actual session evidence"
     assert result["result"] == "CONTINUATION_BLOCKED"
-    assert "READY" not in json.dumps(result)
+    assert result["code"] == "native_session_gateway_and_handler_not_attested"
+    assert result["next_action"] == "builder"
+    assert result["executed"] is False
+    assert "never-expose-this-value" not in json.dumps(result)
+
+
+def test_issue62_nonlocal_api_and_credential_env_do_not_select_transport(monkeypatch):
+    """Even an external URL supplied in GitHub variables cannot route a token."""
+    from scripts import issue62_continuation_gate as gate
+
+    monkeypatch.setenv("EWP_WORKER_POOL_URL", "https://attacker.example.invalid")
+    monkeypatch.setenv("EWP_WORKER_POOL_TOKEN", "never-expose-this-value")
+    monkeypatch.delenv("EWP_WORKER_POOL_PORT", raising=False)
+    monkeypatch.delenv("EWP_WORKER_POOL_TOKEN_FILE", raising=False)
+    with pytest.raises(NativeExecutorBlocked, match="worker_pool_port_invalid"):
+        gate._connect()
+    monkeypatch.setenv("EWP_WORKER_POOL_PORT", "8787")
+    with pytest.raises(NativeExecutorBlocked, match="worker_pool_private_token_file_missing"):
+        gate._connect()
+
+
+@pytest.mark.parametrize("changed,value,error", [
+    ("GITHUB_REPOSITORY", "untrusted/repository", "continuation_github_origin_unverified"),
+    ("GITHUB_ACTIONS", "false", "continuation_github_origin_unverified"),
+    ("GITHUB_EVENT_NAME", "push", "continuation_github_origin_unverified"),
+    ("GITHUB_SHA", "f" * 40, "continuation_code_sha_unverified"),
+    ("EWP_EXPECTED_REPOSITORY", "untrusted/repository", "repository_not_allowlisted"),
+    ("EWP_COST_ZERO_CERTIFIED_SHA", "f" * 40, "cost_zero_binding_missing_or_mismatched"),
+])
+def test_issue62_event_source_binding_fails_before_api(monkeypatch, capsys, changed, value, error):
+    """Source/sha/cost binding must block before a credential file is touched."""
+    import json
+    from scripts import issue62_continuation_gate as gate
+
+    env = {
+        "GITHUB_ACTIONS": "true",
+        "GITHUB_REPOSITORY": REPO,
+        "GITHUB_EVENT_NAME": "repository_dispatch",
+        "GITHUB_SHA": BASE,
+        "EWP_CHECKED_OUT_SHA": BASE,
+        "EWP_TASK_ID": TASK,
+        "EWP_EXPECTED_REPOSITORY": REPO,
+        "EWP_EXPECTED_ISSUE": "62",
+        "EWP_EXPECTED_REQUEST_ID": "issue-62",
+        "EWP_EXPECTED_BASE_SHA": BASE,
+        "EWP_EXPECTED_COST_ZERO_SHA": BASE,
+        "EWP_COST_ZERO_CERTIFIED_SHA": BASE,
+    }
+    env[changed] = value
+    for key, val in env.items():
+        monkeypatch.setenv(key, val)
+    monkeypatch.setattr(gate, "_connect", lambda: pytest.fail("API contacted"))
+    assert gate.main() == 2
+    assert json.loads(capsys.readouterr().out)["code"] == error
+
+
+def test_issue62_terminal_readback_is_noop_not_dispatch(monkeypatch, capsys):
+    import json
+    from scripts import issue62_continuation_gate as gate
+
+    env = {
+        "GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": REPO,
+        "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "GITHUB_SHA": BASE, "EWP_CHECKED_OUT_SHA": BASE,
+        "EWP_TASK_ID": TASK, "EWP_EXPECTED_REPOSITORY": REPO,
+        "EWP_EXPECTED_ISSUE": "62", "EWP_EXPECTED_REQUEST_ID": "issue-62",
+        "EWP_EXPECTED_BASE_SHA": BASE, "EWP_EXPECTED_COST_ZERO_SHA": BASE,
+        "EWP_COST_ZERO_CERTIFIED_SHA": BASE,
+    }
+    for key, val in env.items():
+        monkeypatch.setenv(key, val)
+
+    class Completed:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def get_task(self, task_id):
+            return task("completed", generation=2)
+
+        def get_latest_checkpoint(self, task_id):
+            return checkpoint("validator_result", "complete", effect="none",
+                              generation=2)
+
+    monkeypatch.setattr(gate, "_connect", Completed)
+    assert gate.main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result == {"result": "CONTINUATION_NO_EXECUTION",
+                      "state": "done", "task_id": TASK, "executed": False}
