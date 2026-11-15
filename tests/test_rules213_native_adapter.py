@@ -251,7 +251,8 @@ class AdapterTests(unittest.TestCase):
                 "negative_control_passed":True,"idempotency_passed":True})
             commands={"rules213.validate":lambda: {
                       "result":"GOVERNED_COMMAND_VERIFIED","head":PRODUCED},
-                      "rules213.repair":lambda:None,
+                      "rules213.propose":lambda:None,
+                      "rules213.apply":lambda:None,
                       "rules213.stage":lambda:None,
                       "rules213.commit":lambda:None}
             ctx=AdapterContext(root,make_manifest(CHANGED,validator=True),
