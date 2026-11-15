@@ -29,6 +29,16 @@ class ObservedApi:
         return {"task_id": TASK_ID, "base_sha": BASE_SHA,
                 "repository": REPOSITORY, "fencing_required": self.fencing}
 
+    def get_latest_checkpoint(self, task_id):
+        assert task_id == TASK_ID
+        return None
+
+    def record_checkpoint(self, *args, **kwargs):
+        raise AssertionError("NO_CHECKPOINT_WRITE_IN_TEST")
+
+    def block(self, *args, **kwargs):
+        raise AssertionError("NO_BLOCK_WRITE_IN_TEST")
+
     def claim_exact(self, *args, **kwargs):
         self.legacy_claims += 1
         raise AssertionError("LEGACY_CLAIM_MUST_NOT_BE_CALLED_FOR_RULES213")
