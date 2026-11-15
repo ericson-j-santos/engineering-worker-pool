@@ -604,6 +604,11 @@ class NativeOneShotExecutor:
                   and task.get("base_sha") == manifest.base_sha,
                   "task_identity_drift")
             fenced = self._fencing_required(task)
+            # Rules #213 repairs cannot be made durable by a legacy unfenced
+            # claim. Fail BEFORE contacting any claim endpoint or running a
+            # Builder/Validator command; the task flag is not enough on its own.
+            if manifest.adapter_id == "rules213.updater.native.v1":
+                _need(fenced, "rules213_requires_fenced_task")
             if fenced:
                 # This attestation is injected by trusted executor configuration,
                 # never by the task manifest. It asserts that adapter actions are
