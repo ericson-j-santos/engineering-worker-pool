@@ -264,6 +264,26 @@ class AdapterTests(unittest.TestCase):
                 with self.assertRaisesRegex(Rules213Blocked,"validator_unproved"):
                     a.validate(ctx,PRODUCED)
 
+    def test_validator_rejects_extra_git_diff_before_running_any_validator(self):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            write_sources(root, CHANGED)
+            called=[]
+            commands = {key: lambda: called.append(key)
+                        for key in NATIVE_DESCRIPTOR.command_keys}
+            ctx=AdapterContext(root,make_manifest(CHANGED,validator=True),
+                               NATIVE_DESCRIPTOR,commands,"validator")
+            with patch("app.rules213_native_adapter.LocalWorkspace") as git:
+                git.return_value.head.return_value=PRODUCED
+                git.return_value.status.return_value=""
+                git.return_value.changed_paths.return_value=tuple(
+                    sorted(CHANGED)) + ("README.md",)
+                with self.assertRaisesRegex(
+                    Rules213Blocked, "validator_checkout_unverified"
+                ):
+                    adapter().validate(ctx,PRODUCED)
+            self.assertEqual(called,[])
+
     def test_default_rejects_unknown_callable_or_paths(self):
         with self.assertRaisesRegex(Rules213Blocked,"original_invalid"):
             Rules213NativeAdapter(
