@@ -221,8 +221,10 @@ class Rules213NativeAdapter:
     def validate(self, context: AdapterContext, produced_sha: str) -> AdapterResult:
         self._admit(context, role="validator", produced_sha=produced_sha)
         git = LocalWorkspace(context.root)
+        scope = check_generated_scope(self.original, _read_sources(context.root))
         require(git.head() == produced_sha and git.status() == ""
-                and git.changed_paths(BASE_SHA, produced_sha),
+                and git.changed_paths(BASE_SHA, produced_sha)
+                == tuple(scope["changed_paths"]),
                 "rules213_validator_checkout_unverified")
         result = context.invoke("rules213.validate")
         require(type(result) is dict
@@ -241,7 +243,6 @@ class Rules213NativeAdapter:
                 and report.get("negative_control_passed") is True
                 and report.get("idempotency_passed") is True,
                 "rules213_independent_validator_unproved")
-        scope = check_generated_scope(self.original, _read_sources(context.root))
         return AdapterResult(
             produced_sha, tuple(scope["changed_paths"]),
             tuple(context.invoked),
