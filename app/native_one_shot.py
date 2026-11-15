@@ -576,6 +576,11 @@ class NativeOneShotExecutor:
               and descriptor.contract_sha256 == manifest.adapter_contract_sha256,
               "adapter_contract_mismatch")
         _need(role in descriptor.roles, "adapter_role_unsupported")
+        # This legacy Rules213 profile describes an admission contract only.
+        # It was never a runnable repair handler; refuse it before any claim,
+        # local side-effect or receipt acquisition.
+        _need(manifest.adapter_id != "rules213.updater.repair.v1",
+              "rules213_preadmission_not_executable")
 
         lock, receipt_path = self.receipts.acquire(manifest.task_id, role)
         try:
