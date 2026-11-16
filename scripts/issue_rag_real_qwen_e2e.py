@@ -14,7 +14,6 @@ import urllib.request
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from agent_core.pr_context import _file_data
 from app.agent_rag_consumer import NativeQwenResearchPlanner
 from app.issue_draft_pr import HandoffBlocked, admit, REPO, OWNER, PROFILE, SHA, require
 from app.issue_rag_handoff import QUESTION, bind_issue_rag, digest, canonical
@@ -103,6 +102,8 @@ def need(ok: bool, code: str) -> None:
 
 
 def main() -> None:
+    # The hosted continuity workflow validates imports without Agent Core installed.
+    from agent_core.pr_context import _file_data
     need(os.environ.get("GITHUB_ACTIONS") == "true",
          "issue8_rag_ci_environment_required")
     need(os.environ.get("GITHUB_REPOSITORY") == REPO,
