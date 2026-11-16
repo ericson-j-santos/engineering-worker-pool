@@ -121,7 +121,8 @@ def select_continuation(
              "continuation_checkpoint_fence_drift")
 
     effect_state = checkpoint.get("effect_state")
-    _require(effect_state in {"none", "confirmed", "not_applied"},
+    _require(type(effect_state) is str
+             and effect_state in {"none", "confirmed", "not_applied"},
              "continuation_effect_unresolved")
     if effect_state == "none":
         _require(checkpoint.get("effect_id") is None
@@ -137,6 +138,8 @@ def select_continuation(
     transition = (
         task.get("state"), checkpoint.get("stage"), checkpoint.get("next_action"),
     )
+    _require(all(type(value) is str for value in transition),
+             "continuation_transition_not_allowed")
     action = _TRANSITIONS.get(transition)
     _require(action is not None, "continuation_transition_not_allowed")
     if action == "submit_validation":
@@ -151,6 +154,7 @@ def select_continuation(
     else:
         _require(task.get("validator_worker_id") == task["leased_by"]
                  and type(task.get("builder_worker_id")) is str
+                 and bool(SAFE_ID.fullmatch(task["builder_worker_id"]))
                  and task["builder_worker_id"] != task["validator_worker_id"],
                  "continuation_validator_independence_unproved")
         _require(type(task.get("produced_sha")) is str

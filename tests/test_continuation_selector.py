@@ -170,3 +170,35 @@ def test_rejects_validator_that_is_not_independent() -> None:
         ContinuationBlocked, match="continuation_validator_independence_unproved",
     ):
         select_continuation(observed, check, binding())
+
+
+@pytest.mark.parametrize("invalid_effect", [[], {}])
+def test_rejects_malformed_effect_state_without_crashing(invalid_effect: object) -> None:
+    observed = checkpoint()
+    observed["effect_state"] = invalid_effect
+    with pytest.raises(ContinuationBlocked, match="continuation_effect_unresolved"):
+        select_continuation(task(), observed, binding())
+
+
+@pytest.mark.parametrize("field", ["state", "stage", "next_action"])
+def test_rejects_unhashable_transition_value_without_crashing(field: str) -> None:
+    observed_task = task()
+    observed_checkpoint = checkpoint()
+    if field == "state":
+        observed_task["state"] = []
+    else:
+        observed_checkpoint[field] = []
+    with pytest.raises(ContinuationBlocked, match="continuation_transition_not_allowed"):
+        select_continuation(observed_task, observed_checkpoint, binding())
+
+
+@pytest.mark.parametrize("invalid_builder", ["", " ", None])
+def test_rejects_invalid_builder_identity_during_validation(invalid_builder: object) -> None:
+    observed_task = task("validating")
+    observed_task["builder_worker_id"] = invalid_builder
+    observed_checkpoint = checkpoint("validator_result", "complete")
+    observed_checkpoint.update({
+        "effect_id": None, "effect_state": "none", "effect_result_ref": None,
+    })
+    with pytest.raises(ContinuationBlocked, match="continuation_validator_independence_unproved"):
+        select_continuation(observed_task, observed_checkpoint, binding())
