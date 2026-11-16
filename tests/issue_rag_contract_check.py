@@ -540,13 +540,28 @@ def test_real_probe_remains_get_only_and_refusal_fails_closed():
     assert '"raw_source_or_model_text_logged": False' in code
     assert "issue8_real_qwen_evidence_unproved" in code
     assert "source_contains_acceptable_line" in code
-    assert "independent.get_text_file(REPO, DOC, MAIN)" in code
+    assert "independent.get_text_file(REPO, DOC, main_sha)" in code
+    assert 'method="GET"' in code
+    assert "select_owner_authorization(list_issue_comments(token), main_sha)" in code
     assert "draft_pr_created" in code
 
 
-def test_hosted_issue_probe_is_pinned_to_current_authorized_merge_sha():
-    """Prevent a CI probe from silently reusing the premerge owner admission."""
-    from scripts.issue_rag_real_qwen_e2e import MAIN, COMMENT_ID
+def test_hosted_issue_probe_uses_fresh_owner_sha_without_reusing_cas_pin():
+    """Keep historical CAS readback pinned, but bind the live RAG probe to main."""
+    from pathlib import Path
     from scripts.issue8_runtime_cas_readback import BASE, OWNER_COMMENT
-    assert MAIN == BASE == "87a8de64ea5ed2e4aef1a9cde51861edb61ffe5e"
-    assert COMMENT_ID == OWNER_COMMENT == 6430299388
+
+    # Separate historical CAS provenance is deliberately immutable.
+    assert BASE == "87a8de64ea5ed2e4aef1a9cde51861edb61ffe5e"
+    assert OWNER_COMMENT == 6430299388
+
+    # The live Qwen probe must obtain a fresh SHA and a matching OWNER
+    # authorization; it must not silently reuse the old CAS permission.
+    code = (Path(__file__).resolve().parents[1] /
+            "scripts" / "issue_rag_real_qwen_e2e.py").read_text(encoding="utf-8")
+    assert 'reader.get_branch("main")' in code
+    assert 'main_sha = current.get("sha")' in code
+    assert "select_owner_authorization(list_issue_comments(token), main_sha)" in code
+    assert "comment = reader.get_comment(comment_id)" in code
+    assert "base_sha=main_sha" in code
+    assert "MAIN =" not in code and "COMMENT_ID =" not in code
