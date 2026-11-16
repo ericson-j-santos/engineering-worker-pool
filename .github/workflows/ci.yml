@@ -56,6 +56,12 @@ jobs:
       - name: Confirm immutable checkout
         shell: bash
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Classify live issue8 Qwen E2E applicability from exact PR diff
+        id: issue8_scope
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python scripts/issue8_ci_scope.py
       - name: Verify explicitly dispatched post-merge SHA
         if: github.event_name == 'workflow_dispatch' && inputs.expected_merge_sha != ''
         env:
@@ -176,7 +182,7 @@ jobs:
 
       - name: Real issue8 Qwen7B acceptance citation with independent GitHub readback
         id: issue_rag_e2e
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.issue8_scope.outputs.applicable == 'true'
         timeout-minutes: 4
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -226,5 +232,6 @@ jobs:
             echo "Structured-code E2E: $STRUCTURED_E2E"
             echo "Agentic RAG read-only E2E: $RAG_E2E"
             echo "Issue8 RAG single-claim E2E: $ISSUE_RAG_E2E"
+            echo "Issue8 applicability: ${{ steps.issue8_scope.outputs.applicable || 'not-evaluated' }}"
             echo "Evidence: lossless SHA-bound capsules in job logs; no artifact uploads or pip cache"
           } >> "$GITHUB_STEP_SUMMARY"
