@@ -9,21 +9,92 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import urllib.error
+import urllib.request
 from dataclasses import replace
 from datetime import datetime, timezone
 
 from agent_core.pr_context import _file_data
 from app.agent_rag_consumer import NativeQwenResearchPlanner
-from app.issue_draft_pr import HandoffBlocked, admit, REPO
+from app.issue_draft_pr import HandoffBlocked, admit, REPO, OWNER, PROFILE, SHA, require
 from app.issue_rag_handoff import QUESTION, bind_issue_rag, digest, canonical
 from app.issue_rag_research import (
     IssueRAGResearch, official_issue_reader, research_issue,
 )
 
-MAIN = "87a8de64ea5ed2e4aef1a9cde51861edb61ffe5e"
 ISSUE = 8
-COMMENT_ID = 6430299388
 DOC = "docs/ISSUE_QWEN7B_DRAFT_HANDOFF.md"
+MAX_COMMENT_PAGES = 10
+MAX_COMMENT_BYTES = 1024 * 1024
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never forward the read-only GitHub token to a redirected host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def list_issue_comments(token: str | None) -> list[dict]:
+    """Enumerate the fixed issue's complete owner-approval history via GET only."""
+    require(token is None or (type(token) is str and 0 < len(token) <= 2048),
+            "issue8_token_configuration_invalid")
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "worker-pool-issue8-ci/1",
+    }
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    opener = urllib.request.build_opener(_NoRedirect)
+    records: list[dict] = []
+    for number in range(1, MAX_COMMENT_PAGES + 1):
+        url = (f"https://api.github.com/repos/{REPO}/issues/{ISSUE}/comments"
+               f"?per_page=100&page={number}")
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with opener.open(request, timeout=12) as response:
+                require(response.status == 200, "issue8_comment_lookup_unavailable")
+                payload = response.read(MAX_COMMENT_BYTES + 1)
+            require(len(payload) <= MAX_COMMENT_BYTES, "issue8_comment_page_oversized")
+            page = json.loads(payload)
+        except HandoffBlocked:
+            raise
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
+                OSError, ValueError, UnicodeError):
+            raise HandoffBlocked("issue8_comment_lookup_unavailable") from None
+        require(type(page) is list and len(page) <= 100,
+                "issue8_comment_list_invalid")
+        records.extend(page)
+        if len(page) < 100:
+            return records
+    raise HandoffBlocked("issue8_comment_history_truncated")
+
+
+def select_owner_authorization(comments: list[dict], base_sha: str) -> int:
+    """Select only a literal OWNER authorization bound to the current main SHA."""
+    require(type(base_sha) is str and SHA.fullmatch(base_sha) is not None,
+            "issue8_current_main_sha_invalid")
+    require(type(comments) is list, "issue8_comment_list_invalid")
+    expected = f"/local-agent authorize {PROFILE} sha:{base_sha}"
+    issue_url = f"https://api.github.com/repos/{REPO}/issues/{ISSUE}"
+    seen: set[int] = set()
+    approved: list[int] = []
+    for item in comments:
+        require(type(item) is dict, "issue8_comment_list_invalid")
+        comment_id = item.get("id")
+        require(type(comment_id) is int and comment_id > 0
+                and comment_id not in seen, "issue8_comment_list_invalid")
+        seen.add(comment_id)
+        user = item.get("user")
+        if (type(user) is dict and user.get("login") == OWNER
+                and user.get("type") == "User"
+                and item.get("author_association") == "OWNER"
+                and item.get("issue_url") == issue_url
+                and item.get("body") == expected):
+            approved.append(comment_id)
+    require(bool(approved), "issue8_current_owner_authorization_missing")
+    return max(approved)
 
 
 def need(ok: bool, code: str) -> None:
@@ -41,12 +112,19 @@ def main() -> None:
     token = os.environ.get("GITHUB_TOKEN") or None
 
     reader = official_issue_reader(token)
-    now = datetime.now(timezone.utc)
     issue = reader.get_issue(ISSUE)
-    comment = reader.get_comment(COMMENT_ID)
     branch = reader.get_branch("main")
+    current = branch.get("commit") if type(branch) is dict else None
+    main_sha = current.get("sha") if type(current) is dict else None
+    require(type(main_sha) is str and SHA.fullmatch(main_sha) is not None,
+            "issue8_current_main_sha_invalid")
+    comment_id = select_owner_authorization(list_issue_comments(token), main_sha)
+    comment = reader.get_comment(comment_id)
+    # Fresh branch readback after pagination, before spending any model calls.
+    branch = reader.get_branch("main")
+    now = datetime.now(timezone.utc)
     approved = admit(
-        issue, comment, branch, base_sha=MAIN,
+        issue, comment, branch, base_sha=main_sha,
         observed_at=now.isoformat(), now=now,
     )
 
@@ -73,8 +151,8 @@ def main() -> None:
          and observed.get("state") in {"supported", "insufficient_evidence"}
          and observed.get("issue_number") == ISSUE
          and observed.get("request_id") == approved.request_id
-         and observed.get("base_sha") == MAIN
-         and observed.get("head_sha") == MAIN
+         and observed.get("base_sha") == main_sha
+         and observed.get("head_sha") == main_sha
          and type(observed.get("model_calls")) is int
          and 1 <= observed["model_calls"] <= 4
          and observed.get("model_process_verified") is True
@@ -114,10 +192,10 @@ def main() -> None:
              (observed["state"] == "supported")
          and type(expected_source) is dict
          and expected_source.get("path") == DOC
-         and expected_source.get("ref_sha") == MAIN,
+         and expected_source.get("ref_sha") == main_sha,
          "issue8_candidate_trace_unverified")
     text, blob, source_digest, source_bytes = _file_data(
-        independent.get_text_file(REPO, DOC, MAIN), DOC,
+        independent.get_text_file(REPO, DOC, main_sha), DOC,
     )
     need(expected_source.get("blob_sha") == blob
          and expected_source.get("sha256") == source_digest
@@ -134,7 +212,7 @@ def main() -> None:
     # Only enumerated paths, integer line numbers and booleans are emitted.
     print(json.dumps({
         "result": "ISSUE8_RAG_CANDIDATE_LINES_ATTESTED",
-        "worker_sha": MAIN,
+        "worker_sha": main_sha,
         "run_id": run_id,
         "source_path": DOC,
         "source_sha256": source_digest,
@@ -154,7 +232,7 @@ def main() -> None:
          "issue8_real_qwen_evidence_unproved")
 
     def source_reader(path: str, sha: str) -> bytes:
-        need((path, sha) == (DOC, MAIN),
+        need((path, sha) == (DOC, main_sha),
              "issue8_source_identity_invalid")
         value, _, _, _ = _file_data(
             independent.get_text_file(REPO, path, sha), path
@@ -167,14 +245,14 @@ def main() -> None:
     need(cited.source_path == DOC
          and "Builder" in cited.excerpt
          and "42/42" in cited.excerpt
-         and cited.base_sha == MAIN,
+         and cited.base_sha == main_sha,
          "issue8_builder_claim_not_supported")
     # The regression obligation is verified separately by the Validator.
     need("regressões" not in QUESTION.lower()
          and "casos" in QUESTION.lower(),
          "issue8_question_not_single_claim")
     current = independent.get_branch("main")
-    need(current.get("commit", {}).get("sha") == MAIN,
+    need(current.get("commit", {}).get("sha") == main_sha,
          "issue8_main_drift_after_inference")
     need(digest(canonical({
         k: value for k, value in observed.items()
@@ -186,7 +264,7 @@ def main() -> None:
         "result": "ISSUE8_REAL_QWEN_CITATION_VERIFIED",
         "correlation_id": "issue8-rag-ci-" + run_id,
         "issue_number": ISSUE,
-        "worker_sha": MAIN,
+        "worker_sha": main_sha,
         "source_path": DOC,
         "citation_line": cited.line,
         "source_sha256": cited.source_sha256,
