@@ -17,7 +17,7 @@ EXACT = frozenset({
     "app/structured_code_worker.py",
     "docs/ISSUE_QWEN7B_DRAFT_HANDOFF.md",
 })
-PREFIXES = ("app/issue_", "scripts/issue_", "tests/test_issue_", "tests/issue_rag_")
+PREFIXES = ("app/issue_", "scripts/issue_", "tests/test_issue_", "tests/test_issue8_", "tests/issue_rag_")
 
 
 class ScopeBlocked(RuntimeError):
