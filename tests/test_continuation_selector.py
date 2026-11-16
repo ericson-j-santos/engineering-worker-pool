@@ -108,6 +108,25 @@ def test_rejects_non_boolean_fencing_value() -> None:
     with pytest.raises(ContinuationBlocked, match="continuation_active_fence_invalid"):
         select_continuation(observed, checkpoint(), binding())
 
+@pytest.mark.parametrize("invalid_generation", [True, 1.0, "1", None])
+def test_rejects_checkpoint_generation_with_wrong_type(invalid_generation: object) -> None:
+    observed_task = task()
+    observed_task["lease_generation"] = 1
+    observed_checkpoint = checkpoint()
+    observed_checkpoint["lease_generation"] = invalid_generation
+    with pytest.raises(ContinuationBlocked, match="continuation_checkpoint_fence_drift"):
+        select_continuation(observed_task, observed_checkpoint, binding())
+
+
+def test_accepts_valid_integer_checkpoint_generation_one() -> None:
+    observed_task = task()
+    observed_task["lease_generation"] = 1
+    observed_checkpoint = checkpoint()
+    observed_checkpoint["lease_generation"] = 1
+    assert select_continuation(
+        observed_task, observed_checkpoint, binding(),
+    ).lease_generation == 1
+
 
 @pytest.mark.parametrize("field,value", [
     ("idempotency_key", "f" * 64),

@@ -113,6 +113,7 @@ def select_continuation(
              and bool(SAFE_ID.fullmatch(task["leased_by"])),
              "continuation_active_fence_invalid")
     _require(checkpoint.get("task_id") == binding.task_id
+             and type(checkpoint.get("lease_generation")) is int
              and checkpoint.get("lease_generation") == task["lease_generation"]
              and checkpoint.get("attempt_id") == task["attempt_id"]
              and type(checkpoint.get("checkpoint_id")) is str
