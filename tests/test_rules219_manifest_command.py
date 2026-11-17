@@ -383,7 +383,7 @@ class ManifestCommitOrderingTests(unittest.TestCase):
             "result": "GOVERNED_COMMAND_VERIFIED", "head": self.base,
         }
         self.ctx.invoke(SOURCE_STAGE_KEY)
-        with self.assertRaisesRegex(NativeExecutorBlocked, "source_scope_invalid"):
+        with self.assertRaisesRegex(NativeExecutorBlocked, "source_not_cleanly_staged"):
             stage_manifest_then_commit(self.ctx)
         self.assertEqual(self.events, ["source"])
 
