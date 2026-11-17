@@ -11,7 +11,10 @@ from app.native_one_shot import ExecutionBoundary, LocalWorkspace, NativeExecuto
 from app.native_pool_http import LocalWorkerApi
 from app.native_structured_ollama import NativeStructuredOllama
 from app.store import identity, task_id
-from app.issue62_typed_builder import TypedBuilderAction, execute_installed_builder_once
+from app.issue62_typed_builder import (
+    ISSUE62_DESCRIPTOR, TypedBuilderAction, execute_installed_builder_once,
+)
+from app.issue_native_adapter import DESCRIPTOR as REQSYS_ONLY_DESCRIPTOR
 
 REPO = "ericson-j-santos/engineering-worker-pool"
 BASE = "a" * 40
@@ -36,7 +39,10 @@ def installed(monkeypatch, tmp_path):
     )
     api = object.__new__(LocalWorkerApi)
     model = NativeStructuredOllama()
-    adapter = SimpleNamespace(propose=model)
+    adapter = SimpleNamespace(
+        propose=model, descriptor=ISSUE62_DESCRIPTOR,
+        build=lambda context: None, validate=lambda context, produced_sha: None,
+    )
     registry = object.__new__(NativeGatewayCommandRegistry)
     registry.gateway = ModuleType("mock_gateway")
     registry.policy_path = tmp_path / "policy.json"
@@ -106,8 +112,13 @@ def installed(monkeypatch, tmp_path):
     kwargs = dict(
         action=action, api=api, registry=registry, workspace=workspace,
         receipts=receipts, adapter=adapter, artifact_transport=artifact_transport,
-        manifest={"task_id": TASK, "repository": REPO,
-                  "base_sha": BASE, "workspace_sha": BASE},
+        manifest={
+            "schema_version": 1, "task_id": TASK, "repository": REPO,
+            "base_sha": BASE, "workspace_sha": BASE,
+            "adapter_id": ISSUE62_DESCRIPTOR.adapter_id,
+            "adapter_contract_sha256": ISSUE62_DESCRIPTOR.contract_sha256,
+            "before_sha256": {"app/next_action_bridge.py": "e" * 64},
+        },
         worker_id=WORKER, installed_rules_sha=RULES,
         installed_model_digest=DIGEST, cost_preflight=cost,
     )
@@ -254,3 +265,51 @@ def test_tampered_receipt_fails_cas_readback(installed, field, bad):
         mp.setattr(mod, "continue_with_attested_native", altered)
         with pytest.raises(NativeExecutorBlocked, match="typed_builder_cas_readback_unverified"):
             execute_installed_builder_once(**installed.kwargs)
+
+
+@pytest.mark.parametrize("profile", [
+    REQSYS_ONLY_DESCRIPTOR,
+    SimpleNamespace(adapter_id="issue62.next-action.v1"),
+])
+def test_reqsys_or_fake_adapter_rejected_before_cost_or_gateway(installed, profile):
+    installed.kwargs["adapter"].descriptor = profile
+    with pytest.raises(
+        NativeExecutorBlocked, match="typed_builder_adapter_profile_incompatible",
+    ):
+        execute_installed_builder_once(**installed.kwargs)
+    assert installed.state["cost_calls"] == 0
+    assert installed.state["gateway_calls"] == 0
+    assert installed.state["read_calls"] == 0
+    assert installed.state["calls"] == 0
+
+
+@pytest.mark.parametrize("field,wrong", [
+    ("repository", "ericson-j-santos/reqsys-v2-enterprise-real"),
+    ("adapter_id", REQSYS_ONLY_DESCRIPTOR.adapter_id),
+    ("adapter_contract_sha256", "f" * 64),
+    ("base_sha", "8" * 40),
+    ("workspace_sha", "9" * 40),
+    ("before_sha256", {"src/example.py": "e" * 64}),
+])
+def test_foreign_task_manifest_fails_closed_before_any_native_effect(
+    installed, field, wrong,
+):
+    installed.kwargs["manifest"] = {**installed.kwargs["manifest"], field: wrong}
+    with pytest.raises(NativeExecutorBlocked, match="typed_builder_adapter_profile_incompatible"):
+        execute_installed_builder_once(**installed.kwargs)
+    assert installed.state["cost_calls"] == 0
+    assert installed.state["gateway_calls"] == 0
+    assert installed.state["read_calls"] == 0
+    assert installed.state["calls"] == 0
+
+
+def test_manifest_is_not_optional_and_has_exact_version(installed):
+    for manifest in (
+        {k: v for k, v in installed.kwargs["manifest"].items() if k != "schema_version"},
+        {**installed.kwargs["manifest"], "schema_version": 2},
+    ):
+        with pytest.raises(NativeExecutorBlocked):
+            execute_installed_builder_once(**{**installed.kwargs, "manifest": manifest})
+    assert installed.state["cost_calls"] == 0
+    assert installed.state["gateway_calls"] == 0
+    assert installed.state["calls"] == 0
