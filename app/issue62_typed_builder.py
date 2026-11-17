@@ -19,7 +19,6 @@ from app.native_one_shot import (
     TaskManifest,
 )
 from app.native_pool_http import LocalWorkerApi
-from app.native_structured_ollama import NativeStructuredOllama
 from app.next_action_bridge import continue_with_attested_native
 from app.store import identity, task_id as canonical_task_id
 from app.structured_ollama import MODEL
@@ -32,7 +31,7 @@ HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 ISSUE62_DESCRIPTOR = AdapterDescriptor(
     adapter_id="issue62.next-action.v1",
     allowed_paths=("app/next_action_bridge.py",),
-    builder_commands=("issue62.build",),
+    builder_commands=("issue62.build", "issue62.commit", "issue62.stage"),
     validator_commands=("issue62.validate",),
 )
 
@@ -114,8 +113,9 @@ def execute_installed_builder_once(
          and callable(getattr(adapter, "build", None))
          and callable(getattr(adapter, "validate", None)),
          "typed_builder_adapter_profile_incompatible")
-    model = getattr(adapter, "propose", None)
-    need(type(model) is NativeStructuredOllama
+    from app.issue62_native_adapter import Issue62NativeAdapter
+    need(type(adapter) is Issue62NativeAdapter
+         and adapter.trusted_model_digest == installed_model_digest
          and type(installed_rules_sha) is str
          and installed_rules_sha == action.rules_sha
          and type(installed_model_digest) is str
@@ -128,8 +128,7 @@ def execute_installed_builder_once(
          and manifest.get("base_sha") == action.base_sha
          and manifest.get("workspace_sha") == action.base_sha,
          "typed_builder_binding_mismatch")
-    need(model.process_verified is False and model.model_digest == ""
-         and getattr(model, "last_model_reply_sha256", "") in ("", None),
+    need(adapter._verified_model_receipt is None,
          "typed_builder_model_not_fresh")
     # No event boolean can attest budget. The installed cost authority must
     # independently fail closed (raise) on unknown cost or any overage.
@@ -167,13 +166,13 @@ def execute_installed_builder_once(
         return {"result": "BUILDER_NOT_INVOKED", "task_id": action.task_id,
                 "state": outcome["state"], "executed": False}
 
+    model_receipt = adapter.validated_model_receipt()
     need(outcome.get("state") == "validator"
          and outcome.get("executed_role") == "builder"
-         and model.process_verified is True
-         and type(model.model_digest) is str
-         and model.model_digest == installed_model_digest
-         and type(getattr(model, "last_model_reply_sha256", None)) is str
-         and HEX64.fullmatch(model.last_model_reply_sha256) is not None,
+         and model_receipt.get("model") == MODEL
+         and model_receipt.get("model_digest") == installed_model_digest
+         and type(model_receipt.get("model_reply_sha256")) is str
+         and HEX64.fullmatch(model_receipt["model_reply_sha256"]) is not None,
          "typed_builder_model_proof_missing")
     lock, receipt_path = receipts.paths(action.task_id, "builder")
     need(not receipt_path.is_symlink() and receipt_path.is_file()
@@ -198,6 +197,7 @@ def execute_installed_builder_once(
          and receipt.get("fencing_required") is True
          and type(receipt.get("attempt_id")) is str
          and receipt["attempt_id"] == checkpoint.get("attempt_id")
+         and receipt["attempt_id"] == model_receipt.get("run_id")
          and receipt.get("lease_generation") == checkpoint.get("lease_generation")
          and receipt.get("artifact_ref") == checkpoint.get("artifact_ref")
          and receipt.get("artifact_sha256") == checkpoint.get("artifact_sha256")
@@ -217,8 +217,8 @@ def execute_installed_builder_once(
         "result": "TYPED_NATIVE_BUILDER_CONFIRMED",
         "task_id": action.task_id,
         "native_run_id": receipt["attempt_id"],
-        "model": MODEL, "model_digest": model.model_digest,
-        "model_reply_sha256": model.last_model_reply_sha256,
+        "model": MODEL, "model_digest": model_receipt["model_digest"],
+        "model_reply_sha256": model_receipt["model_reply_sha256"],
         "produced_sha": receipt["produced_sha"],
         "artifact_ref": receipt["artifact_ref"],
         "artifact_sha256": receipt["artifact_sha256"],
