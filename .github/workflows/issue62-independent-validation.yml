@@ -1,0 +1,80 @@
+name: Issue 62 independent SHA-bound validation
+run-name: Issue 62 validator · ${{ github.sha }}
+
+on:
+  push:
+    branches: [feat/issue62-next-action-continuation-20261115]
+    paths:
+      - app/next_action_bridge.py
+      - scripts/issue62_continuation_gate.py
+      - tests/test_next_action_bridge.py
+      - tests/test_issue62_workflow_contract.py
+      - .github/workflows/issue62-governed-continuation.yml
+      - .github/workflows/issue62-independent-validation.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue62-independent-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-source-and-regressions:
+    if: >-
+      github.repository == 'ericson-j-santos/engineering-worker-pool' &&
+      github.ref == 'refs/heads/feat/issue62-next-action-continuation-20261115'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      EXPECTED_SHA: ${{ github.sha }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout immutable candidate without stored credentials
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify immutable source and clean checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+      - name: Use pinned Python runtime
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install existing pinned dependencies
+        run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt PyYAML==6.0.2
+      - name: Verify syntax, issue binding, fencing, Gateway and CAS regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          for file in (
+              "app/next_action_bridge.py",
+              "scripts/issue62_continuation_gate.py",
+              "tests/test_next_action_bridge.py",
+              "tests/test_issue62_workflow_contract.py",
+          ):
+              ast.parse(Path(file).read_text(encoding="utf-8"), filename=file)
+          print("ISSUE62_SYNTAX_OK 4")
+          PY
+          python -B -m pytest -q -p no:cacheprovider \
+            tests/test_next_action_bridge.py \
+            tests/test_issue62_workflow_contract.py \
+            tests/test_native_one_shot.py \
+            tests/test_native_gateway_commands.py \
+            tests/test_native_pool_http.py \
+            tests/test_fenced_continuity.py
+      - name: Verify no changes or new files from validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "ISSUE62_SHA_BOUND_VALIDATION_OK"
