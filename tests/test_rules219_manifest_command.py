@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 import hashlib
+import os
+import shutil
+import sys
 import json
 from pathlib import Path
 import subprocess
@@ -11,11 +14,16 @@ import unittest
 
 from app.native_one_shot import (
     AdapterContext, AdapterDescriptor, NativeExecutorBlocked, TaskManifest,
+    LocalWorkspace, ReceiptStore,
 )
 from app.rules219_manifest_command import (
     ADAPTER_ID, COMMAND_KEY, COMMIT_KEY, SOURCE_STAGE_KEY,
     REPOSITORY, RULES_HEAD, WRAPPER_PATH, WRAPPER_SHA256,
+    SOURCE_PATH, MODEL_NAME, MODEL_PROPOSE_KEY, MODEL_APPLY_KEY,
+    VALIDATOR_KEY, RULES219_NATIVE_DESCRIPTOR, 
     make_stage_spec, stage_manifest_then_commit,
+    fixed_rules219_native_specs, Rules219NativeBuilderAdapter,
+    bind_rules219_native_executor,
 )
 
 
@@ -400,6 +408,264 @@ class ManifestCommitOrderingTests(unittest.TestCase):
         with self.assertRaisesRegex(NativeExecutorBlocked, "stage_identity_invalid"):
             stage_manifest_then_commit(self.ctx)
         self.assertEqual(self.events, ["source"])
+
+
+
+
+class Rules219NativeCatalogTests(unittest.TestCase):
+    def test_exact_catalog_contains_only_fixed_reviewed_commands(self):
+        specs = fixed_rules219_native_specs(
+            proposer_sha256="1" * 64, applier_sha256="2" * 64,
+            validator_sha256="3" * 64,
+        )
+        self.assertEqual(set(specs), set(RULES219_NATIVE_DESCRIPTOR.command_keys))
+        for spec in specs.values():
+            spec.validate(RULES219_NATIVE_DESCRIPTOR)
+        self.assertEqual(specs[MODEL_PROPOSE_KEY].argv,
+                         ("python", "scripts/rules219_model_propose.py"))
+        self.assertEqual(specs[MODEL_APPLY_KEY].argv,
+                         ("python", "scripts/rules219_model_apply.py"))
+        self.assertEqual(specs[VALIDATOR_KEY].role, "validator")
+        self.assertEqual(specs[COMMIT_KEY].argv[:3], ("git", "commit", "-m"))
+        self.assertEqual(specs[SOURCE_STAGE_KEY].argv,
+                         ("git", "add", "--", SOURCE_PATH))
+        self.assertEqual(specs[COMMAND_KEY].script_sha256, WRAPPER_SHA256)
+
+    def test_model_digest_must_be_from_trusted_installation(self):
+        with self.assertRaisesRegex(NativeExecutorBlocked, "installed_digests_required"):
+            fixed_rules219_native_specs(proposer_sha256="1" * 64,
+                                        applier_sha256="invalid",
+                                        validator_sha256="3" * 64)
+
+    def test_native_adapter_requires_valid_model_digest(self):
+        with self.assertRaisesRegex(NativeExecutorBlocked, "model_digest_not_pinned"):
+            Rules219NativeBuilderAdapter(
+                expected_model_digest="not-attested",
+                model_receipt_reader=lambda: {}, validator_receipt_reader=lambda: {},
+            )
+
+    def test_native_executor_rejects_fake_registry_before_any_host_call(self):
+        adapter = Rules219NativeBuilderAdapter(
+            expected_model_digest="a" * 64,
+            model_receipt_reader=lambda: {}, validator_receipt_reader=lambda: {},
+        )
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaisesRegex(
+                NativeExecutorBlocked, "executor_dependencies_unattested"
+            ):
+                bind_rules219_native_executor(
+                    registry=object(), adapter=adapter, api=object(),
+                    workspace=LocalWorkspace(Path(d)), receipts=ReceiptStore(Path(d) / "receipts"),
+                    artifact_transport=None, role="builder",
+                )
+
+
+@unittest.skipUnless(
+    os.environ.get("RULES219_FIXTURE_ROOT"),
+    "Pinned Rules #219 checkout is required for isolated real-Git integration",
+)
+class Rules219NativeBuilderIntegrationTests(unittest.TestCase):
+    """Real Rules branch files + Git + manifesto; fake model/Gateway receipts.
+
+    MUST NOT be counted as a real Qwen model or physical Gateway.
+    """
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        trusted = Path(os.environ["RULES219_FIXTURE_ROOT"]).resolve()
+        self.root = Path(self.temp.name) / "rules"
+        shutil.copytree(trusted, self.root, symlinks=True)
+        self.root = self.root.resolve()
+        self.git("remote", "remove", "origin")
+        self.base = self.git("rev-parse", "HEAD").decode().strip()
+        self.assertEqual(self.base, RULES_HEAD)
+        self.before = (self.root / SOURCE_PATH).read_bytes()
+        self.after = self.before + b"\n# Synthetic integration-only regression fixture\n"
+        self.expected_digest = "a" * 64
+        self.task = "cwp-" + "a" * 24
+        self.desc = RULES219_NATIVE_DESCRIPTOR
+        self.events = []
+        self.reader_override = {}
+        self.invalid_apply = None
+        self.invalid_propose = None
+        self.repo_manifest = TaskManifest.parse({
+            "schema_version": 1, "task_id": self.task,
+            "repository": REPOSITORY, "base_sha": RULES_HEAD,
+            "workspace_sha": RULES_HEAD, "adapter_id": self.desc.adapter_id,
+            "adapter_contract_sha256": self.desc.contract_sha256,
+            "before_sha256": {
+                relative: hashlib.sha256((self.root / relative).read_bytes()).hexdigest()
+                for relative in self.desc.allowed_paths
+            },
+        })
+        self.adapter = Rules219NativeBuilderAdapter(
+            expected_model_digest=self.expected_digest,
+            model_receipt_reader=self.model_receipt,
+            validator_receipt_reader=self.validator_receipt,
+        )
+        self.context = AdapterContext(
+            self.root, self.repo_manifest, self.desc,
+            self.callbacks(self.root), "builder",
+        )
+
+    def git(self, *args, root=None):
+        return subprocess.run(
+            ["git", *args], cwd=root or self.root,
+            check=True, capture_output=True,
+        ).stdout
+
+    def callbacks(self, worktree):
+        source = worktree / SOURCE_PATH
+        def proposed():
+            self.events.append("propose")
+            if self.invalid_propose:
+                return self.invalid_propose()
+            return {"result": "GOVERNED_COMMAND_VERIFIED", "head": RULES_HEAD}
+        def applied():
+            self.events.append("apply")
+            if self.invalid_apply:
+                return self.invalid_apply()
+            source.write_bytes(self.after)
+            return {"result": "GOVERNED_COMMAND_VERIFIED", "head": RULES_HEAD}
+        def staged():
+            self.events.append("source-stage")
+            self.git("add", "--", SOURCE_PATH, root=worktree)
+            return {"result": "GOVERNED_COMMAND_VERIFIED", "head": RULES_HEAD}
+        def manifest():
+            self.events.append("manifest")
+            proc = subprocess.run(
+                [sys.executable, "-B", "scripts/builder_manifest_stage.py"],
+                cwd=worktree, capture_output=True, text=True,
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            )
+            if proc.returncode:
+                raise AssertionError("Fixture manifest generator failed: " + proc.stderr)
+            return {"result": "GOVERNED_COMMAND_VERIFIED", "head": RULES_HEAD}
+        def committed():
+            self.events.append("commit")
+            self.git("-c", "user.name=IsolatedTest",
+                     "-c", "user.email=unit@example.invalid",
+                     "commit", "-qm", "test(rules219): model-generated regression",
+                     root=worktree)
+            return {"result": "GOVERNED_COMMAND_VERIFIED",
+                    "head": self.git("rev-parse", "HEAD", root=worktree).decode().strip()}
+        def validated():
+            self.events.append("validate")
+            return {"result": "GOVERNED_COMMAND_VERIFIED",
+                    "head": self.git("rev-parse", "HEAD", root=worktree).decode().strip()}
+        return {
+            MODEL_PROPOSE_KEY: proposed,
+            MODEL_APPLY_KEY: applied,
+            SOURCE_STAGE_KEY: staged,
+            COMMAND_KEY: manifest,
+            COMMIT_KEY: committed,
+            VALIDATOR_KEY: validated,
+        }
+
+    def model_receipt(self):
+        return {
+            "task_id": self.task, "source_sha": RULES_HEAD,
+            "source_path": SOURCE_PATH, "model": MODEL_NAME,
+            "digest": self.expected_digest, "process_verified": True,
+            "origin": "http://127.0.0.1:11434", "model_calls": 1,
+            "before_sha256": hashlib.sha256(self.before).hexdigest(),
+            "after_sha256": hashlib.sha256(self.after).hexdigest(),
+            **self.reader_override,
+        }
+
+    def validator_receipt(self):
+        return {
+            "result": "INDEPENDENT_TESTS_PASSED",
+            "produced_sha": self.produced,
+            "source_sha": RULES_HEAD, "validator_role": "validator",
+            "tests_passed": 1, "tests_failed": 0,
+            "negative_control_passed": True,
+            "idempotency_passed": True,
+            **self.reader_override,
+        }
+
+    def test_native_builder_calls_real_manifest_wrapper_and_commits(self):
+        result = self.adapter.build(self.context)
+        self.produced = result.produced_sha
+        self.assertEqual(
+            self.events, ["propose", "apply", "source-stage", "manifest", "commit"]
+        )
+        self.assertEqual(result.changed_paths, ("MANIFEST.json", SOURCE_PATH))
+        self.assertNotEqual(result.produced_sha, RULES_HEAD)
+        self.assertEqual(self.git("status", "--porcelain"), b"")
+        self.assertEqual(self.git("show", "HEAD:" + SOURCE_PATH), self.after)
+        self.assertEqual(
+            self.git("show", "HEAD:MANIFEST.json"),
+            (self.root / "MANIFEST.json").read_bytes(),
+        )
+        self.assertEqual(len(result.evidence_sha256), 64)
+        # Independent *checkout*, but validator receipt is synthetic here.
+        validator_root = Path(self.temp.name) / "validator"
+        shutil.copytree(self.root, validator_root, symlinks=True)
+        validator_root = validator_root.resolve()
+        validator_manifest = TaskManifest.parse({
+            **self.repo_manifest.__dict__,
+            "workspace_sha": self.produced,
+        })
+        validator_context = AdapterContext(
+            validator_root, validator_manifest, self.desc,
+            self.callbacks(validator_root), "validator",
+        )
+        verified = self.adapter.validate(validator_context, self.produced)
+        self.assertEqual(verified.produced_sha, self.produced)
+        self.assertEqual(verified.changed_paths, ("MANIFEST.json", SOURCE_PATH))
+        self.assertEqual(verified.invoked_commands, (VALIDATOR_KEY,))
+
+    def test_bad_model_receipt_blocks_before_apply(self):
+        self.reader_override = {"model_calls": 0}
+        with self.assertRaisesRegex(NativeExecutorBlocked, "provenance_unverified"):
+            self.adapter.build(self.context)
+        self.assertEqual(self.events, ["propose"])
+        self.assertEqual(self.git("status", "--porcelain"), b"")
+
+    def test_bad_digest_blocks_before_apply(self):
+        self.reader_override = {"digest": "b" * 64}
+        with self.assertRaisesRegex(NativeExecutorBlocked, "provenance_unverified"):
+            self.adapter.build(self.context)
+        self.assertEqual(self.events, ["propose"])
+
+    def test_proposal_must_not_modify_source(self):
+        def changed():
+            (self.root / SOURCE_PATH).write_bytes(self.after)
+            return {"result": "GOVERNED_COMMAND_VERIFIED", "head": RULES_HEAD}
+        self.invalid_propose = changed
+        with self.assertRaisesRegex(NativeExecutorBlocked, "proposal_unverified"):
+            self.adapter.build(self.context)
+        self.assertEqual(self.events, ["propose"])
+
+    def test_apply_cannot_edit_second_file(self):
+        def malicious():
+            (self.root / SOURCE_PATH).write_bytes(self.after)
+            (self.root / "README.md").write_text("changed", encoding="utf-8")
+            return {"result": "GOVERNED_COMMAND_VERIFIED", "head": RULES_HEAD}
+        self.invalid_apply = malicious
+        with self.assertRaisesRegex(NativeExecutorBlocked, "patch_unverified"):
+            self.adapter.build(self.context)
+        self.assertEqual(self.events, ["propose", "apply"])
+
+    def test_second_builder_call_never_creates_duplicate_commit(self):
+        result = self.adapter.build(self.context)
+        before = self.git("rev-parse", "HEAD")
+        with self.assertRaisesRegex(NativeExecutorBlocked, "native_builder_base_drift"):
+            self.adapter.build(self.context)
+        self.assertEqual(self.git("rev-parse", "HEAD"), before)
+        self.assertEqual(self.events.count("commit"), 1)
+
+    def test_validator_fake_receipt_not_accepted(self):
+        self.produced = self.adapter.build(self.context).produced_sha
+        self.reader_override = {"negative_control_passed": False}
+        vctx = AdapterContext(
+            self.root, TaskManifest.parse({
+                **self.repo_manifest.__dict__, "workspace_sha": self.produced
+            }), self.desc, self.callbacks(self.root), "validator",
+        )
+        with self.assertRaisesRegex(NativeExecutorBlocked, "independent_validator_unverified"):
+            self.adapter.validate(vctx, self.produced)
 
 
 

@@ -6,11 +6,14 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from collections.abc import Callable, Mapping
+from typing import Any
 
-from app.native_gateway_commands import GovernedCommand
+from app.native_gateway_commands import GovernedCommand, NativeGatewayCommandRegistry
 from app.native_one_shot import (
     AdapterContext, AdapterDescriptor, AdapterResult, NativeExecutorBlocked,
-    TaskManifest, SHA40,
+    TaskManifest, SHA40, LocalWorkspace, NativeOneShotExecutor,
+    ReceiptStore, DurableArtifactTransport,
 )
 
 REPOSITORY = "ericson-j-santos/chatgpt-operational-rules"
@@ -206,4 +209,269 @@ def stage_manifest_then_commit(context: AdapterContext) -> AdapterResult:
         changed_paths=tuple(sorted(changes)),
         invoked_commands=tuple(context.invoked),
         evidence_sha256=hashlib.sha256(local_evidence).hexdigest(),
+    )
+
+
+# Native profile for ONE independently admitted source/test increment. The
+# three supporting scripts are NOT currently installed in Rules #219. An
+# installed Runtime Platform must pin their actual bytes and authorize Risk2
+# before any call. This module cannot turn a synthetic receipt into a real
+# model invocation.
+MODEL_PROPOSE_KEY = "rules219.model.propose"
+MODEL_APPLY_KEY = "rules219.model.apply"
+VALIDATOR_KEY = "rules219.validate"
+SOURCE_PATH = "tests/test_generate_manifest_builder.py"
+MODEL_NAME = "qwen2.5-coder:7b"
+PROPOSE_SCRIPT = "scripts/rules219_model_propose.py"
+APPLY_SCRIPT = "scripts/rules219_model_apply.py"
+VALIDATOR_SCRIPT = "scripts/rules219_validator.py"
+
+RULES219_NATIVE_DESCRIPTOR = AdapterDescriptor(
+    adapter_id=ADAPTER_ID,
+    allowed_paths=("MANIFEST.json", WRAPPER_PATH, SOURCE_PATH),
+    builder_commands=(
+        COMMIT_KEY, COMMAND_KEY, MODEL_APPLY_KEY, MODEL_PROPOSE_KEY,
+        SOURCE_STAGE_KEY,
+    ),
+    validator_commands=(VALIDATOR_KEY,),
+)
+
+
+def fixed_rules219_native_specs(
+    *, proposer_sha256: str, applier_sha256: str, validator_sha256: str,
+) -> dict[str, GovernedCommand]:
+    """Fixed command catalog; digests originate at a trusted installation.
+
+    Refuse unset/untrusted digest shape; every script is checked again by the
+    already-existing Gateway registry at invocation. No issue/task argv.
+    """
+    digests = (proposer_sha256, applier_sha256, validator_sha256)
+    _require(all(type(d) is str and len(d) == 64 and
+                 all(c in "0123456789abcdef" for c in d) for d in digests),
+             "rules219_installed_digests_required")
+    specs = {
+        MODEL_PROPOSE_KEY: GovernedCommand(
+            MODEL_PROPOSE_KEY, "builder", ("python", PROPOSE_SCRIPT), 2,
+            timeout_seconds=120, script_sha256=proposer_sha256,
+        ),
+        MODEL_APPLY_KEY: GovernedCommand(
+            MODEL_APPLY_KEY, "builder", ("python", APPLY_SCRIPT), 2,
+            timeout_seconds=30, script_sha256=applier_sha256,
+        ),
+        SOURCE_STAGE_KEY: GovernedCommand(
+            SOURCE_STAGE_KEY, "builder", ("git", "add", "--", SOURCE_PATH), 2,
+            allow_dirty=True,
+        ),
+        COMMAND_KEY: make_stage_spec(
+            repository=REPOSITORY, rules_head=RULES_HEAD, role="builder",
+            descriptor=RULES219_NATIVE_DESCRIPTOR,
+        ),
+        COMMIT_KEY: GovernedCommand(
+            COMMIT_KEY, "builder",
+            ("git", "commit", "-m", "test(rules219): model-generated regression"),
+            2, allow_dirty=True, allow_head_change=True,
+        ),
+        VALIDATOR_KEY: GovernedCommand(
+            VALIDATOR_KEY, "validator", ("python", VALIDATOR_SCRIPT), 1,
+            timeout_seconds=120, script_sha256=validator_sha256,
+        ),
+    }
+    _require(set(specs) == set(RULES219_NATIVE_DESCRIPTOR.command_keys),
+             "rules219_command_catalog_incomplete")
+    for spec in specs.values():
+        spec.validate(RULES219_NATIVE_DESCRIPTOR)
+    return specs
+
+
+def _command_ok(result: Any, expected_head: str) -> bool:
+    return type(result) is dict and result.get("result") == "GOVERNED_COMMAND_VERIFIED" and result.get("head") == expected_head
+
+
+def _sha_file(root: Path, relative: str) -> str:
+    target = root / relative
+    _require(target.is_file() and not target.is_symlink()
+             and target.resolve().is_relative_to(root)
+             and target.stat().st_size < 300000,
+             "rules219_source_file_untrusted")
+    return hashlib.sha256(target.read_bytes()).hexdigest()
+
+
+class Rules219NativeBuilderAdapter:
+    """NativeOneShot-owned Builder/Validator; no alternate queue or runner.
+
+    The real model/validator receipt readers MUST be installed trusted readers.
+    They are invoked only after verified Gateway commands, not from a
+    synthetic issue comment or the generated code itself.
+    """
+    descriptor = RULES219_NATIVE_DESCRIPTOR
+
+    def __init__(
+        self, *, expected_model_digest: str,
+        model_receipt_reader: Callable[[], Mapping[str, Any]],
+        validator_receipt_reader: Callable[[], Mapping[str, Any]],
+    ) -> None:
+        _require(type(expected_model_digest) is str
+                 and len(expected_model_digest) == 64
+                 and all(c in "0123456789abcdef"
+                         for c in expected_model_digest),
+                 "rules219_model_digest_not_pinned")
+        _require(callable(model_receipt_reader)
+                 and callable(validator_receipt_reader),
+                 "rules219_receipt_reader_required")
+        self.expected_model_digest = expected_model_digest
+        self.model_receipt_reader = model_receipt_reader
+        self.validator_receipt_reader = validator_receipt_reader
+
+    @staticmethod
+    def _identity(ctx: AdapterContext, role: str) -> TaskManifest:
+        _require(type(ctx) is AdapterContext
+                 and type(ctx.manifest) is TaskManifest
+                 and ctx.manifest.repository == REPOSITORY
+                 and ctx.manifest.base_sha == RULES_HEAD
+                 and ctx.manifest.adapter_id == ADAPTER_ID
+                 and ctx.manifest.adapter_contract_sha256
+                 == RULES219_NATIVE_DESCRIPTOR.contract_sha256
+                 and ctx.descriptor == RULES219_NATIVE_DESCRIPTOR
+                 and ctx._allowed == ctx.descriptor.commands_for(role),
+                 "rules219_native_identity_not_attested")
+        root = Path(ctx.root)
+        _require(root.is_dir() and not root.is_symlink()
+                 and root.resolve() == root
+                 and _read_git(root, "remote") == b"",
+                 "rules219_native_workspace_invalid")
+        return ctx.manifest
+
+    def build(self, ctx: AdapterContext) -> AdapterResult:
+        manifest = self._identity(ctx, "builder")
+        _require(manifest.workspace_sha == RULES_HEAD
+                 and _read_git(Path(ctx.root), "rev-parse", "HEAD").decode().strip()
+                 == RULES_HEAD,
+                 "rules219_native_builder_base_drift")
+        root = Path(ctx.root)
+        source_before = _sha_file(root, SOURCE_PATH)
+        _require(_read_git(root, "status", "--porcelain",
+                           "--untracked-files=all") == b"",
+                 "rules219_native_builder_workspace_dirty")
+        proposed = ctx.invoke(MODEL_PROPOSE_KEY)
+        _require(_command_ok(proposed, RULES_HEAD)
+                 and _sha_file(root, SOURCE_PATH) == source_before
+                 and _read_git(root, "status", "--porcelain",
+                               "--untracked-files=all") == b"",
+                 "rules219_model_proposal_unverified")
+        receipt = self.model_receipt_reader()
+        _require(type(receipt) is dict
+                 and receipt.get("task_id") == manifest.task_id
+                 and receipt.get("source_sha") == RULES_HEAD
+                 and receipt.get("source_path") == SOURCE_PATH
+                 and receipt.get("model") == MODEL_NAME
+                 and receipt.get("digest") == self.expected_model_digest
+                 and receipt.get("process_verified") is True
+                 and receipt.get("origin") == "http://127.0.0.1:11434"
+                 and type(receipt.get("model_calls")) is int
+                 and 1 <= receipt["model_calls"] <= 2
+                 and type(receipt.get("before_sha256")) is str
+                 and receipt["before_sha256"] == source_before
+                 and type(receipt.get("after_sha256")) is str
+                 and len(receipt["after_sha256"]) == 64
+                 and all(c in "0123456789abcdef"
+                         for c in receipt["after_sha256"])
+                 and receipt["after_sha256"] != source_before,
+                 "rules219_model_provenance_unverified")
+        applied = ctx.invoke(MODEL_APPLY_KEY)
+        _require(_command_ok(applied, RULES_HEAD)
+                 and _sha_file(root, SOURCE_PATH)
+                 == receipt["after_sha256"]
+                 and _read_git(root, "diff", "--cached", "--name-only",
+                               "-z") == b""
+                 and _names(_read_git(root, "diff", "--name-only", "-z"))
+                 == {SOURCE_PATH}
+                 and _read_git(root, "ls-files", "--others",
+                               "--exclude-standard", "-z") == b"",
+                 "rules219_model_patch_unverified")
+        staged = ctx.invoke(SOURCE_STAGE_KEY)
+        _require(_command_ok(staged, RULES_HEAD),
+                 "rules219_source_stage_gateway_unverified")
+        result = stage_manifest_then_commit(ctx)
+        _require(result.changed_paths == ("MANIFEST.json", SOURCE_PATH)
+                 and tuple(ctx.invoked) == (
+                     MODEL_PROPOSE_KEY, MODEL_APPLY_KEY, SOURCE_STAGE_KEY,
+                     COMMAND_KEY, COMMIT_KEY,
+                 ), "rules219_native_builder_result_invalid")
+        return result
+
+    def validate(self, ctx: AdapterContext, produced_sha: str) -> AdapterResult:
+        manifest = self._identity(ctx, "validator")
+        _require(type(produced_sha) is str and SHA40.fullmatch(produced_sha)
+                 and produced_sha != RULES_HEAD
+                 and manifest.workspace_sha == produced_sha
+                 and LocalWorkspace(ctx.root).head() == produced_sha
+                 and LocalWorkspace(ctx.root).status() == "",
+                 "rules219_native_validator_checkout_invalid")
+        outcome = ctx.invoke(VALIDATOR_KEY)
+        _require(_command_ok(outcome, produced_sha),
+                 "rules219_validator_command_unverified")
+        report = self.validator_receipt_reader()
+        _require(type(report) is dict
+                 and report.get("result") == "INDEPENDENT_TESTS_PASSED"
+                 and report.get("produced_sha") == produced_sha
+                 and report.get("source_sha") == RULES_HEAD
+                 and report.get("validator_role") == "validator"
+                 and type(report.get("tests_passed")) is int
+                 and report["tests_passed"] > 0
+                 and report.get("tests_failed") == 0
+                 and report.get("negative_control_passed") is True
+                 and report.get("idempotency_passed") is True,
+                 "rules219_independent_validator_unverified")
+        changes = LocalWorkspace(ctx.root).changed_paths(RULES_HEAD, produced_sha)
+        _require(changes == ("MANIFEST.json", SOURCE_PATH),
+                 "rules219_native_validator_scope_drift")
+        evidence = json.dumps({
+            "produced_sha": produced_sha, "report": report,
+        }, sort_keys=True, separators=(",", ":")).encode()
+        return AdapterResult(
+            produced_sha, changes, tuple(ctx.invoked),
+            hashlib.sha256(evidence).hexdigest(),
+        )
+
+
+def bind_rules219_native_executor(
+    *, registry: NativeGatewayCommandRegistry,
+    adapter: Rules219NativeBuilderAdapter,
+    api: Any, workspace: LocalWorkspace, receipts: ReceiptStore,
+    artifact_transport: DurableArtifactTransport,
+    role: str,
+) -> NativeOneShotExecutor:
+    """Compose the EXISTING fenced executor, not an independent dispatcher.
+
+    Caller must prove installed Gateway/session, worker identity, durable CAS,
+    source content, cost and host policy. This function does NOT call run().
+    """
+    _require(type(registry) is NativeGatewayCommandRegistry
+             and type(adapter) is Rules219NativeBuilderAdapter
+             and type(workspace) is LocalWorkspace
+             and type(receipts) is ReceiptStore
+             and role in ("builder", "validator")
+             and artifact_transport is not None
+             and all(callable(getattr(artifact_transport, key, None))
+                     for key in ("preflight", "publish", "verify",
+                                 "materialize")),
+             "rules219_executor_dependencies_unattested")
+    registry.boundary.validate()
+    _require(registry.boundary.expected_head
+             == (RULES_HEAD if role == "builder"
+                 else workspace.head())
+             and registry.workspace.resolve() == workspace.root
+             and set(registry.specs)
+             == set(RULES219_NATIVE_DESCRIPTOR.command_keys)
+             and all(registry.specs[key].validate(
+                 RULES219_NATIVE_DESCRIPTOR) is None
+                 for key in registry.specs),
+             "rules219_native_registry_identity_invalid")
+    callbacks = registry.for_role(RULES219_NATIVE_DESCRIPTOR, role)
+    return NativeOneShotExecutor(
+        api=api, workspace=workspace, receipts=receipts,
+        adapters={ADAPTER_ID: adapter},
+        command_registries={ADAPTER_ID: callbacks},
+        boundary=registry.boundary, artifact_transport=artifact_transport,
+        fenced_adapter_ids=frozenset({ADAPTER_ID}),
     )

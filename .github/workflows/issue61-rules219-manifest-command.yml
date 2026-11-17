@@ -24,6 +24,20 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Checkout reviewed Rules 219 fixture (independent repository)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ericson-j-santos/chatgpt-operational-rules
+          ref: e4f624579eb44f941c11b2cfb35ab65bfa39e8a7
+          path: _rules219_fixture
+          persist-credentials: false
+      - name: Verify exact independent Rules fixture SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C _rules219_fixture rev-parse HEAD)" = "e4f624579eb44f941c11b2cfb35ab65bfa39e8a7"
+          test -f _rules219_fixture/scripts/builder_manifest_stage.py
+          test -f _rules219_fixture/MANIFEST.json
       - name: Verify branch, ancestry, scope
         shell: bash
         run: |
@@ -45,9 +59,22 @@ jobs:
               raise SystemExit("RULES219_SCOPE_MISMATCH")
           print("RULES219_SCOPE_OK",len(changed))
           PY
-      - name: Positive, negative, replay contracts
+      - name: Positive, negative, replay and real Git fixture contracts
         env:
           PYTHONDONTWRITEBYTECODE: '1'
+          RULES219_FIXTURE_ROOT: _rules219_fixture
         run: python3 -B -m unittest discover -v -s tests -p 'test_rules219_manifest_command.py'
-      - name: Confirm clean checkout
-        run: test -z "$(git status --porcelain)"
+      - name: Confirm only reviewed independent checkout remains untracked
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import subprocess
+          entries = subprocess.check_output(
+              ["git", "status", "--porcelain", "--untracked-files=normal"],
+              text=True,
+          ).splitlines()
+          if entries != ["?? _rules219_fixture/"]:
+              raise SystemExit("RULES219_WORKTREE_STATUS_DRIFT")
+          print("RULES219_INDEPENDENT_CHECKOUT_SCOPE_OK")
+          PY
