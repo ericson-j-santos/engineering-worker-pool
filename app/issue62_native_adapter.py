@@ -85,13 +85,20 @@ def _module_scope(before: bytes, after: bytes) -> None:
                  ast.While, ast.With, ast.AsyncWith, ast.Try, ast.TryStar,
                  ast.Raise, ast.Lambda, ast.Yield, ast.YieldFrom,
                  ast.Await, ast.Global, ast.Nonlocal, ast.ClassDef,
-                 ast.AsyncFunctionDef)
+                 ast.AsyncFunctionDef, ast.Delete, ast.AugAssign,
+                 ast.AnnAssign, ast.NamedExpr, ast.ListComp,
+                 ast.SetComp, ast.DictComp, ast.GeneratorExp)
     nodes = list(ast.walk(new_fn))
     _need(len(nodes) <= 600, "issue62_function_too_complex")
     for node in nodes:
         _need(not isinstance(node, dangerous)
               and not (isinstance(node, ast.FunctionDef) and node is not new_fn),
               "issue62_unsafe_generated_syntax")
+        if isinstance(node, ast.Assign):
+            # A model may bind local variables but cannot mutate the caller's
+            # task/checkpoint or write through an attribute/subscript target.
+            _need(all(type(target) is ast.Name for target in node.targets),
+                  "issue62_mutating_assignment_forbidden")
         if isinstance(node, ast.Call):
             _need(ast.dump(node.func, include_attributes=False) in old_calls
                   and not any(isinstance(arg, ast.Starred) for arg in node.args),
