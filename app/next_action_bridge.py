@@ -121,6 +121,46 @@ def decide_next_action(
     return "done"
 
 
+def _verify_native_receipt(receipt: Any, *, role: str, task_id: str,
+                           task: dict[str, Any]) -> None:
+    """Reject 2xx, None and unrelated handler output before claiming progress.
+
+    This checks the installed NativeOneShotExecutor v2 receipt against canonical
+    Worker Pool readback. It does NOT attest actual LLM model/digest, physical
+    host identity or the underlying provenance of an injected handler.
+    """
+    expected = ("NATIVE_ONE_SHOT_BUILT" if role == "builder"
+                else "NATIVE_ONE_SHOT_VALIDATED")
+    worker = task.get(f"{role}_worker_id")
+    _need(
+        type(receipt) is dict
+        and receipt.get("schema_version") == 2
+        and receipt.get("result") == expected
+        and receipt.get("task_id") == task_id
+        and receipt.get("role") == role
+        and type(worker) is str and len(worker) > 0
+        and receipt.get("worker_id") == worker
+        and receipt.get("gateway_verified") is True
+        and receipt.get("replayed") is False
+        and receipt.get("fencing_required") is True
+        and type(receipt.get("lease_generation")) is int
+        and receipt["lease_generation"] > 0
+        and receipt["lease_generation"] == task.get("lease_generation")
+        and type(receipt.get("attempt_id")) is str
+        and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}",
+                              receipt["attempt_id"]))
+        and type(receipt.get("session_id")) is str
+        and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}",
+                              receipt["session_id"]))
+        and type(receipt.get("evidence_sha256")) is str
+        and bool(re.fullmatch(r"[0-9a-f]{64}", receipt["evidence_sha256"]))
+        and receipt.get("produced_sha") == task.get("produced_sha")
+        and type(receipt.get("produced_sha")) is str
+        and bool(_SHA.fullmatch(receipt["produced_sha"])),
+        "continuation_handler_receipt_unverified",
+    )
+
+
 def continue_once(
     api: CanonicalReads, *, task_id: str, expected_repository: str,
     expected_issue: int, expected_request_id: str, expected_base_sha: str,
@@ -147,8 +187,9 @@ def continue_once(
     # A second authenticated read rules out a stale plan before a handler
     # gets any authority. Its own exact claim still enforces concurrency.
     _need(_read(api, task_id) == before, "continuation_snapshot_changed")
-    handlers[role]()
+    receipt = handlers[role]()
     after = _read(api, task_id)
+    _verify_native_receipt(receipt, role=role, task_id=task_id, task=after[0])
     next_role = decide_next_action(*after, **kwargs)
     _need(
         (role == "builder" and next_role == "validator")
