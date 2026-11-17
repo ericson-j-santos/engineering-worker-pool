@@ -210,3 +210,32 @@ def test_function_scope_refuses_other_changes(modification, reason):
 def test_no_model_receipt_before_build_is_accepted(rig):
     with pytest.raises(NativeExecutorBlocked, match="issue62_model_receipt_not_available"):
         rig["adapter"].validated_model_receipt()
+
+
+@pytest.mark.parametrize("replacement,reason", [
+    (b'    import os\n    return "builder"', "issue62_unsafe_generated_syntax"),
+    (b'    while True:\n        return "builder"', "issue62_unsafe_generated_syntax"),
+    (b'    return eval("1")', "issue62_unapproved_call"),
+    (b'    return task.__class__', "issue62_dunder_forbidden"),
+    (b'    def nested():\n        return "builder"\n    return nested()',
+     "issue62_unsafe_generated_syntax"),
+])
+def test_generated_code_cannot_escape_audited_function_allowlist(replacement, reason):
+    candidate = OLD.replace(b'    return "blocked"', replacement)
+    with pytest.raises(NativeExecutorBlocked, match=reason):
+        _module_scope(OLD, candidate)
+
+
+def test_real_bridge_source_enforces_existing_call_allowlist():
+    source = Path("app/next_action_bridge.py").read_bytes()
+    previous = b'    if state in {"blocked", "failed"}:'
+    assert source.count(previous) == 1
+    modified = source.replace(previous, b'    if state in {"blocked", "failed", "queued"}:')
+    _module_scope(source, modified)
+    # This is ONLY a scope test; it is not an acceptable behavior change.
+    unapproved = modified.replace(
+        b'    if state in {"blocked", "failed", "queued"}:',
+        b'    if eval("1") in {"blocked", "failed", "queued"}:',
+    )
+    with pytest.raises(NativeExecutorBlocked, match="issue62_unapproved_call"):
+        _module_scope(source, unapproved)
