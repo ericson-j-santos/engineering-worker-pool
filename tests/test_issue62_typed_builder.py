@@ -9,7 +9,7 @@ import pytest
 from app.native_gateway_commands import NativeGatewayCommandRegistry
 from app.native_one_shot import ExecutionBoundary, LocalWorkspace, NativeExecutorBlocked, ReceiptStore
 from app.native_pool_http import LocalWorkerApi
-from app.native_structured_ollama import NativeStructuredOllama
+from app.issue62_native_adapter import Issue62NativeAdapter
 from app.store import identity, task_id
 from app.issue62_typed_builder import (
     ISSUE62_DESCRIPTOR, TypedBuilderAction, execute_installed_builder_once,
@@ -38,10 +38,10 @@ def installed(monkeypatch, tmp_path):
         base_sha=BASE, rules_sha=RULES,
     )
     api = object.__new__(LocalWorkerApi)
-    model = NativeStructuredOllama()
-    adapter = SimpleNamespace(
-        propose=model, descriptor=ISSUE62_DESCRIPTOR,
-        build=lambda context: None, validate=lambda context, produced_sha: None,
+    adapter = Issue62NativeAdapter(
+        task_id=TASK, original=b"def decide_next_action(task, checkpoint):\\n    return None\\n",
+        model_receipt_reader=lambda: {}, validation_receipt_reader=lambda: {},
+        trusted_model_digest=DIGEST,
     )
     registry = object.__new__(NativeGatewayCommandRegistry)
     registry.gateway = ModuleType("mock_gateway")
@@ -83,9 +83,12 @@ def installed(monkeypatch, tmp_path):
         assert kw["worker_id"] == WORKER and kw["task_id"] == TASK
         assert kw["registry"] is registry and kw["adapter"] is adapter
         assert kw["artifact_transport"] is artifact_transport
-        model.process_verified = True
-        model.model_digest = DIGEST
-        model.last_model_reply_sha256 = "d" * 64
+        adapter._verified_model_receipt = {
+            "task_id": TASK, "base_sha": BASE, "model": "qwen2.5-coder:7b",
+            "model_digest": DIGEST, "model_reply_sha256": "d" * 64,
+            "model_calls": 1, "process_verified": True,
+            "run_id": "attempt-0001",
+        }
         state["task"] = {**canonical, "state": "validating",
                          "produced_sha": "9" * 40, "builder_worker_id": WORKER}
         state["checkpoint"] = {
@@ -122,7 +125,7 @@ def installed(monkeypatch, tmp_path):
         worker_id=WORKER, installed_rules_sha=RULES,
         installed_model_digest=DIGEST, cost_preflight=cost,
     )
-    return SimpleNamespace(action=action, model=model, state=state,
+    return SimpleNamespace(action=action, adapter=adapter, state=state,
                            kwargs=kwargs, receipts=receipts)
 
 
@@ -189,8 +192,7 @@ def test_untrusted_installed_components_block_before_cost_and_api(installed, key
 
 
 def test_stale_model_cannot_be_reused(installed):
-    installed.model.process_verified = True
-    installed.model.model_digest = DIGEST
+    installed.adapter._verified_model_receipt = {"run_id": "stale"}
     with pytest.raises(NativeExecutorBlocked, match="typed_builder_model_not_fresh"):
         execute_installed_builder_once(**installed.kwargs)
     assert installed.state["calls"] == 0
@@ -238,7 +240,7 @@ def test_success_without_local_model_proof_fails_closed(monkeypatch, installed):
         return {"task_id": TASK, "state": "validator",
                 "executed": True, "executed_role": "builder"}
     monkeypatch.setattr(mod, "continue_with_attested_native", fake_bridge)
-    with pytest.raises(NativeExecutorBlocked, match="typed_builder_model_proof_missing"):
+    with pytest.raises(NativeExecutorBlocked, match="issue62_model_receipt_not_available"):
         execute_installed_builder_once(**installed.kwargs)
     assert installed.state["calls"] == 1
 
