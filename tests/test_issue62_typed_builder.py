@@ -39,7 +39,7 @@ def installed(monkeypatch, tmp_path):
     )
     api = object.__new__(LocalWorkerApi)
     adapter = Issue62NativeAdapter(
-        task_id=TASK, original=b"def decide_next_action(task, checkpoint):\\n    return None\\n",
+        task_id=TASK, original=b"def decide_next_action(task, checkpoint):\n    return None\n",
         model_receipt_reader=lambda: {}, validation_receipt_reader=lambda: {},
         trusted_model_digest=DIGEST,
     )
