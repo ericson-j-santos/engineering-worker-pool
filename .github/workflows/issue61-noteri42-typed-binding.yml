@@ -1,0 +1,25 @@
+name: Noteri 42 typed NativeOneShot binding (isolated CI)
+run-name: Noteri42 SHA=${{ github.sha }} RUN=${{ github.run_id }} ATTEMPT=${{ github.run_attempt }}
+on:
+  push:
+    branches:
+      - feat/issue61-noteri42-typed-binding-20261117
+permissions:
+  contents: read
+concurrency:
+  group: noteri42-typed-binding-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Verify source checkout
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Compile typed binding
+        run: python3 -m compileall -q app/noteri42_native_binding.py tests/test_noteri42_native_binding.py
+      - name: Run isolated positive/negative contract tests
+        run: python3 -m unittest -v tests.test_noteri42_native_binding
