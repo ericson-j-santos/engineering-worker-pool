@@ -20,6 +20,8 @@ def task(state="queued", generation=0, **changes):
         "request_id": "issue-62", "base_sha": BASE,
         "fencing_required": True, "lease_generation": generation,
         "state": state, "leased_by": None,
+        "builder_worker_id": "builder-1" if state in {"validating", "completed"} else None,
+        "validator_worker_id": "validator-1" if state == "completed" else None,
         "produced_sha": PRODUCED if state in {"validating", "completed"} else None,
         **changes,
     }
@@ -31,6 +33,25 @@ def checkpoint(stage, action, effect="confirmed", generation=1):
         "stage": stage, "next_action": action, "effect_state": effect,
         "artifact_sha256": "d" * 64,
         "effect_result_ref": "cas://verified" if effect == "confirmed" else None,
+    }
+
+
+def native_receipt(role: str, observed: dict) -> dict:
+    return {
+        "schema_version": 2,
+        "result": ("NATIVE_ONE_SHOT_BUILT" if role == "builder"
+                   else "NATIVE_ONE_SHOT_VALIDATED"),
+        "task_id": TASK,
+        "role": role,
+        "worker_id": f"{role}-1",
+        "gateway_verified": True,
+        "replayed": False,
+        "fencing_required": True,
+        "lease_generation": observed["lease_generation"],
+        "attempt_id": "attempt-3",
+        "session_id": "session-verified-1",
+        "evidence_sha256": "f" * 64,
+        "produced_sha": observed["produced_sha"],
     }
 
 
@@ -59,12 +80,14 @@ def test_two_real_stages_are_selected_and_read_back_without_replay():
         invoked.append("builder")
         api.task = task("validating", generation=1)
         api.checkpoint = checkpoint("builder_result", "submit_validation")
+        return native_receipt("builder", api.task)
 
     def validator():
         invoked.append("validator")
         api.task = task("completed", generation=2)
         api.checkpoint = checkpoint("validator_result", "complete",
                                     effect="none", generation=2)
+        return native_receipt("validator", api.task)
 
     handlers = {"builder": builder, "validator": validator}
     first = continue_once(api, handlers=handlers, **BINDING)
@@ -144,9 +167,48 @@ def test_checkpoint_text_cannot_select_an_arbitrary_command():
 
 def test_empty_claimed_result_does_not_count_as_effective_progress():
     api = Api()
-    with pytest.raises(NativeExecutorBlocked, match="continuation_effect_not_confirmed"):
+    with pytest.raises(NativeExecutorBlocked, match="continuation_handler_receipt_unverified"):
         continue_once(api, handlers={"builder": lambda: {"status": 200},
                                     "validator": lambda: None}, **BINDING)
+
+
+@pytest.mark.parametrize("receipt_change", [
+    {"gateway_verified": False},
+    {"result": "NATIVE_ONE_SHOT_VALIDATED"},
+    {"replayed": True},
+    {"lease_generation": 2},
+    {"evidence_sha256": "invalid"},
+    {"worker_id": "other-worker"},
+    {"produced_sha": "e" * 40},
+])
+def test_native_receipt_mismatch_does_not_count_as_execution(receipt_change):
+    api = Api()
+
+    def builder():
+        api.task = task("validating", generation=1)
+        api.checkpoint = checkpoint("builder_result", "submit_validation")
+        return {**native_receipt("builder", api.task), **receipt_change}
+
+    with pytest.raises(NativeExecutorBlocked,
+                       match="continuation_handler_receipt_unverified"):
+        continue_once(api, handlers={"builder": builder,
+                                    "validator": lambda: pytest.fail("called")},
+                      **BINDING)
+
+
+def test_native_handler_absent_receipt_never_counts_as_execution():
+    api = Api()
+
+    def builder():
+        api.task = task("validating", generation=1)
+        api.checkpoint = checkpoint("builder_result", "submit_validation")
+        return None
+
+    with pytest.raises(NativeExecutorBlocked,
+                       match="continuation_handler_receipt_unverified"):
+        continue_once(api, handlers={"builder": builder,
+                                    "validator": lambda: pytest.fail("called")},
+                      **BINDING)
 
 
 def test_snapshot_changed_just_before_dispatch_blocks():
