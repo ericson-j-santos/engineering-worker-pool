@@ -14,7 +14,10 @@ from typing import Any, Callable
 
 from app.native_gateway_commands import NativeGatewayCommandRegistry
 from app.native_gateway_preflight import attest_execution_boundary
-from app.native_one_shot import LocalWorkspace, NativeExecutorBlocked, ReceiptStore
+from app.native_one_shot import (
+    AdapterDescriptor, LocalWorkspace, NativeExecutorBlocked, ReceiptStore,
+    TaskManifest,
+)
 from app.native_pool_http import LocalWorkerApi
 from app.native_structured_ollama import NativeStructuredOllama
 from app.next_action_bridge import continue_with_attested_native
@@ -23,6 +26,15 @@ from app.structured_ollama import MODEL
 
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+
+# Issue 62 is a scoped Worker Pool feature. The existing Qwen adapter
+# is bound to ReqSys bridge.property.v1 and must not be reused here.
+ISSUE62_DESCRIPTOR = AdapterDescriptor(
+    adapter_id="issue62.next-action.v1",
+    allowed_paths=("app/next_action_bridge.py",),
+    builder_commands=("issue62.build",),
+    validator_commands=("issue62.validate",),
+)
 
 
 def need(ok: bool, code: str) -> None:
@@ -86,6 +98,22 @@ def execute_installed_builder_once(
          and type(manifest) is dict
          and callable(cost_preflight), "typed_builder_installation_missing")
     action.validate()
+    # Reject incompatible or incomplete adapter/manifest BEFORE cost checks,
+    # Gateway inspection, task reads, lease acquisition or Qwen inference.
+    parsed = TaskManifest.parse(manifest)
+    descriptor = getattr(adapter, "descriptor", None)
+    need(type(descriptor) is AdapterDescriptor
+         and descriptor == ISSUE62_DESCRIPTOR
+         and parsed.task_id == action.task_id
+         and parsed.repository == action.repository
+         and parsed.base_sha == action.base_sha
+         and parsed.workspace_sha == action.base_sha
+         and parsed.adapter_id == descriptor.adapter_id
+         and parsed.adapter_contract_sha256 == descriptor.contract_sha256
+         and set(parsed.before_sha256) == set(descriptor.allowed_paths)
+         and callable(getattr(adapter, "build", None))
+         and callable(getattr(adapter, "validate", None)),
+         "typed_builder_adapter_profile_incompatible")
     model = getattr(adapter, "propose", None)
     need(type(model) is NativeStructuredOllama
          and type(installed_rules_sha) is str
