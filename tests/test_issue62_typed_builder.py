@@ -163,7 +163,7 @@ def test_wrong_action_blocks_before_cost_session_and_api(installed, changed, rea
 
 @pytest.mark.parametrize("key,value", [
     ("installed_rules_sha", "1" * 40),
-    ("installed_model_digest", "2" * 64),
+    ("installed_model_digest", "invalid-digest"),
     ("worker_id", "bad/worker"),
     ("cost_preflight", None),
     ("api", object()),
