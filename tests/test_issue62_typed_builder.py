@@ -315,3 +315,18 @@ def test_manifest_is_not_optional_and_has_exact_version(installed):
     assert installed.state["cost_calls"] == 0
     assert installed.state["gateway_calls"] == 0
     assert installed.state["calls"] == 0
+
+
+def test_gateway_builder_run_id_must_match_fenced_lease_attempt(monkeypatch, installed):
+    from app import issue62_typed_builder as mod
+    original = mod.continue_with_attested_native
+
+    def foreign_model_receipt(*args, **kwargs):
+        response = original(*args, **kwargs)
+        installed.adapter._verified_model_receipt["run_id"] = "foreign-attempt"
+        return response
+
+    monkeypatch.setattr(mod, "continue_with_attested_native", foreign_model_receipt)
+    with pytest.raises(NativeExecutorBlocked, match="typed_builder_cas_readback_unverified"):
+        execute_installed_builder_once(**installed.kwargs)
+    assert installed.state["calls"] == 1
