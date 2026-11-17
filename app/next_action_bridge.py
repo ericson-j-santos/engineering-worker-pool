@@ -198,3 +198,93 @@ def continue_once(
     )
     return {"state": next_role, "task_id": task_id,
             "executed": True, "executed_role": role}
+
+
+def continue_with_attested_native(
+    api: CanonicalReads, *, registry: Any, workspace: Any, receipts: Any,
+    adapter: Any, artifact_transport: Any, manifest: dict[str, Any],
+    role: str, worker_id: str, task_id: str, expected_repository: str,
+    expected_issue: int, expected_request_id: str, expected_base_sha: str,
+) -> dict[str, Any]:
+    """One stage via the *installed* Gateway registry and NativeOneShotExecutor.
+
+    A trusted native entrypoint must supply these objects from pinned local
+    policy, not from GitHub event fields, an issue, a model or environment flags.
+    Fresh attestation is checked against the registry's original boundary.
+    This function never registers a worker, dispatches Actions or selects argv.
+    """
+    from pathlib import Path
+
+    from app.native_gateway_commands import NativeGatewayCommandRegistry
+    from app.native_gateway_preflight import attest_execution_boundary
+    from app.native_one_shot import (
+        AdapterDescriptor, LocalWorkspace, NAME, NativeOneShotExecutor,
+        ReceiptStore, TaskManifest,
+    )
+    from app.native_pool_http import LocalWorkerApi
+
+    _need(type(api) is LocalWorkerApi
+          and type(registry) is NativeGatewayCommandRegistry
+          and type(workspace) is LocalWorkspace
+          and type(receipts) is ReceiptStore,
+          "continuation_native_runtime_not_installed")
+    _need(type(role) is str and role in {"builder", "validator"}
+          and type(worker_id) is str and bool(NAME.fullmatch(worker_id)),
+          "continuation_native_role_invalid")
+    _need(type(manifest) is dict, "continuation_native_manifest_invalid")
+    parsed = TaskManifest.parse(manifest)
+    _need(parsed.task_id == task_id
+          and parsed.repository == expected_repository
+          and parsed.base_sha == expected_base_sha
+          and parsed.workspace_sha == registry.boundary.expected_head
+          and workspace.root == Path(registry.workspace).resolve(),
+          "continuation_native_binding_mismatch")
+    descriptor = getattr(adapter, "descriptor", None)
+    _need(type(descriptor) is AdapterDescriptor
+          and descriptor.adapter_id == parsed.adapter_id
+          and descriptor.contract_sha256 == parsed.adapter_contract_sha256
+          and role in descriptor.roles,
+          "continuation_native_adapter_unverified")
+    _need(artifact_transport is not None
+          and all(callable(getattr(artifact_transport, name, None)) for name in (
+              "preflight", "publish", "materialize", "verify")),
+          "continuation_durable_transport_missing")
+    # Unlike a caller-supplied boolean, this independently checks a pinned
+    # Command Gateway binary, policy, reserved session, clean worktree and
+    # fresh inspect event on the authorized physical host.
+    boundary = attest_execution_boundary(
+        gateway=registry.gateway, policy_path=registry.policy_path,
+        workspace=registry.workspace, session_id=registry.session_id,
+        correlation_id=registry.correlation_id,
+        expected_head=registry.boundary.expected_head,
+        trusted_gateway_sha256=registry.trusted_gateway_sha256,
+        trusted_policy_sha256=registry.trusted_policy_sha256,
+    )
+    _need(boundary == registry.boundary,
+          "continuation_native_session_changed")
+    policy = registry._trusted_policy()
+    registry.gateway.assert_allowed_path(receipts.root, policy)
+    commands = registry.for_role(descriptor, role)
+    executor = NativeOneShotExecutor(
+        api=api, workspace=workspace, receipts=receipts,
+        adapters={parsed.adapter_id: adapter},
+        command_registries={parsed.adapter_id: commands}, boundary=boundary,
+        artifact_transport=artifact_transport,
+        fenced_adapter_ids=frozenset({parsed.adapter_id}),
+    )
+
+    def selected() -> dict[str, Any]:
+        return executor.run(manifest, role=role, worker_id=worker_id)
+
+    def wrong_role() -> None:
+        raise NativeExecutorBlocked("continuation_role_not_installed")
+
+    handlers = {
+        "builder": selected if role == "builder" else wrong_role,
+        "validator": selected if role == "validator" else wrong_role,
+    }
+    return continue_once(
+        api, task_id=task_id, expected_repository=expected_repository,
+        expected_issue=expected_issue, expected_request_id=expected_request_id,
+        expected_base_sha=expected_base_sha, handlers=handlers,
+    )
