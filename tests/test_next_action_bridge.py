@@ -400,3 +400,184 @@ def test_issue62_terminal_readback_is_noop_not_dispatch(monkeypatch, capsys):
     result = json.loads(capsys.readouterr().out)
     assert result == {"result": "CONTINUATION_NO_EXECUTION",
                       "state": "done", "task_id": TASK, "executed": False}
+
+
+# Contract-only wiring tests. Faked Gateway/session and native run below do
+# NOT establish real physical admission, Ollama invocation, or durable CAS.
+@pytest.fixture
+def native_wiring(monkeypatch, tmp_path):
+    from types import ModuleType, SimpleNamespace
+    from app.native_gateway_commands import NativeGatewayCommandRegistry
+    from app.native_one_shot import (
+        AdapterDescriptor, ExecutionBoundary, LocalWorkspace, ReceiptStore,
+        NativeOneShotExecutor,
+    )
+    from app.native_pool_http import LocalWorkerApi
+    from app import native_gateway_preflight
+
+    api = object.__new__(LocalWorkerApi)
+    state = {"task": task(), "checkpoint": None, "reads": 0, "run_calls": []}
+
+    def read_task(task_id):
+        state["reads"] += 1
+        assert task_id == TASK
+        return dict(state["task"])
+
+    def read_checkpoint(task_id):
+        assert task_id == TASK
+        return None if state["checkpoint"] is None else dict(state["checkpoint"])
+
+    api.get_task = read_task
+    api.get_latest_checkpoint = read_checkpoint
+
+    registry = object.__new__(NativeGatewayCommandRegistry)
+    registry.gateway = ModuleType("command_gateway")
+    registry.gateway.assert_allowed_path = lambda *args: None
+    registry.workspace = tmp_path
+    registry.policy_path = tmp_path / "trusted-policy.json"
+    registry.session_id = "session-issue62"
+    registry.correlation_id = "issue62-gateway-v1"
+    registry.expected_head = BASE
+    registry.trusted_gateway_sha256 = "a" * 64
+    registry.trusted_policy_sha256 = "b" * 64
+    registry.boundary = ExecutionBoundary(
+        session_id=registry.session_id,
+        correlation_id=registry.correlation_id,
+        expected_head=BASE, state_validated=True, gateway_verified=True,
+    )
+    registry._trusted_policy = lambda: {"verified": True}
+    registry.for_role = lambda desc, role: {
+        "build.allowed": lambda: None,
+        "validate.allowed": lambda: None,
+    }
+    monkeypatch.setattr(native_gateway_preflight, "attest_execution_boundary",
+                        lambda **kwargs: registry.boundary)
+
+    descriptor = AdapterDescriptor(
+        adapter_id="installed.native.v1",
+        allowed_paths=("src/calculator.py",),
+        builder_commands=("build.allowed",),
+        validator_commands=("validate.allowed",),
+    )
+    adapter = SimpleNamespace(descriptor=descriptor)
+    manifest = {
+        "schema_version": 1,
+        "task_id": TASK,
+        "repository": REPO,
+        "base_sha": BASE,
+        "workspace_sha": BASE,
+        "adapter_id": descriptor.adapter_id,
+        "adapter_contract_sha256": descriptor.contract_sha256,
+        "before_sha256": {"src/calculator.py": "e" * 64},
+    }
+    transport = SimpleNamespace(
+        preflight=lambda: None, publish=lambda **kw: None,
+        materialize=lambda **kw: None, verify=lambda **kw: None,
+    )
+    workspace = LocalWorkspace(tmp_path)
+    receipts = ReceiptStore(tmp_path / "receipts")
+
+    def synthetic_native_run(self, raw_manifest, *, role, worker_id):
+        assert isinstance(self, NativeOneShotExecutor)
+        assert self.api is api
+        assert self.boundary is registry.boundary
+        assert self.artifact_transport is transport
+        assert self.fenced_adapter_ids == frozenset({descriptor.adapter_id})
+        assert set(self.command_registries[descriptor.adapter_id]) == {
+            "build.allowed", "validate.allowed",
+        }
+        assert raw_manifest is manifest
+        assert worker_id == "builder-1" and role == "builder"
+        state["run_calls"].append((role, worker_id))
+        state["task"] = task("validating", generation=1)
+        state["checkpoint"] = checkpoint("builder_result", "submit_validation")
+        return native_receipt(role, state["task"])
+
+    monkeypatch.setattr(NativeOneShotExecutor, "run", synthetic_native_run)
+    kwargs = dict(
+        api=api, registry=registry, workspace=workspace, receipts=receipts,
+        adapter=adapter, artifact_transport=transport, manifest=manifest,
+        role="builder", worker_id="builder-1", **BINDING,
+    )
+    return SimpleNamespace(
+        kwargs=kwargs, state=state, registry=registry, manifest=manifest,
+    )
+
+
+def test_attested_native_bridge_selects_installed_fenced_executor(native_wiring):
+    from app.next_action_bridge import continue_with_attested_native
+
+    result = continue_with_attested_native(**native_wiring.kwargs)
+    assert result == {
+        "state": "validator", "task_id": TASK, "executed": True,
+        "executed_role": "builder",
+    }
+    assert native_wiring.state["run_calls"] == [("builder", "builder-1")]
+
+
+@pytest.mark.parametrize("changed", [
+    {"registry": object()},
+    {"api": Api()},
+    {"artifact_transport": None},
+    {"role": "shell"},
+    {"worker_id": "malicious/command"},
+])
+def test_attested_native_bridge_rejects_untrusted_components_before_reads(
+    native_wiring, changed,
+):
+    from app.next_action_bridge import continue_with_attested_native
+
+    with pytest.raises(NativeExecutorBlocked):
+        continue_with_attested_native(**{**native_wiring.kwargs, **changed})
+    assert native_wiring.state["reads"] == 0
+    assert native_wiring.state["run_calls"] == []
+
+
+def test_attested_native_bridge_rejects_foreign_manifest_before_reads(native_wiring):
+    from app.next_action_bridge import continue_with_attested_native
+
+    manifest = dict(native_wiring.manifest)
+    manifest["repository"] = "untrusted/foreign"
+    with pytest.raises(NativeExecutorBlocked, match="continuation_native_binding_mismatch"):
+        continue_with_attested_native(
+            **{**native_wiring.kwargs, "manifest": manifest},
+        )
+    assert native_wiring.state["reads"] == 0
+
+
+def test_attested_native_bridge_requires_fresh_gateway_attestation(
+    monkeypatch, native_wiring,
+):
+    from app.next_action_bridge import continue_with_attested_native
+    from app import native_gateway_preflight
+    from app.native_one_shot import ExecutionBoundary
+
+    changed = ExecutionBoundary(
+        session_id="session-foreign",
+        correlation_id=native_wiring.registry.correlation_id,
+        expected_head=BASE, state_validated=True, gateway_verified=True,
+    )
+    monkeypatch.setattr(native_gateway_preflight, "attest_execution_boundary",
+                        lambda **kwargs: changed)
+    with pytest.raises(NativeExecutorBlocked, match="continuation_native_session_changed"):
+        continue_with_attested_native(**native_wiring.kwargs)
+    assert native_wiring.state["reads"] == 0
+
+
+def test_attested_native_bridge_rejects_role_without_installed_handler(native_wiring):
+    from app.next_action_bridge import continue_with_attested_native
+
+    with pytest.raises(NativeExecutorBlocked, match="continuation_role_not_installed"):
+        continue_with_attested_native(
+            **{**native_wiring.kwargs, "role": "validator", "worker_id": "validator-1"},
+        )
+    assert native_wiring.state["run_calls"] == []
+
+
+def test_attested_native_bridge_noop_does_not_call_executor(native_wiring):
+    from app.next_action_bridge import continue_with_attested_native
+
+    native_wiring.state["task"] = task("blocked", generation=1)
+    result = continue_with_attested_native(**native_wiring.kwargs)
+    assert result["state"] == "blocked" and result["executed"] is False
+    assert native_wiring.state["run_calls"] == []
