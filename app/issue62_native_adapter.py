@@ -57,8 +57,11 @@ def _module_scope(before: bytes, after: bytes) -> None:
     old_fn, new_fn = old_f[0], new_f[0]
     _need(ast.dump(old_fn.args, include_attributes=False)
           == ast.dump(new_fn.args, include_attributes=False)
-          and ast.dump(old_fn.returns, include_attributes=False)
-          == ast.dump(new_fn.returns, include_attributes=False)
+          and (None if old_fn.returns is None else ast.dump(
+              old_fn.returns, include_attributes=False
+          )) == (None if new_fn.returns is None else ast.dump(
+              new_fn.returns, include_attributes=False
+          ))
           and ast.dump(old_fn.decorator_list, include_attributes=False)
           == ast.dump(new_fn.decorator_list, include_attributes=False),
           "issue62_signature_changed")
