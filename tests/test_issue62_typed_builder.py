@@ -13,6 +13,7 @@ from app.issue62_native_adapter import Issue62NativeAdapter
 from app.store import identity, task_id
 from app.issue62_typed_builder import (
     ISSUE62_DESCRIPTOR, TypedBuilderAction, execute_installed_builder_once,
+    fixed_issue62_gateway_specs,
 )
 from app.issue_native_adapter import DESCRIPTOR as REQSYS_ONLY_DESCRIPTOR
 
@@ -330,3 +331,76 @@ def test_gateway_builder_run_id_must_match_fenced_lease_attempt(monkeypatch, ins
     with pytest.raises(NativeExecutorBlocked, match="typed_builder_cas_readback_unverified"):
         execute_installed_builder_once(**installed.kwargs)
     assert installed.state["calls"] == 1
+
+
+
+def test_fixed_gateway_specs_have_only_four_exact_commands():
+    specs = fixed_issue62_gateway_specs(
+        trusted_builder_sha256="a" * 64,
+        trusted_validator_sha256="b" * 64,
+    )
+    assert set(specs) == set(ISSUE62_DESCRIPTOR.command_keys) == {
+        "issue62.build", "issue62.stage", "issue62.commit", "issue62.validate",
+    }
+    assert specs["issue62.build"].argv == ("python", "scripts/issue62_builder.py")
+    assert specs["issue62.build"].risk == 2
+    assert specs["issue62.build"].script_sha256 == "a" * 64
+    assert specs["issue62.stage"].argv == (
+        "git", "add", "--", "app/next_action_bridge.py",
+    )
+    assert specs["issue62.commit"].argv == (
+        "git", "commit", "-m", "feat(issue62): advance next action",
+    )
+    assert specs["issue62.commit"].allow_dirty is True
+    assert specs["issue62.commit"].allow_head_change is True
+    assert specs["issue62.validate"].argv == (
+        "python", "scripts/issue62_validator.py",
+    )
+    assert specs["issue62.validate"].role == "validator"
+    assert specs["issue62.validate"].risk == 1
+    assert specs["issue62.validate"].script_sha256 == "b" * 64
+    for key, spec in specs.items():
+        assert key == spec.key
+        spec.validate(ISSUE62_DESCRIPTOR)
+    assert fixed_issue62_gateway_specs(
+        trusted_builder_sha256="a" * 64,
+        trusted_validator_sha256="b" * 64,
+    ) == specs
+
+
+@pytest.mark.parametrize("bad", [None, True, 123, "", "a" * 63, "A" * 64, "x" * 64])
+@pytest.mark.parametrize("field", ["trusted_builder_sha256", "trusted_validator_sha256"])
+def test_fixed_gateway_specs_reject_unknown_or_invalid_script_digests(field, bad):
+    args = {"trusted_builder_sha256": "a" * 64,
+            "trusted_validator_sha256": "b" * 64}
+    args[field] = bad
+    with pytest.raises(NativeExecutorBlocked, match="issue62_fixed_script_digest_required"):
+        fixed_issue62_gateway_specs(**args)
+
+
+def test_fixed_gateway_specs_reject_shell_and_extra_arguments():
+    from dataclasses import replace
+    specs = fixed_issue62_gateway_specs(
+        trusted_builder_sha256="a" * 64,
+        trusted_validator_sha256="b" * 64,
+    )
+    variants = (
+        replace(specs["issue62.build"], argv=("python", "-c", "print(1)")),
+        replace(specs["issue62.build"], argv=("bash", "-c", "true")),
+        replace(specs["issue62.build"], argv=("python", "scripts/other.py", "--run")),
+        replace(specs["issue62.stage"], argv=("git", "add", "--", ".")),
+        replace(specs["issue62.validate"], risk=2),
+        replace(specs["issue62.commit"], allow_head_change=False),
+    )
+    for candidate in variants:
+        with pytest.raises(NativeExecutorBlocked):
+            candidate.validate(ISSUE62_DESCRIPTOR)
+
+
+def test_fixed_gateway_specs_never_accept_command_from_event():
+    with pytest.raises(TypeError):
+        fixed_issue62_gateway_specs(
+            trusted_builder_sha256="a" * 64,
+            trusted_validator_sha256="b" * 64,
+            argv=("python", "untrusted.py"),
+        )
