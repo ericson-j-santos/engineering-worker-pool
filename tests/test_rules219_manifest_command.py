@@ -20,6 +20,7 @@ from app.rules219_manifest_command import (
     ADAPTER_ID, COMMAND_KEY, COMMIT_KEY, SOURCE_STAGE_KEY,
     REPOSITORY, RULES_HEAD, WRAPPER_PATH, WRAPPER_SHA256,
     SOURCE_PATH, MODEL_NAME, MODEL_PROPOSE_KEY, MODEL_APPLY_KEY,
+    PROPOSER_SHA256, APPLIER_SHA256, VALIDATOR_SHA256,
     VALIDATOR_KEY, RULES219_NATIVE_DESCRIPTOR, 
     make_stage_spec, stage_manifest_then_commit,
     fixed_rules219_native_specs, Rules219NativeBuilderAdapter,
@@ -415,8 +416,8 @@ class ManifestCommitOrderingTests(unittest.TestCase):
 class Rules219NativeCatalogTests(unittest.TestCase):
     def test_exact_catalog_contains_only_fixed_reviewed_commands(self):
         specs = fixed_rules219_native_specs(
-            proposer_sha256="1" * 64, applier_sha256="2" * 64,
-            validator_sha256="3" * 64,
+            proposer_sha256=PROPOSER_SHA256, applier_sha256=APPLIER_SHA256,
+            validator_sha256=VALIDATOR_SHA256,
         )
         self.assertEqual(set(specs), set(RULES219_NATIVE_DESCRIPTOR.command_keys))
         for spec in specs.values():
@@ -436,6 +437,28 @@ class Rules219NativeCatalogTests(unittest.TestCase):
             fixed_rules219_native_specs(proposer_sha256="1" * 64,
                                         applier_sha256="invalid",
                                         validator_sha256="3" * 64)
+
+    def test_well_formed_but_unreviewed_installed_script_hash_is_rejected(self):
+        with self.assertRaisesRegex(NativeExecutorBlocked, "installed_digests_unreviewed"):
+            fixed_rules219_native_specs(
+                proposer_sha256="f" * 64,
+                applier_sha256=APPLIER_SHA256,
+                validator_sha256=VALIDATOR_SHA256,
+            )
+
+    def test_fixed_scripts_bytes_equal_pinned_sha_in_rules_checkout(self):
+        path = os.environ.get("RULES219_FIXTURE_ROOT")
+        if not path:
+            self.skipTest("SHA-bound Rules fixture required")
+        for filename, digest in (
+            ("scripts/rules219_model_propose.py", PROPOSER_SHA256),
+            ("scripts/rules219_model_apply.py", APPLIER_SHA256),
+            ("scripts/rules219_validator.py", VALIDATOR_SHA256),
+        ):
+            self.assertEqual(
+                hashlib.sha256((Path(path) / filename).read_bytes()).hexdigest(),
+                digest,
+            )
 
     def test_native_adapter_requires_valid_model_digest(self):
         with self.assertRaisesRegex(NativeExecutorBlocked, "model_digest_not_pinned"):

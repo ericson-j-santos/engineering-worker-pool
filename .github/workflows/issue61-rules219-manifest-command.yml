@@ -28,14 +28,14 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: ericson-j-santos/chatgpt-operational-rules
-          ref: e4f624579eb44f941c11b2cfb35ab65bfa39e8a7
+          ref: 40e3db3ef8b1fe367d79b878b8d9d91930d2337b
           path: _rules219_fixture
           persist-credentials: false
       - name: Verify exact independent Rules fixture SHA
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git -C _rules219_fixture rev-parse HEAD)" = "e4f624579eb44f941c11b2cfb35ab65bfa39e8a7"
+          test "$(git -C _rules219_fixture rev-parse HEAD)" = "40e3db3ef8b1fe367d79b878b8d9d91930d2337b"
           test -f _rules219_fixture/scripts/builder_manifest_stage.py
           test -f _rules219_fixture/MANIFEST.json
       - name: Verify branch, ancestry, scope

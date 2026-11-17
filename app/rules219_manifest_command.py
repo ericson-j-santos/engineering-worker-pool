@@ -17,7 +17,7 @@ from app.native_one_shot import (
 )
 
 REPOSITORY = "ericson-j-santos/chatgpt-operational-rules"
-RULES_HEAD = "e4f624579eb44f941c11b2cfb35ab65bfa39e8a7"
+RULES_HEAD = "40e3db3ef8b1fe367d79b878b8d9d91930d2337b"
 WRAPPER_PATH = "scripts/builder_manifest_stage.py"
 WRAPPER_SHA256 = "422924c9bb5a409135328d41c1d5508ccd1e88da7fae02dc8beead5294ea1010"
 COMMAND_KEY = "rules219.manifest.stage"
@@ -222,6 +222,11 @@ MODEL_APPLY_KEY = "rules219.model.apply"
 VALIDATOR_KEY = "rules219.validate"
 SOURCE_PATH = "tests/test_generate_manifest_builder.py"
 MODEL_NAME = "qwen2.5-coder:7b"
+# Digests of the three SHA-bound files reviewed in Rules #219.
+# Never accept a path or digest supplied by a task, issue or model.
+PROPOSER_SHA256 = "55a49ca39beb049f0f5d084eafa0c85f5e906ef4b9b366c32494f9e5fad37719"
+APPLIER_SHA256 = "eac267ea2d531e8e0d62326a6f48b73600c14df6cb4329884b0f609d1328ad05"
+VALIDATOR_SHA256 = "861560fe377e9c0e15eb5e5826859357bcce3d7bf2b3343eb93d90a2747943ee"
 PROPOSE_SCRIPT = "scripts/rules219_model_propose.py"
 APPLY_SCRIPT = "scripts/rules219_model_apply.py"
 VALIDATOR_SCRIPT = "scripts/rules219_validator.py"
@@ -249,6 +254,8 @@ def fixed_rules219_native_specs(
     _require(all(type(d) is str and len(d) == 64 and
                  all(c in "0123456789abcdef" for c in d) for d in digests),
              "rules219_installed_digests_required")
+    _require(digests == (PROPOSER_SHA256, APPLIER_SHA256, VALIDATOR_SHA256),
+             "rules219_installed_digests_unreviewed")
     specs = {
         MODEL_PROPOSE_KEY: GovernedCommand(
             MODEL_PROPOSE_KEY, "builder", ("python", PROPOSE_SCRIPT), 2,
