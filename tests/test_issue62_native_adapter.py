@@ -239,3 +239,35 @@ def test_real_bridge_source_enforces_existing_call_allowlist():
     )
     with pytest.raises(NativeExecutorBlocked, match="issue62_unapproved_call"):
         _module_scope(source, unapproved)
+
+
+@pytest.mark.parametrize("payload,reason", [
+    (b'    task["state"] = "validating"\n    return "builder"',
+     "issue62_mutating_assignment_forbidden"),
+    (b'    checkpoint.status = "done"\n    return "builder"',
+     "issue62_mutating_assignment_forbidden"),
+    (b'    task, checkpoint = checkpoint, task\n    return "builder"',
+     "issue62_mutating_assignment_forbidden"),
+    (b'    task["state"] += "x"\n    return "builder"',
+     "issue62_unsafe_generated_syntax"),
+    (b'    del checkpoint["stage"]\n    return "builder"',
+     "issue62_unsafe_generated_syntax"),
+    (b'    return (state := "builder")',
+     "issue62_unsafe_generated_syntax"),
+    (b'    return [value for value in task]',
+     "issue62_unsafe_generated_syntax"),
+    (b'    return {value: 1 for value in task}',
+     "issue62_unsafe_generated_syntax"),
+])
+def test_generated_function_cannot_mutate_caller_or_hide_iteration(payload, reason):
+    # A generated function is still subject to the exact function scope,
+    # but must not change canonical Worker Pool task/checkpoint dictionaries.
+    candidate = OLD.replace(b'    return "blocked"', payload)
+    with pytest.raises(NativeExecutorBlocked, match=reason):
+        _module_scope(OLD, candidate)
+
+
+def test_generated_function_may_assign_local_temporary_without_side_effect():
+    candidate = OLD.replace(b'    return "blocked"',
+                            b'    next_stage = "builder"\n    return next_stage')
+    _module_scope(OLD, candidate)
