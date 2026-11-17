@@ -62,8 +62,8 @@ def _module_scope(before: bytes, after: bytes) -> None:
           )) == (None if new_fn.returns is None else ast.dump(
               new_fn.returns, include_attributes=False
           ))
-          and ast.dump(old_fn.decorator_list, include_attributes=False)
-          == ast.dump(new_fn.decorator_list, include_attributes=False),
+          and not old_fn.decorator_list
+          and not new_fn.decorator_list,
           "issue62_signature_changed")
     for earlier, later in zip(old.body, new.body):
         if earlier is old_fn:
@@ -75,6 +75,30 @@ def _module_scope(before: bytes, after: bytes) -> None:
     _need(ast.dump(old_fn, include_attributes=False)
           != ast.dump(new_fn, include_attributes=False),
           "issue62_function_unchanged")
+
+    # Only previously reviewed call targets may appear in AI-produced code.
+    # Prevent import/exec/eval/dunder/nested-function or unbounded loops
+    # BEFORE the generated module can be executed by an independent Validator.
+    old_calls = {ast.dump(node.func, include_attributes=False)
+                 for node in ast.walk(old_fn) if isinstance(node, ast.Call)}
+    dangerous = (ast.Import, ast.ImportFrom, ast.For, ast.AsyncFor,
+                 ast.While, ast.With, ast.AsyncWith, ast.Try, ast.TryStar,
+                 ast.Raise, ast.Lambda, ast.Yield, ast.YieldFrom,
+                 ast.Await, ast.Global, ast.Nonlocal, ast.ClassDef,
+                 ast.AsyncFunctionDef)
+    nodes = list(ast.walk(new_fn))
+    _need(len(nodes) <= 600, "issue62_function_too_complex")
+    for node in nodes:
+        _need(not isinstance(node, dangerous)
+              and not (isinstance(node, ast.FunctionDef) and node is not new_fn),
+              "issue62_unsafe_generated_syntax")
+        if isinstance(node, ast.Call):
+            _need(ast.dump(node.func, include_attributes=False) in old_calls
+                  and not any(isinstance(arg, ast.Starred) for arg in node.args),
+                  "issue62_unapproved_call")
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            ident = node.id if isinstance(node, ast.Name) else node.attr
+            _need(not ident.startswith("__"), "issue62_dunder_forbidden")
 
 
 def _governed(receipt: Any, head: str) -> None:
