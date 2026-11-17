@@ -1,0 +1,53 @@
+name: Issue 61 Rules 219 manifest command contract
+
+on:
+  push:
+    branches:
+      - feat/issue61-rules219-manifest-command-20261116
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue61-rules219-command-contract
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.repository == 'ericson-j-santos/engineering-worker-pool'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact SHA (read only)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify branch, ancestry, scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$GITHUB_REF" = "refs/heads/feat/issue61-rules219-manifest-command-20261116"
+          git merge-base --is-ancestor 2480ba050784959bd5873a3425d2643e21fcdae1 "$GITHUB_SHA"
+          python3 - <<'PY'
+          import subprocess
+          expected = {
+              "app/rules219_manifest_command.py",
+              "tests/test_rules219_manifest_command.py",
+              ".github/workflows/issue61-rules219-manifest-command.yml",
+          }
+          changed = set(subprocess.check_output(
+              ["git","diff","--name-only","2480ba050784959bd5873a3425d2643e21fcdae1","HEAD"], text=True
+          ).splitlines())
+          if changed != expected:
+              raise SystemExit("RULES219_SCOPE_MISMATCH")
+          print("RULES219_SCOPE_OK",len(changed))
+          PY
+      - name: Positive, negative, replay contracts
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -B -m unittest discover -v -s tests -p 'test_rules219_manifest_command.py'
+      - name: Confirm clean checkout
+        run: test -z "$(git status --porcelain)"
