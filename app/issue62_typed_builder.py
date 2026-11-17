@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from app.native_gateway_commands import NativeGatewayCommandRegistry
+from app.native_gateway_commands import GovernedCommand, NativeGatewayCommandRegistry
 from app.native_gateway_preflight import attest_execution_boundary
 from app.native_one_shot import (
     AdapterDescriptor, LocalWorkspace, NativeExecutorBlocked, ReceiptStore,
@@ -34,6 +34,55 @@ ISSUE62_DESCRIPTOR = AdapterDescriptor(
     builder_commands=("issue62.build", "issue62.commit", "issue62.stage"),
     validator_commands=("issue62.validate",),
 )
+
+
+
+def fixed_issue62_gateway_specs(
+    *, trusted_builder_sha256: str, trusted_validator_sha256: str,
+) -> dict[str, GovernedCommand]:
+    """Declare the four fixed #62 commands for an ALREADY trusted installation.
+
+    The trusted Runtime Platform must obtain both digests from its pinned,
+    independently verified installation manifest, never a task, GitHub event,
+    model response or environment flag. This declaration does not install a
+    script, grant Gateway access, attest cost or execute anything. The existing
+    registry verifies the script bytes and the real Gateway before each call.
+    """
+    need(
+        type(trusted_builder_sha256) is str
+        and HEX64.fullmatch(trusted_builder_sha256) is not None
+        and type(trusted_validator_sha256) is str
+        and HEX64.fullmatch(trusted_validator_sha256) is not None,
+        "issue62_fixed_script_digest_required",
+    )
+    specs = {
+        "issue62.build": GovernedCommand(
+            key="issue62.build", role="builder",
+            argv=("python", "scripts/issue62_builder.py"), risk=2,
+            timeout_seconds=120, script_sha256=trusted_builder_sha256,
+        ),
+        "issue62.stage": GovernedCommand(
+            key="issue62.stage", role="builder",
+            argv=("git", "add", "--", "app/next_action_bridge.py"), risk=2,
+            timeout_seconds=30,
+        ),
+        "issue62.commit": GovernedCommand(
+            key="issue62.commit", role="builder",
+            argv=("git", "commit", "-m", "feat(issue62): advance next action"),
+            risk=2, timeout_seconds=30, allow_dirty=True,
+            allow_head_change=True,
+        ),
+        "issue62.validate": GovernedCommand(
+            key="issue62.validate", role="validator",
+            argv=("python", "scripts/issue62_validator.py"), risk=1,
+            timeout_seconds=120, script_sha256=trusted_validator_sha256,
+        ),
+    }
+    need(set(specs) == set(ISSUE62_DESCRIPTOR.command_keys),
+         "issue62_fixed_command_set_mismatch")
+    for command in specs.values():
+        command.validate(ISSUE62_DESCRIPTOR)
+    return specs
 
 
 def need(ok: bool, code: str) -> None:
