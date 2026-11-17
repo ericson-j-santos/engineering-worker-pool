@@ -6,8 +6,10 @@ on:
     branches: [feat/issue62-next-action-continuation-20261115]
     paths:
       - app/next_action_bridge.py
+      - app/issue62_typed_builder.py
       - scripts/issue62_continuation_gate.py
       - tests/test_next_action_bridge.py
+      - tests/test_issue62_typed_builder.py
       - tests/test_issue62_workflow_contract.py
       - .github/workflows/issue62-governed-continuation.yml
       - .github/workflows/issue62-independent-validation.yml
@@ -57,15 +59,18 @@ jobs:
           from pathlib import Path
           for file in (
               "app/next_action_bridge.py",
+              "app/issue62_typed_builder.py",
               "scripts/issue62_continuation_gate.py",
               "tests/test_next_action_bridge.py",
+              "tests/test_issue62_typed_builder.py",
               "tests/test_issue62_workflow_contract.py",
           ):
               ast.parse(Path(file).read_text(encoding="utf-8"), filename=file)
-          print("ISSUE62_SYNTAX_OK 4")
+          print("ISSUE62_SYNTAX_OK 6")
           PY
           python -B -m pytest -q -p no:cacheprovider \
             tests/test_next_action_bridge.py \
+            tests/test_issue62_typed_builder.py \
             tests/test_issue62_workflow_contract.py \
             tests/test_native_one_shot.py \
             tests/test_native_gateway_commands.py \
