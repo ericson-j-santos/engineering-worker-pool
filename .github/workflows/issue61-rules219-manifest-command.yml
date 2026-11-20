@@ -53,6 +53,12 @@ jobs:
               ".github/workflows/issue61-rules219-manifest-command.yml",
               "app/prepr_candidate_verifier.py",
               "tests/test_prepr_candidate_verifier.py",
+              "app/native_one_shot.py",
+              "app/rules213_native_adapter.py",
+              "app/rules213_updater_profile.py",
+              "tests/test_rules213_fenced_mandatory.py",
+              "tests/test_rules213_native_adapter.py",
+              "tests/test_rules213_updater_profile.py",
           }
           changed = set(subprocess.check_output(
               ["git","diff","--name-only","2480ba050784959bd5873a3425d2643e21fcdae1","HEAD"], text=True
@@ -70,6 +76,32 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: '1'
         run: python3 -B -m unittest discover -v -s tests -p 'test_prepr_candidate_verifier.py'
+      - name: Verify imported Rules 213 source blobs against reviewed SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import subprocess
+          expected = {
+              "app/native_one_shot.py": "22061cc5c6105992d9b79e74b203adaeb1023153",
+              "app/rules213_native_adapter.py": "39c0deefc6420b7168e01d03053e0f9b71aa2da5",
+              "app/rules213_updater_profile.py": "2a9bf55cc4987d7dc1eb1b05c536915755784a6f",
+              "tests/test_rules213_fenced_mandatory.py": "3e9894b1ecca2e97c88957680fd23afefc55feca",
+              "tests/test_rules213_native_adapter.py": "437696c0c1fe3ff47b201b60dc3bb7572f294aab",
+              "tests/test_rules213_updater_profile.py": "bd87ce904459d05c2f0c120a6f170785d4869c29",
+          }
+          for path, blob_sha in sorted(expected.items()):
+              observed = subprocess.check_output(
+                  ["git", "hash-object", "--", path], text=True
+              ).strip()
+              if observed != blob_sha:
+                  raise SystemExit("RULES213_SOURCE_BLOB_MISMATCH")
+          print("RULES213_SOURCE_BLOBS_OK", len(expected))
+          PY
+      - name: Rules 213 native adapter and fencing positive/negative contracts
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -B -m unittest discover -v -s tests -p 'test_rules213*.py'
       - name: Confirm only reviewed independent checkout remains untracked
         shell: bash
         run: |

@@ -576,6 +576,11 @@ class NativeOneShotExecutor:
               and descriptor.contract_sha256 == manifest.adapter_contract_sha256,
               "adapter_contract_mismatch")
         _need(role in descriptor.roles, "adapter_role_unsupported")
+        # This legacy Rules213 profile describes an admission contract only.
+        # It was never a runnable repair handler; refuse it before any claim,
+        # local side-effect or receipt acquisition.
+        _need(manifest.adapter_id != "rules213.updater.repair.v1",
+              "rules213_preadmission_not_executable")
 
         lock, receipt_path = self.receipts.acquire(manifest.task_id, role)
         try:
@@ -604,6 +609,11 @@ class NativeOneShotExecutor:
                   and task.get("base_sha") == manifest.base_sha,
                   "task_identity_drift")
             fenced = self._fencing_required(task)
+            # Rules #213 repairs cannot be made durable by a legacy unfenced
+            # claim. Fail BEFORE contacting any claim endpoint or running a
+            # Builder/Validator command; the task flag is not enough on its own.
+            if manifest.adapter_id == "rules213.updater.native.v1":
+                _need(fenced, "rules213_requires_fenced_task")
             if fenced:
                 # This attestation is injected by trusted executor configuration,
                 # never by the task manifest. It asserts that adapter actions are
