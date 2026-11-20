@@ -126,6 +126,31 @@ class CandidateInspectionTests(unittest.TestCase):
                                     "candidate_file_type_invalid"):
             self.verify(head_sha=new, observed_branch_sha=new)
 
+    def test_added_regular_source_is_read_back_with_explicit_absence(self):
+        (self.root / "app" / "extra.py").write_text("NEW = True\\n")
+        self.git("add", ".")
+        self.git("-c", "user.name=CI", "-c", "user.email=ci@example.invalid",
+                 "commit", "-qm", "added ordinary file")
+        current = self.git("rev-parse", "HEAD").decode().strip()
+        paths = ("app/demo.py", "app/extra.py")
+        record = self.verify(head_sha=current, observed_branch_sha=current,
+                             allowed_paths=paths, expected_paths=paths)
+        replay = self.verify(head_sha=current, observed_branch_sha=current,
+                             allowed_paths=paths, expected_paths=paths)
+        self.assertEqual(record, replay)
+        self.assertIsNone(record["before_sha256"]["app/extra.py"])
+        self.assertEqual(len(record["after_sha256"]["app/extra.py"]), 64)
+        self.assertFalse(record["ready_for_pr"])
+
+    def test_deleted_source_is_still_denied(self):
+        (self.root / "app" / "demo.py").unlink()
+        self.git("add", "-A")
+        self.git("-c", "user.name=CI", "-c", "user.email=ci@example.invalid",
+                 "commit", "-qm", "delete source")
+        now = self.git("rev-parse", "HEAD").decode().strip()
+        with self.assertRaisesRegex(CandidateBlocked, "candidate_file_type_invalid"):
+            self.verify(head_sha=now, observed_branch_sha=now)
+
     def test_untracked_file_fails_before_any_claim(self):
         (self.root / "NEW_UNTRACKED").write_text("not allowed\n")
         with self.assertRaisesRegex(CandidateBlocked, "candidate_checkout_dirty"):

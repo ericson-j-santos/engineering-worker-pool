@@ -136,10 +136,22 @@ def inspect_candidate(root: Path, spec: CandidateSpec) -> dict:
                  and entry.endswith(b"\t" + path.encode("utf-8") + b"\0")
                  and entry.count(b"\0") == 1,
                  "candidate_file_type_invalid")
-        old = _git(root, "show", f"{spec.base_sha}:{path}")
+        old_entry = _git(root, "ls-tree", "-z", spec.base_sha, "--", path)
+        if old_entry:
+            _require(old_entry.startswith(b"100644 blob ")
+                     and old_entry.endswith(b"\t" + path.encode("utf-8") + b"\0")
+                     and old_entry.count(b"\0") == 1,
+                     "candidate_base_file_type_invalid")
+            old = _git(root, "show", f"{spec.base_sha}:{path}")
+            before[path] = hashlib.sha256(old).hexdigest()
+        else:
+            # Git base has no object at this path: preserve absence as null,
+            # never pretend a new file existed with SHA-256(empty).
+            old = None
+            before[path] = None
         new = _git(root, "show", f"{spec.head_sha}:{path}")
-        _require(old != new, "candidate_file_unchanged")
-        before[path] = hashlib.sha256(old).hexdigest()
+        _require(old is None or old != new, "candidate_file_unchanged")
+        _require(bool(new), "candidate_added_empty_file")
         after[path] = hashlib.sha256(new).hexdigest()
     # This report is evidence of source inspection only. It must not claim
     # artifact durability, model invocation, Validator or real-world E2E.
