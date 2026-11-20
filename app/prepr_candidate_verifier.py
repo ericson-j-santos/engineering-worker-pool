@@ -102,7 +102,7 @@ def inspect_candidate(root: Path, spec: CandidateSpec) -> dict:
     """
     _require(type(spec) is CandidateSpec, "candidate_contract_invalid")
     spec.validate()
-    _require(type(root) is Path and root.is_dir()
+    _require(isinstance(root, Path) and root.is_dir()
              and not root.is_symlink(), "candidate_checkout_invalid")
     root = root.resolve()
     _require(Path(_git(root, "rev-parse", "--show-toplevel").decode().strip())
