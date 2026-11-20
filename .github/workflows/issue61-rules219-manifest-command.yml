@@ -241,7 +241,7 @@ jobs:
             const owner = 'ericson-j-santos';
             const repo = 'noteri-runtime';
             const base = 'ce2be12647f27220a40d2ae39188d52f517f31df';
-            const head = '3daf6bd91918a5b5be9e2d69ac7f349cd317896a';
+            const head = '6e462be66fd441c8997840324193ad0edc88e82a';
             const [info, main, candidate, issue] = await Promise.all([
               github.rest.repos.get({owner, repo}),
               github.rest.repos.getBranch({owner, repo, branch: 'main'}),
@@ -258,7 +258,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: ericson-j-santos/noteri-runtime
-          ref: 3daf6bd91918a5b5be9e2d69ac7f349cd317896a
+          ref: 6e462be66fd441c8997840324193ad0edc88e82a
           fetch-depth: 0
           path: _noteri_candidate
           persist-credentials: false
@@ -272,15 +272,17 @@ jobs:
           from app.prepr_candidate_verifier import CandidateSpec, inspect_candidate
           expected = tuple(sorted((
               ".github/workflows/noteri-control-plane-probe.yml",
+              "scripts/noteri_worker_pool_health_readonly.py",
               "tests/test_noteri_control_plane_fallback.py",
               "tests/test_noteri_rules219_readonly_admission.py",
+              "tests/test_noteri_worker_pool_health_readonly.py",
           )))
           spec = CandidateSpec(
               repository="ericson-j-santos/noteri-runtime",
               base_sha="ce2be12647f27220a40d2ae39188d52f517f31df",
-              head_sha="3daf6bd91918a5b5be9e2d69ac7f349cd317896a",
+              head_sha="6e462be66fd441c8997840324193ad0edc88e82a",
               observed_main_sha="ce2be12647f27220a40d2ae39188d52f517f31df",
-              observed_branch_sha="3daf6bd91918a5b5be9e2d69ac7f349cd317896a",
+              observed_branch_sha="6e462be66fd441c8997840324193ad0edc88e82a",
               allowed_paths=expected, expected_paths=expected,
           )
           result = inspect_candidate(Path("_noteri_candidate"), spec)
@@ -304,7 +306,9 @@ jobs:
           (
             cd _noteri_candidate
             python3 -B -m unittest discover -v -s tests -p 'test_noteri_rules219_readonly_admission.py'
+            python3 -B -m unittest discover -v -s tests -p 'test_noteri_worker_pool_health_readonly.py'
+            python3 -B -m pytest -q -p no:cacheprovider tests/test_noteri_control_plane_fallback.py
             test -z "$(git status --porcelain --untracked-files=all)"
-            test "$(git rev-parse HEAD)" = "3daf6bd91918a5b5be9e2d69ac7f349cd317896a"
+            test "$(git rev-parse HEAD)" = "6e462be66fd441c8997840324193ad0edc88e82a"
           )
           echo NOTERI42_INDEPENDENT_REGRESSION_OK
