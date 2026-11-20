@@ -208,6 +208,15 @@ jobs:
           python-version: '3.12'
       - name: Install only existing pinned CI test dependencies
         run: python -m pip install --disable-pip-version-check pytest==8.4.2 PyYAML==6.0.3 cryptography==50.0.2
+      - name: Shared native executor and scoped Git-bundle CAS regressions
+        shell: bash
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_native_one_shot.py \
+            tests/test_s3_git_bundle_artifact.py \
+            tests/test_native_gateway_commands.py
       - name: Re-run real affected regressions on separate Desktop checkout
         shell: bash
         env:
