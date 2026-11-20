@@ -211,3 +211,83 @@ jobs:
             tests/test_desktop_orchestrator_protected_state.py \
             tests/test_desktop_orchestrator_shadow_service.py \
             tests/test_orchestrator_recovery_owner_dispatch.py
+
+      - name: Verify official Noteri issue 42 and pinned repair branch by GitHub API
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            if (context.repo.owner !== 'ericson-j-santos' ||
+                context.repo.repo !== 'engineering-worker-pool' ||
+                context.ref !== 'refs/heads/feat/issue61-rules219-manifest-command-20261116') {
+              throw new Error('PREPR_NOTERI_SOURCE_IDENTITY_INVALID');
+            }
+            const owner = 'ericson-j-santos';
+            const repo = 'noteri-runtime';
+            const base = 'ce2be12647f27220a40d2ae39188d52f517f31df';
+            const head = '3daf6bd91918a5b5be9e2d69ac7f349cd317896a';
+            const [info, main, candidate, issue] = await Promise.all([
+              github.rest.repos.get({owner, repo}),
+              github.rest.repos.getBranch({owner, repo, branch: 'main'}),
+              github.rest.repos.getBranch({owner, repo,
+                branch: 'fix/issue42-rules219-gateway-reason-20261119'}),
+              github.rest.issues.get({owner, repo, issue_number: 42}),
+            ]);
+            if (info.data.private !== false || main.data.commit.sha !== base ||
+                candidate.data.commit.sha !== head || issue.data.state !== 'open' ||
+                issue.data.number !== 42 || issue.data.pull_request) {
+              throw new Error('PREPR_NOTERI42_AUTHORITY_OR_SHA_DRIFT');
+            }
+      - name: Checkout independent Noteri 42 candidate at immutable SHA
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ericson-j-santos/noteri-runtime
+          ref: 3daf6bd91918a5b5be9e2d69ac7f349cd317896a
+          fetch-depth: 0
+          path: _noteri_candidate
+          persist-credentials: false
+      - name: Inspect Noteri 42 source ancestry, exact paths and SHA-256 without promotion
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from app.prepr_candidate_verifier import CandidateSpec, inspect_candidate
+          expected = tuple(sorted((
+              ".github/workflows/noteri-control-plane-probe.yml",
+              "tests/test_noteri_control_plane_fallback.py",
+              "tests/test_noteri_rules219_readonly_admission.py",
+          )))
+          spec = CandidateSpec(
+              repository="ericson-j-santos/noteri-runtime",
+              base_sha="ce2be12647f27220a40d2ae39188d52f517f31df",
+              head_sha="3daf6bd91918a5b5be9e2d69ac7f349cd317896a",
+              observed_main_sha="ce2be12647f27220a40d2ae39188d52f517f31df",
+              observed_branch_sha="3daf6bd91918a5b5be9e2d69ac7f349cd317896a",
+              allowed_paths=expected, expected_paths=expected,
+          )
+          result = inspect_candidate(Path("_noteri_candidate"), spec)
+          if (result["result"] != "CANDIDATE_INSPECTED" or
+              result["changed_paths"] != list(expected) or
+              result["read_only"] is not True or
+              result["ready_for_pr"] is not False or
+              result["model_calls_verified"] is not False or
+              result["validator_independent_verified"] is not False or
+              result["cas_artifact_ref"] is not None):
+              raise SystemExit("PREPR_NOTERI42_FALSE_ATTESTATION")
+          print(json.dumps(result, sort_keys=True))
+          print("NOTERI42_CANDIDATE_READBACK_OK")
+          PY
+      - name: Independently execute Noteri 42 admission regressions in isolated checkout
+        shell: bash
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          set -euo pipefail
+          (
+            cd _noteri_candidate
+            python3 -B -m unittest discover -v -s tests -p 'test_noteri_rules219_readonly_admission.py'
+            test -z "$(git status --porcelain --untracked-files=all)"
+            test "$(git rev-parse HEAD)" = "3daf6bd91918a5b5be9e2d69ac7f349cd317896a"
+          )
+          echo NOTERI42_INDEPENDENT_REGRESSION_OK
