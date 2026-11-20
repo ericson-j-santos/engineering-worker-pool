@@ -51,6 +51,8 @@ jobs:
               "app/rules219_manifest_command.py",
               "tests/test_rules219_manifest_command.py",
               ".github/workflows/issue61-rules219-manifest-command.yml",
+              "app/prepr_candidate_verifier.py",
+              "tests/test_prepr_candidate_verifier.py",
           }
           changed = set(subprocess.check_output(
               ["git","diff","--name-only","2480ba050784959bd5873a3425d2643e21fcdae1","HEAD"], text=True
@@ -64,6 +66,10 @@ jobs:
           PYTHONDONTWRITEBYTECODE: '1'
           RULES219_FIXTURE_ROOT: _rules219_fixture
         run: python3 -B -m unittest discover -v -s tests -p 'test_rules219_manifest_command.py'
+      - name: Candidate read-only positive, negative and replay contracts
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -B -m unittest discover -v -s tests -p 'test_prepr_candidate_verifier.py'
       - name: Confirm only reviewed independent checkout remains untracked
         shell: bash
         run: |
@@ -78,3 +84,96 @@ jobs:
               raise SystemExit("RULES219_WORKTREE_STATUS_DRIFT")
           print("RULES219_INDEPENDENT_CHECKOUT_SCOPE_OK")
           PY
+
+  desktop_candidate:
+    name: Independent Desktop Git candidate audit (NOT Builder or Validator)
+    if: github.repository == 'ericson-j-santos/engineering-worker-pool'
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout shared pre-PR inspector at source SHA
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify official Desktop main and repair branch by GitHub API
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            if (context.repo.owner !== 'ericson-j-santos' ||
+                context.repo.repo !== 'engineering-worker-pool' ||
+                context.ref !== 'refs/heads/feat/issue61-rules219-manifest-command-20261116') {
+              throw new Error('PREPR_SOURCE_IDENTITY_INVALID');
+            }
+            const owner = 'ericson-j-santos';
+            const repo = 'desktop-pc24x7-runtime';
+            const base = '1ae2773bea5ffc8dba603d8ae3c07137ce345017';
+            const head = '11cfdf12ad656a7595aba676132eccc309962ec4';
+            const [info, main, candidate] = await Promise.all([
+              github.rest.repos.get({owner, repo}),
+              github.rest.repos.getBranch({owner, repo, branch: 'main'}),
+              github.rest.repos.getBranch({
+                owner, repo, branch: 'fix/orchestrator-isolated-backup-sha-3126'
+              }),
+            ]);
+            if (info.data.private !== false || main.data.commit.sha !== base ||
+                candidate.data.commit.sha !== head) {
+              throw new Error('PREPR_DESKTOP_MAIN_OR_BRANCH_MOVED');
+            }
+      - name: Checkout independent Desktop candidate (immutable SHA, no credentials)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ericson-j-santos/desktop-pc24x7-runtime
+          ref: 11cfdf12ad656a7595aba676132eccc309962ec4
+          fetch-depth: 0
+          path: _desktop_candidate
+          persist-credentials: false
+      - name: Inspect actual Git commits, scope, file bytes and patch SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from app.prepr_candidate_verifier import CandidateSpec, inspect_candidate
+          expected = tuple(sorted((
+              ".github/workflows/desktop-orchestrator-isolated-rollback.yml",
+              "scripts/desktop_orchestrator_isolated_rollback.py",
+              "tests/test_desktop_orchestrator_isolated_rollback.py",
+              "tests/test_desktop_orchestrator_protected_state.py",
+              "tests/test_desktop_orchestrator_shadow_service.py",
+              "tests/test_orchestrator_recovery_owner_dispatch.py",
+          )))
+          spec = CandidateSpec(
+              repository="ericson-j-santos/desktop-pc24x7-runtime",
+              base_sha="1ae2773bea5ffc8dba603d8ae3c07137ce345017",
+              head_sha="11cfdf12ad656a7595aba676132eccc309962ec4",
+              observed_main_sha="1ae2773bea5ffc8dba603d8ae3c07137ce345017",
+              observed_branch_sha="11cfdf12ad656a7595aba676132eccc309962ec4",
+              allowed_paths=expected, expected_paths=expected,
+          )
+          report = inspect_candidate(Path("_desktop_candidate"), spec)
+          if report["ready_for_pr"] is not False or report["cas_artifact_ref"] is not None:
+              raise SystemExit("PREPR_FALSE_READY")
+          print(json.dumps(report, sort_keys=True))
+          PY
+      - name: Python 3.12 and exact existing Desktop test dependencies
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install only existing pinned CI test dependencies
+        run: python -m pip install --disable-pip-version-check pytest==8.4.2 PyYAML==6.0.3 cryptography==50.0.2
+      - name: Re-run real affected regressions on separate Desktop checkout
+        shell: bash
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          cd _desktop_candidate
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_desktop_orchestrator_isolated_rollback.py \
+            tests/test_desktop_orchestrator_protected_state.py \
+            tests/test_desktop_orchestrator_shadow_service.py \
+            tests/test_orchestrator_recovery_owner_dispatch.py
