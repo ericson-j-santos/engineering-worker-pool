@@ -59,6 +59,8 @@ jobs:
               "tests/test_rules213_fenced_mandatory.py",
               "tests/test_rules213_native_adapter.py",
               "tests/test_rules213_updater_profile.py",
+              "app/rules213_runtime_admission.py",
+              "tests/test_rules213_runtime_admission.py",
           }
           changed = set(subprocess.check_output(
               ["git","diff","--name-only","2480ba050784959bd5873a3425d2643e21fcdae1","HEAD"], text=True
