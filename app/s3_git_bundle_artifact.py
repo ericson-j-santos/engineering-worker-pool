@@ -20,6 +20,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
+from app.native_scope_paths import is_reviewed_hidden_path
+
 from app.native_one_shot import (
     AdapterResult,
     DurableArtifact,
@@ -90,14 +92,16 @@ def _is_precondition_failed(error: Exception) -> bool:
     return code in {"PreconditionFailed", "412"} or status == 412
 
 
-def _safe_relative_path(value: Any) -> str:
+def _safe_relative_path(value: Any, adapter_id: str | None = None) -> str:
     _require(type(value) is str and 1 <= len(value) <= 240,
              "artifact_manifest_invalid")
     path = PurePosixPath(value)
     _require(not path.is_absolute() and "\\" not in value
              and ".." not in path.parts
-             and all(part not in {"", "."} and not part.startswith(".")
-                     for part in path.parts), "artifact_manifest_invalid")
+             and (all(part not in {"", "."} and not part.startswith(".")
+                      for part in path.parts)
+                  or is_reviewed_hidden_path(adapter_id, value)),
+             "artifact_manifest_invalid")
     return path.as_posix()
 
 
@@ -486,7 +490,7 @@ class S3GitBundleArtifactTransport:
                  "artifact_bundle_invalid")
 
     @staticmethod
-    def _result_value(result: AdapterResult) -> dict[str, Any]:
+    def _result_value(result: AdapterResult, *, adapter_id: str | None = None) -> dict[str, Any]:
         _require(type(result) is AdapterResult
                  and type(result.produced_sha) is str
                  and bool(SHA40.fullmatch(result.produced_sha))
@@ -495,7 +499,7 @@ class S3GitBundleArtifactTransport:
                  and type(result.evidence_sha256) is str
                  and bool(SHA256.fullmatch(result.evidence_sha256)),
                  "artifact_result_invalid")
-        paths = tuple(_safe_relative_path(path) for path in result.changed_paths)
+        paths = tuple(_safe_relative_path(path, adapter_id) for path in result.changed_paths)
         _require(bool(paths) and paths == tuple(sorted(set(paths))),
                  "artifact_result_invalid")
         commands = tuple(result.invoked_commands)
@@ -529,7 +533,7 @@ class S3GitBundleArtifactTransport:
             "lease_generation": lease_generation,
             "attempt_id": attempt_id,
             "effect_id": effect_id,
-            "result": cls._result_value(result),
+            "result": cls._result_value(result, adapter_id=manifest.adapter_id),
             "bundle": {
                 "sha256": hashlib.sha256(bundle).hexdigest(),
                 "size": len(bundle),
@@ -607,7 +611,7 @@ class S3GitBundleArtifactTransport:
             if type(raw_result["invoked_commands"]) is list else (),
             raw_result["evidence_sha256"],
         )
-        cls._result_value(result)
+        cls._result_value(result, adapter_id=manifest.adapter_id)
         _require(produced_sha is None or result.produced_sha == produced_sha,
                  "artifact_result_invalid")
         expected_manifest = _task_manifest_value(manifest)
@@ -726,7 +730,7 @@ class S3GitBundleArtifactTransport:
             # The result manifest must describe these exact checkout bytes,
             # including unchanged paths from the original adapter scope.
             for relative, expected in manifest.before_sha256.items():
-                path = workspace.root / _safe_relative_path(relative)
+                path = workspace.root / _safe_relative_path(relative, manifest.adapter_id)
                 try:
                     _require(path.is_file() and not path.is_symlink()
                              and path.stat().st_nlink == 1

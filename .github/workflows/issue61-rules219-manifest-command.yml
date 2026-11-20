@@ -61,6 +61,10 @@ jobs:
               "tests/test_rules213_updater_profile.py",
               "app/rules213_runtime_admission.py",
               "tests/test_rules213_runtime_admission.py",
+              "app/noteri42_native_binding.py",
+              "tests/test_noteri42_native_binding.py",
+              "app/native_scope_paths.py",
+              "app/s3_git_bundle_artifact.py",
           }
           changed = set(subprocess.check_output(
               ["git","diff","--name-only","2480ba050784959bd5873a3425d2643e21fcdae1","HEAD"], text=True
@@ -78,14 +82,14 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: '1'
         run: python3 -B -m unittest discover -v -s tests -p 'test_prepr_candidate_verifier.py'
-      - name: Verify imported Rules 213 source blobs against reviewed SHA
+      - name: Verify imported Rules 213 blobs and reviewed shared native core
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import subprocess
           expected = {
-              "app/native_one_shot.py": "22061cc5c6105992d9b79e74b203adaeb1023153",
+              "app/native_one_shot.py": "1ceb5d08856781c538a837bc38dcb33e6b87c3c9",
               "app/rules213_native_adapter.py": "39c0deefc6420b7168e01d03053e0f9b71aa2da5",
               "app/rules213_updater_profile.py": "2a9bf55cc4987d7dc1eb1b05c536915755784a6f",
               "tests/test_rules213_fenced_mandatory.py": "3e9894b1ecca2e97c88957680fd23afefc55feca",
@@ -98,12 +102,16 @@ jobs:
               ).strip()
               if observed != blob_sha:
                   raise SystemExit("RULES213_SOURCE_BLOB_MISMATCH")
-          print("RULES213_SOURCE_BLOBS_OK", len(expected))
+          print("RULES213_SOURCE_BLOBS_REVIEWED", len(expected), "shared_native_core_changed_for_scoped_noteri42")
           PY
       - name: Rules 213 native adapter and fencing positive/negative contracts
         env:
           PYTHONDONTWRITEBYTECODE: '1'
         run: python3 -B -m unittest discover -v -s tests -p 'test_rules213*.py'
+      - name: Typed Noteri 42 Gateway binding positive/negative before-claim gates
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -B -m unittest discover -v -s tests -p 'test_noteri42_native_binding.py'
       - name: Confirm only reviewed independent checkout remains untracked
         shell: bash
         run: |
