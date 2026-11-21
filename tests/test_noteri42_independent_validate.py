@@ -78,9 +78,14 @@ class ValidatorGitTests(unittest.TestCase):
         (self.root / "extra").write_text("not allowed\n")
         with self.assertRaisesRegex(verifier.Blocked, "CHECKOUT_DIRTY"):
             self.verify()
+        # A second commit atop the repair would fail the parent gate first;
+        # recreate a single-parent candidate with two paths to test scope.
+        approved_yaml = self.target.read_text()
+        self.git("checkout", "-q", "-b", "scope-fixture", self.base)
+        self.target.write_text(approved_yaml)
         self.git("add", ".")
         self.git("-c", "user.name=CI", "-c", "user.email=ci@example.invalid",
-                 "commit", "-qm", "unreviewed")
+                 "commit", "-qm", "unreviewed path in same repair commit")
         h = self.git("rev-parse", "HEAD").decode().strip()
         with patch.object(verifier, "BASE_SHA", self.base):
             with self.assertRaisesRegex(verifier.Blocked, "SCOPE_CHANGED"):
