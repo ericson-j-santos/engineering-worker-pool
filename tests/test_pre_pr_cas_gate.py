@@ -523,3 +523,34 @@ def test_unverified_candidate_lookup_blocks_before_cas(fx):
     with pytest.raises(PrePRBlocked, match="prepr_candidate_readback_invalid"):
         run(fx)
     assert fx.writes == fx.model_reads == 0
+
+
+def test_reqsys715_workflow_scoped_feature_path(fx):
+    """Scope only; classification still requires external authenticated proof."""
+    fx.intent = replace(fx.intent,
+        repository="ericson-j-santos/reqsys-v2-enterprise-real",
+        issue_number=715, kind="feature", source_mode="assisted",
+        allowed_paths=(
+            ".github/workflows/codex-worker-pool-handoff.yml",
+            ".sdd/specs/reqsys-prova-rapida-interface-pareto.spec.json",
+            "frontend/tests/e2e/prova-rapida.spec.js",
+        ))
+    fx.intent.check()
+
+
+@pytest.mark.parametrize("change", [
+    {"repository": "ericson-j-santos/engineering-worker-pool"},
+    {"issue_number": 716},
+    {"kind": "repair", "source_mode": "model_builder"},
+    {"allowed_paths": (".github/workflows/other.yml",)},
+    {"allowed_paths": (".github/workflows/codex-worker-pool-handoff.yml/../evil.yml",)},
+    {"allowed_paths": (".git/config", ".github/workflows/codex-worker-pool-handoff.yml")},
+])
+def test_reqsys715_workflow_exception_never_opens_other_scopes(fx, change):
+    fx.intent = replace(fx.intent,
+        repository="ericson-j-santos/reqsys-v2-enterprise-real",
+        issue_number=715, kind="feature", source_mode="assisted",
+        allowed_paths=(".github/workflows/codex-worker-pool-handoff.yml",))
+    fx.intent = replace(fx.intent, **change)
+    with pytest.raises(PrePRBlocked, match="prepr_scope_invalid"):
+        fx.intent.check()

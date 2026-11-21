@@ -19,6 +19,8 @@ IDENT = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.:-]{7,191}\Z")
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 PATH = re.compile(r"(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9_./-]+\Z")
 SDD_PATH = re.compile(r"\.sdd/specs/[A-Za-z0-9][A-Za-z0-9_.-]{0,179}\.(?:spec\.json|requirements\.md)\Z")
+REQSYS_WORKFLOW_REPO = "ericson-j-santos/reqsys-v2-enterprise-real"
+REQSYS_715_WORKFLOW_PATH = ".github/workflows/codex-worker-pool-handoff.yml"
 MAX_CAS_BYTES = 20_000_000
 RETENTION_DAYS = 30
 
@@ -93,7 +95,12 @@ class PrePRIntent:
                         and PATH.fullmatch(p) is not None and
                         ((not p.startswith(".") and
                           all(not part.startswith(".") for part in p.split("/")))
-                         or SDD_PATH.fullmatch(p) is not None)
+                         or SDD_PATH.fullmatch(p) is not None
+                         or (p == REQSYS_715_WORKFLOW_PATH
+                             and self.repository == REQSYS_WORKFLOW_REPO
+                             and self.issue_number == 715
+                             and self.kind == "feature"
+                             and self.source_mode == "assisted"))
                         and "//" not in p
                         for p in self.allowed_paths),
                 "prepr_scope_invalid")
