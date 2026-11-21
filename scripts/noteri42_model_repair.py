@@ -40,8 +40,13 @@ THROWS = {
     'throw "NOTERI_219_GATEWAY_POLICY_EXIT_$($envelope.gateway_exit_code)"',
 }
 IF_ALLOWED = re.compile(
-    r"if \((?:[A-Za-z0-9$\s()._-]|@(20|21|22|23|24|25|26)|,)*\) \{\Z"
+    r"""if \((?:[A-Za-z0-9$\s().,_'"@-])*\) \{\Z"""
 )
+IF_TOKENS = frozenset({
+    "if", "gatewayExit", "LASTEXITCODE", "raw", "envelope",
+    "gateway_exit_code", "result", "ne", "eq", "ceq", "cne",
+    "not", "or", "and", "in", "blocked", "command_failed", "ok",
+})
 
 
 class Blocked(RuntimeError):
@@ -94,10 +99,12 @@ def candidate(before: bytes, replacement: str) -> bytes:
         elif IF_ALLOWED.fullmatch(statement) is not None:
             # Only known variables; no command or dynamic expression dispatch.
             names = re.findall(r"\$[A-Za-z_][A-Za-z_0-9]*", statement)
+            tokens = re.findall(r"(?<![A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_-]*", statement)
             need(all(name in {"$gatewayExit", "$LASTEXITCODE", "$raw", "$envelope"}
                      for name in names)
+                 and all(token in IF_TOKENS for token in tokens)
                  and not any(token in statement for token in (
-                     "$(", ";", "|", "&", "\x60", "invoke", "exit",
+                     "$(", ";", "|", "&", "\x60",
                  )), "NOTERI42_MODEL_CONDITION_UNSAFE")
         else:
             raise Blocked("NOTERI42_MODEL_STATEMENT_UNSAFE")
