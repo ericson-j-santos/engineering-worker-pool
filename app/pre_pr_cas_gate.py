@@ -18,6 +18,7 @@ SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 IDENT = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.:-]{7,191}\Z")
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 PATH = re.compile(r"(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9_./-]+\Z")
+SDD_PATH = re.compile(r"\.sdd/specs/[A-Za-z0-9][A-Za-z0-9_.-]{0,179}\.(?:spec\.json|requirements\.md)\Z")
 MAX_CAS_BYTES = 20_000_000
 RETENTION_DAYS = 30
 
@@ -58,6 +59,8 @@ class PrePRIntent:
     source_sha: str
     allowed_paths: tuple[str, ...]
     task_id: str
+    kind: str = "repair"
+    source_mode: str = "model_builder"
 
     def check(self) -> None:
         require(type(self.repository) is str and REPO.fullmatch(self.repository)
@@ -80,13 +83,17 @@ class PrePRIntent:
                     "prepr_sha_invalid")
         require(self.base_sha != self.candidate_sha,
                 "prepr_no_material_commit")
+        require((self.kind, self.source_mode) in (
+                    ("repair", "model_builder"), ("feature", "assisted")),
+                "prepr_kind_source_mode_invalid")
         require(type(self.allowed_paths) is tuple
                 and 1 <= len(self.allowed_paths) <= 32
                 and tuple(sorted(set(self.allowed_paths))) == self.allowed_paths
                 and all(type(p) is str and 1 <= len(p) <= 240
                         and PATH.fullmatch(p) is not None and
-                        not p.startswith(".") and
-                        all(not part.startswith(".") for part in p.split("/"))
+                        ((not p.startswith(".") and
+                          all(not part.startswith(".") for part in p.split("/")))
+                         or SDD_PATH.fullmatch(p) is not None)
                         and "//" not in p
                         for p in self.allowed_paths),
                 "prepr_scope_invalid")
@@ -96,6 +103,7 @@ class Authority(Protocol):
     def issue(self, repository: str, number: int) -> Mapping[str, Any]: ...
     def todo(self, todo_id: str) -> Mapping[str, Any]: ...
     def authorization(self, request_id: str) -> Mapping[str, Any]: ...
+    def verified_feature(self, request_id: str) -> Mapping[str, Any]: ...
     def branch_sha(self, repository: str, ref: str) -> str: ...
 
 
@@ -144,6 +152,45 @@ class DraftGitHub(Protocol):
                 ) -> Mapping[str, Any]: ...
 
 
+
+def _verified_feature(intent: PrePRIntent, authority: Authority) -> Mapping[str, Any]:
+    """Trusted integration must authenticate pre-change classification externally."""
+    reader = getattr(authority, "verified_feature", None)
+    require(callable(reader), "prepr_feature_authority_missing")
+    proof = reader(intent.request_id)
+    require(type(proof) is dict
+            and proof.get("source") == "trusted-control-plane"
+            and proof.get("status") == "verified_by_trusted_control_plane"
+            and proof.get("kind") == "feature"
+            and proof.get("source_mode") == "assisted"
+            and proof.get("repository") == intent.repository
+            and proof.get("issue_number") == intent.issue_number
+            and proof.get("todo_id") == intent.todo_id
+            and proof.get("request_id") == intent.request_id
+            and proof.get("correlation_id") == intent.correlation_id
+            and proof.get("idempotency_key") == intent.idempotency_key
+            and proof.get("base_sha") == intent.base_sha
+            and proof.get("candidate_sha") == intent.candidate_sha
+            and proof.get("source_sha") == intent.source_sha
+            and proof.get("allowed_paths") == list(intent.allowed_paths)
+            and proof.get("locked_before_execution") is True
+            and proof.get("capability_absent_at_base") is True
+            and proof.get("acceptance_preexisting") is True
+            and proof.get("baseline_failure_reproduced") is False
+            and proof.get("prior_repair_blocked") is False
+            and type(proof.get("model_calls")) is int
+            and proof["model_calls"] == 0
+            and proof.get("model_digest") is None
+            and type(proof.get("rules_sha")) is str
+            and SHA40.fullmatch(proof["rules_sha"]) is not None
+            and type(proof.get("baseline_sha256")) is str
+            and SHA256.fullmatch(proof["baseline_sha256"]) is not None
+            and type(proof.get("evidence_sha256")) is str
+            and SHA256.fullmatch(proof["evidence_sha256"]) is not None,
+            "prepr_feature_provenance_unproved")
+    return proof
+
+
 def _revalidate(intent: PrePRIntent, authority: Authority) -> None:
     """Every call uses fresh trusted snapshots, never user-supplied issue text."""
     issue = authority.issue(intent.repository, intent.issue_number)
@@ -173,6 +220,8 @@ def _revalidate(intent: PrePRIntent, authority: Authority) -> None:
             and auth.get("correlation_id") == intent.correlation_id
             and auth.get("allowed_paths") == list(intent.allowed_paths),
             "prepr_authority_unproved")
+    if intent.kind == "feature":
+        _verified_feature(intent, authority)
     require(authority.branch_sha(intent.repository, intent.base_ref)
             == intent.base_sha, "prepr_base_advanced")
     require(authority.branch_sha(intent.repository, intent.candidate_ref)
@@ -214,8 +263,14 @@ def _task(intent: PrePRIntent, pool: ExistingPool) -> Mapping[str, Any]:
 
 
 def _model(intent: PrePRIntent, task: Mapping[str, Any],
-           provider: ModelAudit) -> Mapping[str, Any]:
-    """Authenticated provider run lookup; a retrospective JSON receipt fails."""
+           provider: ModelAudit, authority: Authority) -> Mapping[str, Any]:
+    """Never synthesize a model run for an assisted feature."""
+    if intent.kind == "feature":
+        proof = _verified_feature(intent, authority)
+        return {"run_id": None, "model": None, "model_digest": None,
+                "call_count": 0, "baseline_failures": 0,
+                "baseline_sha256": proof["baseline_sha256"],
+                "provenance_sha256": proof["evidence_sha256"]}
     run = provider.get_verified_run(intent.task_id)
     require(type(run) is dict and run.get("provider_verified") is True
             and run.get("task_id") == intent.task_id
@@ -309,7 +364,9 @@ def _validate(intent: PrePRIntent, task: Mapping[str, Any],
             and result.get("after_sha256") == hashes["after_sha256"]
             and result.get("baseline_sha256") == model["baseline_sha256"]
             and type(result.get("baseline_failures")) is int
-            and result["baseline_failures"] >= 1
+            and ((result["baseline_failures"] >= 1) if intent.kind == "repair"
+                 else (result["baseline_failures"] == 0
+                       and result.get("feature_acceptance_passed") is True))
             and type(result.get("passed")) is int and result["passed"] > 0
             and result.get("passed") == result.get("total")
             and type(result.get("regression_passed")) is int
@@ -354,6 +411,8 @@ def ready_for_pr(*, intent: PrePRIntent, authority: Authority,
                 and saved.get("task_id") == intent.task_id
                 and saved.get("changed_paths") == list(intent.allowed_paths)
                 and saved.get("validated_sha") == intent.candidate_sha
+                and saved.get("kind") == intent.kind
+                and saved.get("source_mode") == intent.source_mode
                 and saved.get("fence_id") == task["fence_id"]
                 and saved.get("lease_generation") == task["lease_generation"],
                 "prepr_replay_conflict")
@@ -367,7 +426,7 @@ def ready_for_pr(*, intent: PrePRIntent, authority: Authority,
 
     require(writer is not independent_reader,
             "prepr_cas_readback_not_independent")
-    model = _model(intent, task, model_audit)
+    model = _model(intent, task, model_audit, authority)
     raw, hashes = _git_package(intent, source)
     artifact_sha = digest(raw)
     artifact_ref = writer.put_if_absent(
@@ -398,6 +457,9 @@ def ready_for_pr(*, intent: PrePRIntent, authority: Authority,
         "task_id": intent.task_id,
         "fence_id": task["fence_id"],
         "lease_generation": task["lease_generation"],
+        "kind": intent.kind,
+        "source_mode": intent.source_mode,
+        "provenance_sha256": model.get("provenance_sha256"),
         "model_run_id": model["run_id"],
         "model": model["model"],
         "model_digest": model["model_digest"],
@@ -436,6 +498,8 @@ def publish_single_draft(*, intent: PrePRIntent, authority: Authority,
             and ready.get("todo_id") == intent.todo_id
             and ready.get("task_id") == intent.task_id
             and ready.get("validated_sha") == intent.candidate_sha
+            and ready.get("kind") == intent.kind
+            and ready.get("source_mode") == intent.source_mode
             and ready.get("changed_paths") == list(intent.allowed_paths)
             and type(ready.get("artifact_ref")) is str
             and type(ready.get("artifact_sha256")) is str

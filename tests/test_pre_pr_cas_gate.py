@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 
@@ -341,3 +341,128 @@ def test_candidate_head_change_after_ready_blocks_draft(fx):
         publish_single_draft(intent=fx.intent, authority=fx, ledger=fx,
                              github=fx, independent_reader=FakeCas(fx))
     assert fx.pr_writes == 0
+
+
+
+def feature_context(fx):
+    fx.intent = replace(
+        fx.intent, kind="feature", source_mode="assisted",
+        allowed_paths=(".sdd/specs/piloto.requirements.md", "docs/ux/piloto.md"))
+    fx.feature_proof = {
+        "source": "trusted-control-plane", "status": "verified_by_trusted_control_plane",
+        "kind": "feature", "source_mode": "assisted",
+        "repository": fx.intent.repository, "issue_number": fx.intent.issue_number,
+        "todo_id": fx.intent.todo_id, "request_id": fx.intent.request_id,
+        "correlation_id": fx.intent.correlation_id,
+        "idempotency_key": fx.intent.idempotency_key,
+        "base_sha": BASE, "candidate_sha": HEAD, "source_sha": SOURCE,
+        "allowed_paths": list(fx.intent.allowed_paths),
+        "locked_before_execution": True, "capability_absent_at_base": True,
+        "acceptance_preexisting": True, "baseline_failure_reproduced": False,
+        "prior_repair_blocked": False, "model_calls": 0, "model_digest": None,
+        "rules_sha": "d"*40, "baseline_sha256": fx.model["baseline_sha256"],
+        "evidence_sha256": "e"*64,
+    }
+    fx.verified_feature = lambda request_id: dict(fx.feature_proof)
+    original = fx.execute_independently
+
+    def feature_validator(**kwargs):
+        result = original(**kwargs)
+        result["baseline_failures"] = 0
+        result["feature_acceptance_passed"] = True
+        return result
+
+    fx.execute_independently = feature_validator
+
+
+def test_feature_assisted_ready_with_zero_model_calls_and_replay(fx):
+    feature_context(fx)
+    result = run(fx)
+    assert result["state"] == "READY_FOR_PR"
+    assert result["kind"] == "feature"
+    assert result["model_calls"] == 0 and result["model_digest"] is None
+    assert result["provenance_sha256"] == "e"*64
+    assert (fx.model_reads, fx.writes, fx.validations) == (0, 1, 1)
+    assert run(fx)["replayed"] is True
+    assert (fx.model_reads, fx.writes, fx.validations) == (0, 1, 1)
+
+
+@pytest.mark.parametrize("name,value", [
+    ("locked_before_execution", False),
+    ("capability_absent_at_base", False),
+    ("acceptance_preexisting", False),
+    ("baseline_failure_reproduced", True),
+    ("prior_repair_blocked", True),
+    ("model_calls", 1),
+    ("model_digest", "a"*64),
+    ("base_sha", "f"*40),
+    ("evidence_sha256", "invalid"),
+])
+def test_feature_proof_fail_closed(fx, name, value):
+    feature_context(fx)
+    fx.feature_proof[name] = value
+    with pytest.raises(PrePRBlocked, match="prepr_feature_provenance_unproved"):
+        run(fx)
+    assert fx.writes == fx.validations == fx.model_reads == 0
+
+
+def test_feature_requires_trusted_provider(fx):
+    fx.intent = replace(fx.intent, kind="feature", source_mode="assisted")
+    with pytest.raises(PrePRBlocked, match="prepr_feature_authority_missing"):
+        run(fx)
+
+
+def test_feature_refuses_validator_without_acceptance(fx):
+    feature_context(fx)
+    validator = fx.execute_independently
+
+    def invalid(**kw):
+        result = validator(**kw)
+        result["feature_acceptance_passed"] = False
+        return result
+
+    fx.execute_independently = invalid
+    with pytest.raises(PrePRBlocked, match="prepr_validator_unproved"):
+        run(fx)
+    assert not fx.decision
+
+
+@pytest.mark.parametrize("bad_path", [
+    ".github/workflows/injected.yml", ".sdd/secret/report.spec.json",
+    ".sdd/specs/../escape.requirements.md", "docs/.hidden/entry.md",
+])
+def test_feature_hidden_scope_remains_blocked(fx, bad_path):
+    feature_context(fx)
+    fx.intent = replace(fx.intent, allowed_paths=(bad_path,))
+    with pytest.raises(PrePRBlocked, match="prepr_scope_invalid"):
+        run(fx)
+
+
+def test_repair_still_requires_real_model(fx):
+    fx.model["call_count"] = 0
+    with pytest.raises(PrePRBlocked, match="prepr_real_model_unproved"):
+        run(fx)
+    fx.intent = replace(fx.intent, kind="repair", source_mode="assisted")
+    with pytest.raises(PrePRBlocked, match="prepr_kind_source_mode_invalid"):
+        run(fx)
+
+
+def test_feature_mode_requires_explicit_source(fx):
+    fx.intent = replace(fx.intent, kind="feature")
+    with pytest.raises(PrePRBlocked, match="prepr_kind_source_mode_invalid"):
+        run(fx)
+
+
+def test_feature_cost_fail_closed(fx):
+    feature_context(fx)
+    with pytest.raises(PrePRBlocked, match="prepr_cost_unknown"):
+        run(fx, cost={"verified": False, "incremental_brl": 0, "overage_blocked": False})
+    assert fx.writes == 0
+
+
+def test_feature_replay_checks_mode(fx):
+    feature_context(fx)
+    run(fx)
+    fx.decision[KEY]["kind"] = "repair"
+    with pytest.raises(PrePRBlocked, match="prepr_replay_conflict"):
+        run(fx)

@@ -85,3 +85,23 @@ Não atribuir retrospectivamente origem de modelo aos seis commits existentes.
 
 Restrições: sem Noteri físico, UAC, reboot, merge, deploy, Docker, GUI,
 instalação, segredos ou gasto desconhecido. Fail-closed.
+
+
+## Candidato feature/assisted — consumidor ReqSys #715, não integrado
+
+Extensão preparada sobre a branch canônica #61: distingue \`repair/model_builder\`
+de \`feature/assisted\`. Para a funcionalidade assistida, a porta autenticada
+\`Authority.verified_feature\` deve comprovar classificação e aceite anteriores,
+ausência da capacidade na base exata, proveniência assisted sem modelo
+(\`model_calls=0\`), proteção contra reclassificação de reparo, SHAs e paths.
+Não aceitar recibo retrospectivo nem dados da própria issue como autoridade.
+
+CAS, ledger, custo incremental zero, Validator independente com
+\`feature_acceptance_passed=true\`, regressão, replay e PR permanecem obrigatórios.
+Somente \`.sdd/specs/*.requirements.md\` e \`.sdd/specs/*.spec.json\` são
+exceções de caminhos ocultos; \`.github\` e os demais continuam bloqueados.
+Reparo ainda exige modelo real auditado e baseline com falha reproduzível.
+
+Este commit candidato não publica branch, não integra provedores reais
+nem representa READY_FOR_PR; falta reconciliar a branch #61 com main e
+validar o código e os testes no SHA candidato.
