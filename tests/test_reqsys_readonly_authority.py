@@ -292,17 +292,16 @@ def test_notion_todo_scope_fail_closed_before_network(invalid):
         reader.todo(invalid)
 
 
-@pytest.mark.parametrize("wrong", [
-    ("id", "00000000-0000-0000-0000-000000000000"),
-    ("archived", True),
-    ("in_trash", True),
-    ("object", "database"),
+@pytest.mark.parametrize("field,value,reason", [
+    ("id", "00000000-0000-0000-0000-000000000000", "reqsys_notion_page_id_unverified"),
+    ("archived", True, "reqsys_notion_archived_unverified"),
+    ("in_trash", True, "reqsys_notion_trash_unverified"),
+    ("object", "database", "reqsys_notion_page_type_unverified"),
 ])
-def test_notion_page_identity_denies_tampering(wrong):
-    field, value = wrong
+def test_notion_page_identity_denies_tampering(field, value, reason):
     page = _notion_page()
     page[field] = value
-    with pytest.raises(PrePRBlocked, match="reqsys_notion_page_unverified"):
+    with pytest.raises(PrePRBlocked, match=reason):
         _notion_reader(lambda request: httpx.Response(200, json=page)).todo("TODO-74")
 
 

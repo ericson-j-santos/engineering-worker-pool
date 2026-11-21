@@ -148,11 +148,14 @@ class NotionReqSysTodoReader:
             page = response.json()
         except ValueError:
             raise PrePRBlocked("reqsys_notion_response_invalid") from None
-        require(type(page) is dict and page.get("object") == "page"
-                and page.get("id") == NOTION_PAGE_ID
-                and page.get("archived") is False
-                and page.get("in_trash") is False,
-                "reqsys_notion_page_unverified")
+        require(type(page) is dict and page.get("object") == "page",
+                "reqsys_notion_page_type_unverified")
+        require(page.get("id") == NOTION_PAGE_ID,
+                "reqsys_notion_page_id_unverified")
+        require(page.get("archived") is False,
+                "reqsys_notion_archived_unverified")
+        require(page.get("in_trash") is False,
+                "reqsys_notion_trash_unverified")
         parent = page.get("parent")
         require(type(parent) is dict
                 and parent.get("type") == "data_source_id"
