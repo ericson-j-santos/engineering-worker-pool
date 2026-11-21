@@ -7,7 +7,7 @@ import hashlib
 from pathlib import Path
 from unittest.mock import Mock
 
-from app.native_gateway_commands import GovernedCommand, NativeGatewayCommandRegistry
+from app.native_gateway_commands import GovernedCommand, ImmutableScriptSource, NativeGatewayCommandRegistry
 from app.native_one_shot import _safe_path
 from app.s3_git_bundle_artifact import S3GitBundleArtifactTransport, _safe_relative_path
 from app.native_one_shot import (
@@ -17,7 +17,7 @@ from app.native_one_shot import (
 from app.noteri42_native_binding import (
     ADAPTER_ID, BASE_SHA, COMMIT_KEY, COMMIT_MESSAGE, DESCRIPTOR, ISSUE_NUMBER,
     MODEL_KEY, MODEL_SCRIPT, REPOSITORY, SOURCE_PATH, STAGE_KEY, TARGET_BRANCH, VALIDATOR_KEY,
-    VALIDATOR_SCRIPT, _ScopedAdapter, bind_noteri42_executor,
+    VALIDATOR_SCRIPT, SCRIPT_REPOSITORY, _ScopedAdapter, bind_noteri42_executor,
 )
 
 TASK_ID = "cwp-" + "a" * 24
@@ -123,6 +123,36 @@ class BindingContracts(unittest.TestCase):
         self.api.claim_exact.assert_not_called()
         self.api.claim_fenced_exact.assert_not_called()
         self.cas.publish.assert_not_called()
+
+    def test_pinned_external_scripts_do_not_require_noteri_base_files(self):
+        # Contract simulation only; the real NativeGatewayCommandRegistry
+        # verifies Git source and Gateway policy independently before claim.
+        other = self.root.parent / "fixture-installed-ewp"
+        other.mkdir(exist_ok=True)
+        for key, rel in ((MODEL_KEY, MODEL_SCRIPT),
+                         (VALIDATOR_KEY, VALIDATOR_SCRIPT)):
+            source = ImmutableScriptSource(
+                other, SCRIPT_REPOSITORY, "a" * 40, rel)
+            current = self.registry.specs[key]
+            self.registry.specs[key] = GovernedCommand(
+                key, current.role, ("python", str(other / rel)), current.risk,
+                script_sha256=current.script_sha256,
+                immutable_source=source)
+            (self.root / rel).unlink()
+        self.registry.attest_script = Mock()
+        result = self.bind()
+        self.assertIsInstance(result, NativeOneShotExecutor)
+        self.assertEqual(self.registry.attest_script.call_count, 2)
+        self.api.claim_fenced_exact.assert_not_called()
+
+    def test_external_script_from_unreviewed_repository_is_denied(self):
+        source = ImmutableScriptSource(
+            self.root.parent, "untrusted/runner", "a" * 40, MODEL_SCRIPT)
+        self.registry.specs[MODEL_KEY] = GovernedCommand(
+            MODEL_KEY, "builder", ("python", str(self.root.parent / MODEL_SCRIPT)), 2,
+            script_sha256="a" * 64, immutable_source=source)
+        self.blocked()
+        self.api.claim_fenced_exact.assert_not_called()
 
     def test_wrong_issue_rejected(self):
         self.api.get_task.return_value["issue_number"] = 41

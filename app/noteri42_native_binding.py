@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from app.native_gateway_commands import GovernedCommand, NativeGatewayCommandRegistry
+from app.native_gateway_commands import GovernedCommand, ImmutableScriptSource, NativeGatewayCommandRegistry
 from app.native_one_shot import (
     AdapterContext, AdapterDescriptor, AdapterResult, DurableArtifactTransport,
     LocalWorkspace, NativeExecutorBlocked, NativeOneShotExecutor, ReceiptStore,
@@ -19,6 +19,7 @@ from app.native_one_shot import (
 
 ISSUE_NUMBER = 42
 REPOSITORY = "ericson-j-santos/noteri-runtime"
+SCRIPT_REPOSITORY = "ericson-j-santos/engineering-worker-pool"
 BASE_SHA = "ce2be12647f27220a40d2ae39188d52f517f31df"
 TARGET_BRANCH = "fix/issue42-rules219-gateway-reason-20261119"
 SOURCE_PATH = ".github/workflows/noteri-control-plane-probe.yml"
@@ -58,9 +59,21 @@ def _valid_specs(registry: NativeGatewayCommandRegistry) -> None:
     }
     for key, (role, argv, risk, dirty, head_change) in expected.items():
         spec = registry.specs[key]
-        _need(type(spec) is GovernedCommand
-              and (spec.role, spec.argv, spec.risk, spec.allow_dirty,
-                   spec.allow_head_change) == (role, argv, risk, dirty, head_change),
+        _need(type(spec) is GovernedCommand,
+              "noteri42_command_drift")
+        if key in (MODEL_KEY, VALIDATOR_KEY) and spec.immutable_source is not None:
+            source = spec.immutable_source
+            _need(type(source) is ImmutableScriptSource
+                  and source.repository == SCRIPT_REPOSITORY
+                  and source.relative_path == argv[1]
+                  and spec.argv == ("python", str(
+                      source.root.joinpath(*source.relative_path.split("/"))
+                  )), "noteri42_external_command_untrusted")
+        else:
+            _need(spec.immutable_source is None and spec.argv == argv,
+                  "noteri42_command_drift")
+        _need((spec.role, spec.risk, spec.allow_dirty,
+               spec.allow_head_change) == (role, risk, dirty, head_change),
               "noteri42_command_drift")
         spec.validate(DESCRIPTOR)
         if key in (MODEL_KEY, VALIDATOR_KEY):
@@ -68,22 +81,27 @@ def _valid_specs(registry: NativeGatewayCommandRegistry) -> None:
                   and bool(SHA256.fullmatch(spec.script_sha256))
                   and spec.script_sha256 != "0" * 64,
                   "noteri42_script_not_pinned")
-            # Refuse BEFORE claim if the model/validator entrypoints do not
-            # exist at the immutable source and match the installed digest.
-            # An absent or tampered script must never consume a task lease.
-            root = Path(registry.workspace).resolve()
-            script = root.joinpath(*Path(spec.argv[1]).parts)
-            _need(script.is_file() and not script.is_symlink()
-                  and script.resolve().is_relative_to(root),
-                  "noteri42_script_unavailable_before_claim")
-            try:
-                current_digest = hashlib.sha256(script.read_bytes()).hexdigest()
-            except OSError:
-                raise NativeExecutorBlocked(
-                    "noteri42_script_unavailable_before_claim"
-                ) from None
-            _need(current_digest == spec.script_sha256,
-                  "noteri42_script_digest_drift_before_claim")
+            if spec.immutable_source is not None:
+                # The immutable installed EWP controller, not the task or
+                # Noteri base Git tree, must supply this reviewed script.
+                # Git HEAD/origin/status/blob and Gateway policy are checked
+                # before claim, then repeated at each governed invocation.
+                registry.attest_script(spec)
+            else:
+                # Legacy in-tree scripts remain fully checked before claim.
+                root = Path(registry.workspace).resolve()
+                script = root.joinpath(*Path(spec.argv[1]).parts)
+                _need(script.is_file() and not script.is_symlink()
+                      and script.resolve().is_relative_to(root),
+                      "noteri42_script_unavailable_before_claim")
+                try:
+                    current_digest = hashlib.sha256(script.read_bytes()).hexdigest()
+                except OSError:
+                    raise NativeExecutorBlocked(
+                        "noteri42_script_unavailable_before_claim"
+                    ) from None
+                _need(current_digest == spec.script_sha256,
+                      "noteri42_script_digest_drift_before_claim")
 
 
 def _baseline(readback: Mapping[str, Any]) -> None:

@@ -65,6 +65,8 @@ jobs:
               "tests/test_noteri42_native_binding.py",
               "app/native_scope_paths.py",
               "app/s3_git_bundle_artifact.py",
+              "app/native_gateway_commands.py",
+              "tests/test_native_gateway_commands.py",
           }
           changed = set(subprocess.check_output(
               ["git","diff","--name-only","2480ba050784959bd5873a3425d2643e21fcdae1","HEAD"], text=True

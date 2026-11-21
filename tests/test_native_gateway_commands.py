@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from app.native_gateway_commands import GovernedCommand
+from app.native_gateway_commands import GovernedCommand, ImmutableScriptSource, NativeGatewayCommandRegistry
+from pathlib import Path
+import subprocess
+import hashlib
+from unittest.mock import Mock
 from app.native_one_shot import AdapterDescriptor, NativeExecutorBlocked
 
 D = AdapterDescriptor(
@@ -64,3 +68,74 @@ def test_command_descriptors_validate_fixed_contracts():
 def test_untrusted_or_wrong_role_spec_fails_before_execution(spec, blocked):
     with pytest.raises(NativeExecutorBlocked, match=blocked):
         spec.validate(D)
+
+
+
+def _git(root: Path, *args: str) -> str:
+    return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+
+
+def test_external_immutable_script_verified_in_separate_checkout(tmp_path):
+    source = tmp_path / "installed-ewp"
+    source.mkdir()
+    _git(source, "init", "-q")
+    script = source / "scripts" / "ci_fix.py"
+    script.parent.mkdir()
+    script.write_text("print('no task claim')\n", encoding="utf-8")
+    _git(source, "add", ".")
+    _git(source, "-c", "user.name=CI", "-c",
+         "user.email=ci@example.invalid", "commit", "-qm", "fixed")
+    head = _git(source, "rev-parse", "HEAD")
+    _git(source, "checkout", "--detach", "-q", head)
+    _git(source, "remote", "add", "origin",
+         "https://github.com/ericson-j-santos/engineering-worker-pool.git")
+    task = tmp_path / "noteri-task"
+    task.mkdir()
+    registry = object.__new__(NativeGatewayCommandRegistry)
+    registry.workspace = task
+    registry.gateway = Mock()
+    sig = hashlib.sha256(script.read_bytes()).hexdigest()
+    source_pin = ImmutableScriptSource(
+        source, "ericson-j-santos/engineering-worker-pool",
+        head, "scripts/ci_fix.py")
+    spec = GovernedCommand(
+        "ci.fix", "builder", ("python", str(script)), 2,
+        script_sha256=sig, immutable_source=source_pin)
+    spec.validate(D)
+    registry._verify_script(spec, {"allowed_roots": []})
+    registry.gateway.assert_allowed_path.assert_called_once()
+    assert not (task / "scripts" / "ci_fix.py").exists()
+    script.write_text("print('tampered')\n", encoding="utf-8")
+    with pytest.raises(NativeExecutorBlocked, match="native_external_script_drift"):
+        registry._verify_script(spec, {"allowed_roots": []})
+
+
+def test_external_pin_rejects_wrong_remote_head_or_scope(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    _git(source, "init", "-q")
+    script = source / "scripts" / "ci_fix.py"
+    script.parent.mkdir()
+    script.write_text("pass\n")
+    _git(source, "add", ".")
+    _git(source, "-c", "user.name=CI", "-c",
+         "user.email=ci@example.invalid", "commit", "-qm", "initial")
+    head = _git(source, "rev-parse", "HEAD")
+    _git(source, "checkout", "--detach", "-q", head)
+    _git(source, "remote", "add", "origin", "https://example.invalid/evil.git")
+    registry = object.__new__(NativeGatewayCommandRegistry)
+    task = tmp_path / "task"
+    task.mkdir()
+    registry.workspace = task
+    registry.gateway = Mock()
+    ref = ImmutableScriptSource(
+        source, "ericson-j-santos/engineering-worker-pool",
+        head, "scripts/ci_fix.py")
+    spec = GovernedCommand("ci.fix", "builder", ("python", str(script)), 2,
+                           script_sha256=hashlib.sha256(script.read_bytes()).hexdigest(),
+                           immutable_source=ref)
+    spec.validate(D)
+    with pytest.raises(NativeExecutorBlocked, match="native_external_source_integrity_invalid"):
+        registry._verify_script(spec, {"allowed_roots": []})
+    with pytest.raises(NativeExecutorBlocked, match="native_external_script_contract"):
+        ImmutableScriptSource(source, ref.repository, head, "../escape.py").validate(str(script))

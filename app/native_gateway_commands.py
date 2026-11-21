@@ -8,6 +8,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import os
+import subprocess
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -28,6 +30,37 @@ def _need(ok: bool, code: str) -> None:
 
 
 @dataclass(frozen=True)
+class ImmutableScriptSource:
+    """Review-time installed checkout, never a task-provided script source.
+
+    The source must be another clean, detached Git checkout inside a Gateway
+    allowed root. Its origin, SHA, Git blob and filesystem bytes are checked
+    before claim and again for each governed invocation.
+    """
+    root: Path
+    repository: str
+    head_sha: str
+    relative_path: str
+
+    def validate(self, executable_path: str) -> None:
+        _need(isinstance(self.root, Path) and self.root.is_absolute()
+              and type(self.repository) is str
+              and bool(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.repository))
+              and type(self.head_sha) is str
+              and bool(re.fullmatch(r"[0-9a-f]{40}", self.head_sha))
+              and type(self.relative_path) is str
+              and self.relative_path.startswith("scripts/")
+              and self.relative_path.endswith(".py")
+              and "\\" not in self.relative_path
+              and all(part not in ("", ".", "..")
+                      and not part.startswith(".")
+                      for part in self.relative_path.split("/"))
+              and executable_path == str(
+                  self.root.joinpath(*self.relative_path.split("/"))
+              ), "native_external_script_contract")
+
+
+@dataclass(frozen=True)
 class GovernedCommand:
     key: str
     role: str
@@ -37,6 +70,7 @@ class GovernedCommand:
     allow_dirty: bool = False
     allow_head_change: bool = False
     script_sha256: str | None = None
+    immutable_source: ImmutableScriptSource | None = None
 
     def validate(self, descriptor: AdapterDescriptor) -> None:
         _need(type(self.key) is str and bool(NAME.fullmatch(self.key))
@@ -62,15 +96,21 @@ class GovernedCommand:
                   and bool(SHA256.fullmatch(self.script_sha256))
                   and not self.allow_head_change,
                   "native_script_contract")
-            path = PurePosixPath(argv[1])
-            _need(not path.is_absolute()
-                  and all(part and part not in (".", "..")
-                          and not part.startswith(".") for part in path.parts)
-                  and "\\" not in argv[1]
-                  and not argv[1].startswith("-"),
-                  "native_script_path")
+            if self.immutable_source is not None:
+                _need(type(self.immutable_source) is ImmutableScriptSource,
+                      "native_external_script_contract")
+                self.immutable_source.validate(argv[1])
+            else:
+                path = PurePosixPath(argv[1])
+                _need(not path.is_absolute()
+                      and all(part and part not in (".", "..")
+                              and not part.startswith(".") for part in path.parts)
+                      and "\\" not in argv[1]
+                      and not argv[1].startswith("-"),
+                      "native_script_path")
         elif argv[0] == "git":
-            _need(self.script_sha256 is None, "native_git_contract")
+            _need(self.script_sha256 is None and self.immutable_source is None,
+                  "native_git_contract")
             if len(argv) >= 4 and argv[:3] == ("git", "add", "--"):
                 _need(self.role == "builder" and self.risk == 2
                       and not self.allow_head_change
@@ -151,8 +191,67 @@ class NativeGatewayCommandRegistry:
         except Exception:
             raise NativeExecutorBlocked("native_gateway_unavailable") from None
 
-    def _verify_script(self, spec: GovernedCommand) -> None:
+    def _verify_script(self, spec: GovernedCommand,
+                       policy: dict[str, Any] | None = None) -> None:
         if spec.script_sha256 is None:
+            return
+        if spec.immutable_source is not None:
+            source = spec.immutable_source
+            source.validate(spec.argv[1])
+            root = source.root
+            _need(root != self.workspace.resolve()
+                  and not root.is_relative_to(self.workspace.resolve())
+                  and root.is_dir() and not root.is_symlink()
+                  and root.resolve(strict=True) == root,
+                  "native_external_source_untrusted")
+            # The installed controller selects this source at admission.
+            # A task/manifest can never introduce a source path or revision.
+            _need(policy is not None, "native_external_policy_missing")
+            try:
+                self.gateway.assert_allowed_path(root, policy)
+            except Exception:
+                raise NativeExecutorBlocked("native_external_source_not_allowed") from None
+            path = root.joinpath(*source.relative_path.split("/"))
+            _need(path.is_file() and not path.is_symlink()
+                  and path.resolve(strict=True) == path,
+                  "native_external_script_untrusted")
+            try:
+                raw = path.read_bytes()
+            except OSError:
+                raise NativeExecutorBlocked("native_external_script_untrusted") from None
+            _need(0 < len(raw) <= 262144
+                  and hashlib.sha256(raw).hexdigest() == spec.script_sha256,
+                  "native_external_script_drift")
+            def git(*args: str) -> bytes:
+                try:
+                    p = subprocess.run(
+                        ["git", *args], cwd=root, check=False,
+                        capture_output=True, timeout=15,
+                        env={"PATH": os.environ.get("PATH", os.defpath),
+                             "GIT_CONFIG_GLOBAL": os.devnull,
+                             "GIT_CONFIG_SYSTEM": os.devnull,
+                             "GIT_TERMINAL_PROMPT": "0",
+                             "GIT_OPTIONAL_LOCKS": "0",
+                             "GIT_NO_REPLACE_OBJECTS": "1", "LC_ALL": "C"},
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    raise NativeExecutorBlocked(
+                        "native_external_source_git_unavailable") from None
+                _need(p.returncode == 0 and len(p.stdout) <= 262144,
+                      "native_external_source_git_invalid")
+                return p.stdout
+            _need(Path(git("rev-parse", "--show-toplevel").decode().strip()).resolve()
+                  == root
+                  and git("rev-parse", "HEAD").decode().strip() == source.head_sha
+                  and git("rev-parse", "--abbrev-ref", "HEAD").strip() == b"HEAD"
+                  and git("remote").splitlines() == [b"origin"]
+                  and git("remote", "get-url", "origin").decode().strip() in (
+                      f"https://github.com/{source.repository}",
+                      f"https://github.com/{source.repository}.git",
+                  )
+                  and git("status", "--porcelain", "--untracked-files=all") == b""
+                  and git("show", "HEAD:" + source.relative_path) == raw,
+                  "native_external_source_integrity_invalid")
             return
         root = self.workspace.resolve()
         path = root.joinpath(*PurePosixPath(spec.argv[1]).parts)
@@ -164,6 +263,11 @@ class NativeGatewayCommandRegistry:
         except OSError:
             raise NativeExecutorBlocked("native_script_untrusted") from None
         _need(digest == spec.script_sha256, "native_script_drift")
+
+    def attest_script(self, spec: GovernedCommand) -> None:
+        """Verify a reviewed external script BEFORE reserving a task lease."""
+        self.boundary.validate()
+        self._verify_script(spec, self._trusted_policy())
 
     def _readback(self, *, spec: GovernedCommand, before: dict[str, Any],
                   after: dict[str, Any], policy: dict[str, Any]) -> None:
@@ -212,7 +316,7 @@ class NativeGatewayCommandRegistry:
         _need(spec.role == role, "native_command_wrong_role")
         self.boundary.validate()
         policy = self._trusted_policy()
-        self._verify_script(spec)
+        self._verify_script(spec, policy)
         try:
             self.gateway.assert_allowed_path(self.workspace, policy)
             self.gateway.enforce_session(policy, self.session_id, self.workspace, spec.risk)
