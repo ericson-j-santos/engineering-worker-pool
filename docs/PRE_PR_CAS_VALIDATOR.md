@@ -105,3 +105,22 @@ Reparo ainda exige modelo real auditado e baseline com falha reproduzível.
 Este commit candidato não publica branch, não integra provedores reais
 nem representa READY_FOR_PR; falta reconciliar a branch #61 com main e
 validar o código e os testes no SHA candidato.
+
+## Adaptador restrito de leitura GitHub para ReqSys #715 — candidato não publicado
+
+`app/reqsys_readonly_authority.py` reaproveita a porta de admissão
+`Authority.issue/branch_sha` para ler exclusivamente a issue e a branch do
+repositório ReqSys, via GitHub REST autenticada. O runtime confiável precisa
+injetar `httpx.Client` e um leitor seguro de token já provisionado; o código
+não instala cliente, concede privilégios ou transporta tokens para o chat.
+Rejeita outro repo, PR disfarçada de issue, hash incorreto, URL divergente,
+redirect, conteúdo inválido, credencial ausente e branch arbitrária.
+
+O adaptador deliberadamente **não** fornece TODO, autorização ou
+`verified_feature`. Chamadas a essas portas falham fechadas. Não se deve
+convertê-lo em atestador de classificação usando texto de issue ou datas
+extraídas de mensagens. Esses providers exigem fonte oficial preexistente e
+readback independente. Testes com HTTP simulado são apenas contratuais.
+
+Até prova de composição no controlador e CAS/Validator, o status permanece
+`ADOPTION_PENDING` e `READY_FOR_PR=false`. O commit ReqSys #715 continua sem PR.
