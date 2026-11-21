@@ -21,7 +21,7 @@ SOURCE = ".github/workflows/noteri-control-plane-probe.yml"
 TESTS = (
     "tests/test_noteri_control_plane_fallback.py",
     "tests/test_noteri_rules219_readonly_admission.py",
-    "tests/test_noteri_worker_pool_health_readonly.py",
+    "tests/test_noteri_gateway_failure_readback.py",
 )
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 TASK = re.compile(r"cwp-[0-9a-f]{24}\Z")
