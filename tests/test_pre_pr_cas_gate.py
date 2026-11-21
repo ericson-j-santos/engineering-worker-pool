@@ -554,3 +554,19 @@ def test_reqsys715_workflow_exception_never_opens_other_scopes(fx, change):
     fx.intent = replace(fx.intent, **change)
     with pytest.raises(PrePRBlocked, match="prepr_scope_invalid"):
         fx.intent.check()
+
+
+def test_short_canonical_todo_global_id_is_admissible_without_alias(fx):
+    """An authenticated provider must still bind TODO-74 to its real record."""
+    fx.intent = replace(fx.intent, todo_id="TODO-74")
+    fx.intent.check()
+
+
+@pytest.mark.parametrize("invalid", [
+    "TODO-0", "TODO-00074", "TODO-", "TODO-74\\n",
+    "TODO-12345678901", "TO-74", 74, None,
+])
+def test_canonical_todo_id_malformed_values_stay_blocked(fx, invalid):
+    fx.intent = replace(fx.intent, todo_id=invalid)
+    with pytest.raises(PrePRBlocked, match="prepr_todo_invalid"):
+        fx.intent.check()

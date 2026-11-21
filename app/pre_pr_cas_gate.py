@@ -16,6 +16,8 @@ from typing import Any, Mapping, Protocol
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 IDENT = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.:-]{7,191}\Z")
+TODO_CANON = re.compile(r"TODO-[1-9][0-9]{0,9}\Z")
+TODO_NUMERIC = re.compile(r"TODO-[0-9]+\Z")
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 PATH = re.compile(r"(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9_./-]+\Z")
 SDD_PATH = re.compile(r"\.sdd/specs/[A-Za-z0-9][A-Za-z0-9_.-]{0,179}\.(?:spec\.json|requirements\.md)\Z")
@@ -46,6 +48,15 @@ def canonical(value: Mapping[str, Any]) -> bytes:
         raise PrePRBlocked("prepr_serialization_invalid") from None
 
 
+def valid_todo_id(value: object) -> bool:
+    """Accept official Notion TODO-N IDs without relaxing other identity gates."""
+    if type(value) is not str:
+        return False
+    if TODO_NUMERIC.fullmatch(value) is not None:
+        return TODO_CANON.fullmatch(value) is not None
+    return IDENT.fullmatch(value) is not None
+
+
 @dataclass(frozen=True)
 class PrePRIntent:
     repository: str
@@ -68,8 +79,7 @@ class PrePRIntent:
         require(type(self.repository) is str and REPO.fullmatch(self.repository)
                 is not None and type(self.issue_number) is int
                 and self.issue_number > 0, "prepr_issue_invalid")
-        require(type(self.todo_id) is str and IDENT.fullmatch(self.todo_id)
-                is not None, "prepr_todo_invalid")
+        require(valid_todo_id(self.todo_id), "prepr_todo_invalid")
         require(all(type(v) is str and IDENT.fullmatch(v) is not None for v in
                     (self.request_id, self.correlation_id, self.idempotency_key,
                      self.task_id)), "prepr_ids_invalid")
