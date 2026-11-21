@@ -152,7 +152,9 @@ class NotionReqSysTodoReader:
                 "reqsys_notion_page_type_unverified")
         require(page.get("id") == NOTION_PAGE_ID,
                 "reqsys_notion_page_id_unverified")
-        require(page.get("archived") is False,
+        # Notion-Version 2026-03-11 removes the deprecated archived alias.
+        # If it is present, it must not conflict with the mandatory in_trash=false.
+        require("archived" not in page or page.get("archived") is False,
                 "reqsys_notion_archived_unverified")
         require(page.get("in_trash") is False,
                 "reqsys_notion_trash_unverified")

@@ -305,6 +305,23 @@ def test_notion_page_identity_denies_tampering(field, value, reason):
         _notion_reader(lambda request: httpx.Response(200, json=page)).todo("TODO-74")
 
 
+def test_notion_2026_03_11_page_without_deprecated_archived_is_accepted():
+    page = _notion_page()
+    page.pop("archived", None)
+    assert page["in_trash"] is False
+    assert _notion_reader(
+        lambda request: httpx.Response(200, json=page)
+    ).todo("TODO-74")["state"] == "BLOCKED"
+
+
+def test_notion_2026_03_11_page_without_in_trash_remains_denied():
+    page = _notion_page()
+    page.pop("archived", None)
+    page.pop("in_trash", None)
+    with pytest.raises(PrePRBlocked, match="reqsys_notion_trash_unverified"):
+        _notion_reader(lambda request: httpx.Response(200, json=page)).todo("TODO-74")
+
+
 def test_notion_parent_identity_denies_foreign_data_source():
     page = _notion_page()
     page["parent"]["data_source_id"] = "a" * 36
