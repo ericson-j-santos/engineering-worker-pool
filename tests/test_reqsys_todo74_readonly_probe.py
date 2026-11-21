@@ -49,6 +49,7 @@ def _configure(monkeypatch, stub):
 
 def test_missing_pointer_never_calls_reader(monkeypatch, capsys):
     monkeypatch.delenv("PORTFOLIO_NOTION_TOKEN_FILE", raising=False)
+    monkeypatch.setattr(probe, "_registered_pointer", lambda: "")
     assert probe.main() == 2
     assert json.loads(capsys.readouterr().out) == {
         "result": "BLOCKED", "reason": "reqsys_notion_pointer_missing"
