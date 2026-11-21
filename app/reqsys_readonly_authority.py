@@ -34,6 +34,7 @@ NOTION_DATA_SOURCE_ID = "663a8805-d9a6-48dc-92a0-308d7a9e87ac"
 NOTION_VERSION = "2026-03-11"
 TODO_ID = "TODO-74"
 TODO_KEY = "reqsys:ux:prova-rapida:20261120:v1"
+TODO_CORRELATION = "reqsys-prova-rapida-20261120"
 TODO_EXTERNAL_ID = "github:" + REPOSITORY + "#715:prova-rapida"
 TODO_URL = f"https://github.com/{REPOSITORY}/issues/715"
 
@@ -44,6 +45,13 @@ def _notion_property(props: dict, name: str) -> str | int | None:
     if type(item) is not dict:
         return None
     kind = item.get("type")
+    if kind == "unique_id":
+        value = item.get("unique_id")
+        if (type(value) is dict and value.get("prefix") == "TODO"
+                and type(value.get("number")) is int
+                and 1 <= value["number"] <= 9999999999):
+            return "TODO-" + str(value["number"])
+        return None
     if kind == "number" and type(item.get("number")) is int:
         return item["number"]
     if kind in ("rich_text", "title"):
@@ -152,8 +160,9 @@ class NotionReqSysTodoReader:
                 "reqsys_notion_parent_unverified")
         props = page.get("properties")
         require(type(props) is dict
-                and _notion_property(props, "TODO ID") in (74, TODO_ID)
+                and _notion_property(props, "TODO ID") == TODO_ID
                 and _notion_property(props, "Chave de idempotência") == TODO_KEY
+                and _notion_property(props, "Correlation ID") == TODO_CORRELATION
                 and _notion_property(props, "Identificador externo") == TODO_EXTERNAL_ID
                 and _notion_property(props, "Origem URL") == TODO_URL
                 and _notion_property(props, "Fonte") == "ReqSys"

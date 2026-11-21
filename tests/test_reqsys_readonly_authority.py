@@ -242,7 +242,9 @@ def _notion_page():
         "parent": {"type": "data_source_id",
                    "data_source_id": NOTION_DATA_SOURCE_ID},
         "properties": {
-            "TODO ID": _notion_prop(74, "number"),
+            "TODO ID": {"type": "unique_id",
+                        "unique_id": {"prefix": "TODO", "number": 74}},
+            "Correlation ID": _notion_prop("reqsys-prova-rapida-20261120"),
             "Chave de idempotência": _notion_prop(TODO_KEY),
             "Identificador externo": _notion_prop(TODO_EXTERNAL_ID),
             "Origem URL": _notion_prop(TODO_URL, "url"),
@@ -312,7 +314,9 @@ def test_notion_parent_identity_denies_foreign_data_source():
 
 
 @pytest.mark.parametrize("name,content", [
-    ("TODO ID", _notion_prop(75, "number")),
+    ("TODO ID", {"type": "unique_id", "unique_id": {"prefix": "TODO", "number": 75}}),
+    ("TODO ID", _notion_prop(74, "number")),
+    ("Correlation ID", _notion_prop("unexpected-correlation")),
     ("Chave de idempotência", _notion_prop("wrong")),
     ("Identificador externo", _notion_prop("github:other/repo#715")),
     ("Origem URL", _notion_prop("https://evil.example", "url")),
@@ -410,3 +414,11 @@ def test_notion_unique_id_prefix_mismatch_must_fail_closed():
         _notion_reader(lambda request: httpx.Response(
             200, json=page)).todo("TODO-74")
 
+
+
+def test_notion_correlation_missing_is_rejected():
+    page = _notion_page()
+    del page["properties"]["Correlation ID"]
+    with pytest.raises(PrePRBlocked, match="reqsys_notion_todo_unverified"):
+        _notion_reader(lambda request: httpx.Response(
+            200, json=page)).todo("TODO-74")
