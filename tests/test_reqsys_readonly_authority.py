@@ -213,3 +213,169 @@ def test_candidate_unauthorized_is_not_reported_as_absent():
     adapter = port(lambda req: httpx.Response(401, json={"message": "Bad credentials"}))
     with pytest.raises(PrePRBlocked, match="reqsys_readonly_response_unverified"):
         adapter.branch_sha(REPOSITORY, "feat/715-prepr-candidate")
+
+
+# Notion API is mocked here; these tests DO NOT attest the real provider.
+from copy import deepcopy
+from app.reqsys_readonly_authority import (
+    NOTION_API, NOTION_PAGE_ID, NOTION_DATA_SOURCE_ID, NOTION_VERSION,
+    TODO_ID, TODO_KEY, TODO_EXTERNAL_ID, TODO_URL, NotionReqSysTodoReader,
+)
+
+
+def _notion_prop(value, field="rich_text"):
+    if field == "number":
+        return {"type": "number", "number": value}
+    if field in ("select", "status"):
+        return {"type": field, field: {"name": value}}
+    if field == "url":
+        return {"type": "url", "url": value}
+    return {"type": field, field: [{"plain_text": value}]}
+
+
+def _notion_page():
+    return {
+        "object": "page",
+        "id": NOTION_PAGE_ID,
+        "archived": False,
+        "in_trash": False,
+        "parent": {"type": "data_source_id",
+                   "data_source_id": NOTION_DATA_SOURCE_ID},
+        "properties": {
+            "TODO ID": _notion_prop(74, "number"),
+            "Chave de idempotência": _notion_prop(TODO_KEY),
+            "Identificador externo": _notion_prop(TODO_EXTERNAL_ID),
+            "Origem URL": _notion_prop(TODO_URL, "url"),
+            "Fonte": _notion_prop("ReqSys", "select"),
+            "Status": _notion_prop("BLOQUEADO", "status"),
+            "Status E2E": _notion_prop("BLOQUEADO", "status"),
+        },
+    }
+
+
+def _notion_reader(handler=None, token="n" * 24):
+    def default(request):
+        assert request.method == "GET"
+        assert request.url.scheme == "https"
+        assert str(request.url) == NOTION_API + "/v1/pages/" + NOTION_PAGE_ID
+        assert request.headers["Authorization"] == "Bearer " + token
+        assert request.headers["Notion-Version"] == NOTION_VERSION
+        return httpx.Response(200, json=_notion_page())
+    return NotionReqSysTodoReader(
+        client=httpx.Client(transport=httpx.MockTransport(handler or default),
+                            trust_env=False),
+        token_reader=lambda: token,
+    )
+
+
+def test_notion_todo74_exact_authenticated_shape_and_blocked_semantics():
+    reader = _notion_reader()
+    assert reader.todo("TODO-74") == {
+        "id": "TODO-74", "state": "BLOCKED",
+        "repository": REPOSITORY, "issue_number": 715}
+    github = port()
+    github._notion_todo_reader = reader
+    assert github.issue(REPOSITORY, 715)["state"] == "open"
+    assert github.todo("TODO-74")["state"] == "BLOCKED"
+    for getter in (lambda: github.authorization("reqsys715-prova-readback-20261121-v2"),
+                   lambda: github.verified_feature("reqsys715-prova-readback-20261121-v2")):
+        with pytest.raises(PrePRBlocked, match="provider_missing"):
+            getter()
+
+
+@pytest.mark.parametrize("invalid", ["todo-74", "TODO-074", "TODO-75", "TODO-74-", "", 74, None])
+def test_notion_todo_scope_fail_closed_before_network(invalid):
+    reader = _notion_reader(lambda request: pytest.fail("network not permitted"))
+    with pytest.raises(PrePRBlocked, match="reqsys_notion_todo_scope_invalid"):
+        reader.todo(invalid)
+
+
+@pytest.mark.parametrize("wrong", [
+    ("id", "00000000-0000-0000-0000-000000000000"),
+    ("archived", True),
+    ("in_trash", True),
+    ("object", "database"),
+])
+def test_notion_page_identity_denies_tampering(wrong):
+    field, value = wrong
+    page = _notion_page()
+    page[field] = value
+    with pytest.raises(PrePRBlocked, match="reqsys_notion_page_unverified"):
+        _notion_reader(lambda request: httpx.Response(200, json=page)).todo("TODO-74")
+
+
+def test_notion_parent_identity_denies_foreign_data_source():
+    page = _notion_page()
+    page["parent"]["data_source_id"] = "a" * 36
+    with pytest.raises(PrePRBlocked, match="reqsys_notion_parent_unverified"):
+        _notion_reader(lambda request: httpx.Response(200, json=page)).todo("TODO-74")
+
+
+@pytest.mark.parametrize("name,content", [
+    ("TODO ID", _notion_prop(75, "number")),
+    ("Chave de idempotência", _notion_prop("wrong")),
+    ("Identificador externo", _notion_prop("github:other/repo#715")),
+    ("Origem URL", _notion_prop("https://evil.example", "url")),
+    ("Fonte", _notion_prop("GitHub", "select")),
+    ("Status", _notion_prop("PENDENTE", "status")),
+    ("Status E2E", _notion_prop("CONCLUIDO", "status")),
+])
+def test_notion_real_source_fields_rejected_if_different(name, content):
+    page = _notion_page()
+    page["properties"][name] = content
+    with pytest.raises(PrePRBlocked, match="reqsys_notion_todo_unverified"):
+        _notion_reader(lambda request: httpx.Response(200, json=page)).todo("TODO-74")
+
+
+@pytest.mark.parametrize("status,headers,data", [
+    (401, None, None),
+    (404, None, None),
+    (302, {"Location": "https://evil.example"}, None),
+    (200, {"Content-Type": "text/html"}, b"bad"),
+    (200, {"Content-Type": "application/json"}, b"{"),
+])
+def test_notion_bad_http_fails_closed(status, headers, data):
+    def handler(request):
+        if data is not None:
+            return httpx.Response(status, headers=headers, content=data)
+        return httpx.Response(status, headers=headers or {}, json={"message": "denied"})
+    with pytest.raises(PrePRBlocked, match="reqsys_notion_response_"):
+        _notion_reader(handler).todo("TODO-74")
+
+
+def test_notion_no_token_must_not_touch_network():
+    reader = _notion_reader(lambda request: pytest.fail("must not call network"), token="bad")
+    with pytest.raises(PrePRBlocked, match="reqsys_notion_credential_unavailable"):
+        reader.todo("TODO-74")
+
+
+def test_notion_private_reader_fails_before_network(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    monkeypatch.setitem(sys.modules, "scripts.native_private_config",
+                        SimpleNamespace(read_private=lambda *a, **k: (_ for _ in ()).throw(
+                            PermissionError("denied"))))
+    client = httpx.Client(transport=httpx.MockTransport(
+        lambda request: pytest.fail("network should not be reached")), trust_env=False)
+    with NotionReqSysTodoReader.from_private_token_file(
+        token_file=absolute_private_test_path("notion-token"), client=client,
+    ) as reader:
+        with pytest.raises(PrePRBlocked, match="reqsys_notion_credential_unavailable"):
+            reader.todo("TODO-74")
+    assert not client.is_closed
+    client.close()
+
+
+def test_notion_private_reader_rejects_relative_token_file():
+    with pytest.raises(PrePRBlocked, match="reqsys_notion_private_path_invalid"):
+        NotionReqSysTodoReader.from_private_token_file(token_file=Path("relative"))
+
+
+def test_notion_todo_reader_rejects_untrusted_injection():
+    with pytest.raises(PrePRBlocked, match="reqsys_notion_config_invalid"):
+        ReqSysReadOnlyAuthority(
+            client=httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200)), trust_env=False),
+            token_reader=lambda: "x"*24,
+            notion_todo_reader=lambda todo_id: {"state": "AUTHORIZED"},
+        )
+

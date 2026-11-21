@@ -27,13 +27,157 @@ BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./-]{2,159}\Z")
 MAX_BODY = 65536
 
 
-class ReqSysReadOnlyAuthority:
-    """Authenticated GET-only adapter; never a complete PrePR Authority."""
+# Pinned owner-approved Notion TODO; this is STATE evidence, not authorization.
+NOTION_API = "https://api.notion.com"
+NOTION_PAGE_ID = "41f4c12b-ae7c-8144-a9c8-ccd3785976b6"
+NOTION_DATA_SOURCE_ID = "663a8805-d9a6-48dc-92a0-308d7a9e87ac"
+NOTION_VERSION = "2026-03-11"
+TODO_ID = "TODO-74"
+TODO_KEY = "reqsys:ux:prova-rapida:20261120:v1"
+TODO_EXTERNAL_ID = "github:" + REPOSITORY + "#715:prova-rapida"
+TODO_URL = f"https://github.com/{REPOSITORY}/issues/715"
+
+
+def _notion_property(props: dict, name: str) -> str | int | None:
+    """Extract only official Notion property types, never untyped text."""
+    item = props.get(name)
+    if type(item) is not dict:
+        return None
+    kind = item.get("type")
+    if kind == "number" and type(item.get("number")) is int:
+        return item["number"]
+    if kind in ("rich_text", "title"):
+        parts = item.get(kind)
+        if type(parts) is not list or len(parts) > 20:
+            return None
+        if not all(type(v) is dict and type(v.get("plain_text")) is str
+                   for v in parts):
+            return None
+        return "".join(v["plain_text"] for v in parts)
+    if kind in ("select", "status"):
+        value = item.get(kind)
+        if type(value) is dict and type(value.get("name")) is str:
+            return value["name"]
+    if kind == "url" and type(item.get("url")) is str:
+        return item["url"]
+    return None
+
+
+class NotionReqSysTodoReader:
+    """Exact-page GET-only state reader; NEVER a decision/approval issuer."""
 
     def __init__(self, *, client: httpx.Client,
                  token_reader: Callable[[], str]):
         require(isinstance(client, httpx.Client) and callable(token_reader),
+                "reqsys_notion_config_invalid")
+        self._client = client
+        self._token_reader = token_reader
+        self._owns_client = False
+
+    @classmethod
+    def from_private_token_file(
+        cls, *, token_file: Path, client: httpx.Client | None = None,
+    ) -> NotionReqSysTodoReader:
+        require(isinstance(token_file, Path) and token_file.is_absolute(),
+                "reqsys_notion_private_path_invalid")
+        from scripts.native_private_config import read_private
+
+        def token_reader() -> str:
+            try:
+                return read_private(token_file, max_bytes=4096).decode("ascii").strip()
+            except Exception:
+                raise PrePRBlocked("reqsys_notion_credential_unavailable") from None
+
+        owns_client = client is None
+        if client is None:
+            client = httpx.Client(trust_env=False, follow_redirects=False,
+                                  timeout=12)
+        result = cls(client=client, token_reader=token_reader)
+        result._owns_client = owns_client
+        return result
+
+    def close(self) -> None:
+        if self._owns_client:
+            self._client.close()
+
+    def __enter__(self) -> NotionReqSysTodoReader:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+    def todo(self, todo_id: str) -> dict:
+        require(type(todo_id) is str and todo_id == TODO_ID,
+                "reqsys_notion_todo_scope_invalid")
+        try:
+            token = self._token_reader()
+        except Exception:
+            raise PrePRBlocked("reqsys_notion_credential_unavailable") from None
+        require(type(token) is str and 16 <= len(token) <= 4096
+                and all(33 <= ord(c) <= 126 for c in token),
+                "reqsys_notion_credential_unavailable")
+        path = f"/v1/pages/{NOTION_PAGE_ID}"
+        try:
+            request = self._client.build_request(
+                "GET", NOTION_API + path,
+                headers={"Authorization": "Bearer " + token,
+                         "Notion-Version": NOTION_VERSION,
+                         "Accept": "application/json"}, timeout=12,
+            )
+            response = self._client.send(request, follow_redirects=False)
+        except (httpx.HTTPError, OSError):
+            raise PrePRBlocked("reqsys_notion_network_unavailable") from None
+        require(response.url.scheme == "https"
+                and response.url.host == "api.notion.com"
+                and response.url.raw_path.split(b"?")[0] == path.encode("ascii")
+                and not response.history and response.status_code == 200,
+                "reqsys_notion_response_unverified")
+        require(len(response.content) <= MAX_BODY
+                and response.headers.get("content-type", "").split(";")[0].strip()
+                == "application/json",
+                "reqsys_notion_response_invalid")
+        try:
+            page = response.json()
+        except ValueError:
+            raise PrePRBlocked("reqsys_notion_response_invalid") from None
+        require(type(page) is dict and page.get("object") == "page"
+                and page.get("id") == NOTION_PAGE_ID
+                and page.get("archived") is False
+                and page.get("in_trash") is False,
+                "reqsys_notion_page_unverified")
+        parent = page.get("parent")
+        require(type(parent) is dict
+                and parent.get("type") == "data_source_id"
+                and parent.get("data_source_id") == NOTION_DATA_SOURCE_ID,
+                "reqsys_notion_parent_unverified")
+        props = page.get("properties")
+        require(type(props) is dict
+                and _notion_property(props, "TODO ID") in (74, TODO_ID)
+                and _notion_property(props, "Chave de idempotência") == TODO_KEY
+                and _notion_property(props, "Identificador externo") == TODO_EXTERNAL_ID
+                and _notion_property(props, "Origem URL") == TODO_URL
+                and _notion_property(props, "Fonte") == "ReqSys"
+                and _notion_property(props, "Status") == "BLOQUEADO"
+                and _notion_property(props, "Status E2E") == "BLOQUEADO",
+                "reqsys_notion_todo_unverified")
+        # BLOCKED is an observation; only the independent controller can
+        # authorize or classify a feature, even if Notion returns this row.
+        return {"id": TODO_ID, "state": "BLOCKED", "repository": REPOSITORY,
+                "issue_number": 715}
+
+
+class ReqSysReadOnlyAuthority:
+    """Authenticated GET-only adapter; never a complete PrePR Authority."""
+
+    def __init__(self, *, client: httpx.Client,
+                 token_reader: Callable[[], str],
+                 notion_todo_reader: NotionReqSysTodoReader | None = None):
+        require(isinstance(client, httpx.Client) and callable(token_reader),
                 "reqsys_readonly_config_invalid")
+        require(notion_todo_reader is None or
+                isinstance(notion_todo_reader, NotionReqSysTodoReader),
+                "reqsys_notion_config_invalid")
+        self._notion_todo_reader = notion_todo_reader
         self._client = client
         self._token_reader = token_reader
         self._owns_client = False
@@ -167,7 +311,9 @@ class ReqSysReadOnlyAuthority:
         return sha
 
     def todo(self, todo_id: str) -> dict:
-        raise PrePRBlocked("reqsys_readonly_todo_provider_missing")
+        if self._notion_todo_reader is None:
+            raise PrePRBlocked("reqsys_readonly_todo_provider_missing")
+        return self._notion_todo_reader.todo(todo_id)
 
     def authorization(self, request_id: str) -> dict:
         raise PrePRBlocked("reqsys_readonly_authorization_provider_missing")
