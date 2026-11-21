@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import hashlib
 from unittest.mock import Mock
+from types import SimpleNamespace
 from app.native_one_shot import AdapterDescriptor, NativeExecutorBlocked
 
 D = AdapterDescriptor(
@@ -93,7 +94,7 @@ def test_external_immutable_script_verified_in_separate_checkout(tmp_path):
     task.mkdir()
     registry = object.__new__(NativeGatewayCommandRegistry)
     registry.workspace = task
-    registry.gateway = Mock()
+    registry.gateway = SimpleNamespace(assert_allowed_path=Mock())
     sig = hashlib.sha256(script.read_bytes()).hexdigest()
     source_pin = ImmutableScriptSource(
         source, "ericson-j-santos/engineering-worker-pool",
@@ -127,7 +128,7 @@ def test_external_pin_rejects_wrong_remote_head_or_scope(tmp_path):
     task = tmp_path / "task"
     task.mkdir()
     registry.workspace = task
-    registry.gateway = Mock()
+    registry.gateway = SimpleNamespace(assert_allowed_path=Mock())
     ref = ImmutableScriptSource(
         source, "ericson-j-santos/engineering-worker-pool",
         head, "scripts/ci_fix.py")
