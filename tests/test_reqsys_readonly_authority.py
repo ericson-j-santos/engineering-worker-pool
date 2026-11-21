@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 import httpx
 import pytest
@@ -10,6 +12,13 @@ from app.pre_pr_cas_gate import PrePRBlocked
 from app.reqsys_readonly_authority import REPOSITORY, ReqSysReadOnlyAuthority
 
 SHA = "a" * 40
+
+
+def absolute_private_test_path(name: str) -> Path:
+    """Synthetic fixture: absolute on both POSIX and Windows."""
+    root = Path("C:/private") if os.name == "nt" else Path("/private")
+    assert root.is_absolute()
+    return root / name
 
 
 def port(handler=None, token="x" * 24):
@@ -130,7 +139,7 @@ def test_private_file_composition_uses_existing_reader(monkeypatch):
         httpx.Response(200, json={"number": 715, "state": "open",
             "html_url": f"https://github.com/{REPOSITORY}/issues/715"})),
         trust_env=False)
-    key_path = Path("/private/reqsys-readonly-token")
+    key_path = absolute_private_test_path("reqsys-readonly-token")
     with ReqSysReadOnlyAuthority.from_private_token_file(
         token_file=key_path, client=client,
     ) as a:
@@ -157,7 +166,7 @@ def test_private_file_reader_denies_access_before_network(monkeypatch):
         pytest.fail("network must not be reached without a safe credential")
     client = httpx.Client(transport=httpx.MockTransport(no_network), trust_env=False)
     authority = ReqSysReadOnlyAuthority.from_private_token_file(
-        token_file=Path("/private/absent"), client=client)
+        token_file=absolute_private_test_path("absent"), client=client)
     with pytest.raises(PrePRBlocked, match="reqsys_readonly_credential_unavailable"):
         authority.issue(REPOSITORY, 715)
     client.close()
@@ -170,7 +179,7 @@ def test_factory_context_manager_closes_only_owned_client(monkeypatch):
     monkeypatch.setitem(sys.modules, "scripts.native_private_config",
                         SimpleNamespace(read_private=lambda *a, **k: b"x"*24))
     authority = ReqSysReadOnlyAuthority.from_private_token_file(
-        token_file=Path("/private/read-only-token"))
+        token_file=absolute_private_test_path("read-only-token"))
     assert authority._owns_client is True
     with authority as a:
         assert a is authority
