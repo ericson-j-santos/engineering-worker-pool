@@ -124,3 +124,30 @@ readback independente. Testes com HTTP simulado são apenas contratuais.
 
 Até prova de composição no controlador e CAS/Validator, o status permanece
 `ADOPTION_PENDING` e `READY_FOR_PR=false`. O commit ReqSys #715 continua sem PR.
+
+
+## Composição protegida do leitor ReqSys — candidato local, não instalado (21/11/2026)
+
+O método `ReqSysReadOnlyAuthority.from_private_token_file` usa o leitor
+`read_private` já presente em `scripts/native_private_config.py`, que
+consulta arquivo privado sem seguir links simbólicos e valida o descritor.
+Cria cliente `httpx` com `trust_env=False` e redirects desabilitados,
+sem persistir ou imprimir o token, ou então aceita cliente explicitamente
+emprestado pelo chamador confiável. `close()` fecha somente o cliente
+proprietário; a porta continua exclusivamente GET de issue e SHA.
+
+A ativação exige *antes* um contexto de confiança que confira assinatura
+OIDC no broker, perfil exato `reqsys-handoff-v1`, GH token de leitura
+com escopo mínimo, Gateway, lease, regra SHA-bound e custo zero; a
+mera presença da variável `EWP_IDENTITY_PROFILE` não é prova.
+O workflow atual `codex-worker-pool-handoff.yml` declara
+`contents: read` e `id-token: write` no job hospedado, mas **não**
+invoca esta composição. O conector GitHub usado na inspeção atual
+retornou permissões amplas (incluindo `admin` e `push`), portanto
+**não** deve fornecer credencial ao runtime.
+
+Os testes locais usam leitores falsos e `httpx.MockTransport`; não
+comprovam existência de token privado, execução de workflow, sessão
+OIDC autenticada, CAS real, Validator nem `READY_FOR_PR`.
+Sem identidade/credencial operacional qualificadas, manter
+`ADOPTION_PENDING`, sem dispatch/instalação/PR/merge/deploy.

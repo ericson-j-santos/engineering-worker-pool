@@ -111,3 +111,67 @@ def test_no_write_method_exposed():
     r = port()
     assert not any(hasattr(r, name) for name in (
         "create_branch", "create_draft", "put_if_absent", "post", "patch", "merge"))
+
+
+def test_private_file_composition_uses_existing_reader(monkeypatch):
+    """Policy integration only: the protected-reader implementation lives in EWP."""
+    import sys
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    calls = []
+    def private_reader(path, *, max_bytes):
+        calls.append((path, max_bytes))
+        return b"x" * 24
+
+    monkeypatch.setitem(sys.modules, "scripts.native_private_config",
+                        SimpleNamespace(read_private=private_reader))
+    client = httpx.Client(transport=httpx.MockTransport(lambda request:
+        httpx.Response(200, json={"number": 715, "state": "open",
+            "html_url": f"https://github.com/{REPOSITORY}/issues/715"})),
+        trust_env=False)
+    key_path = Path("/private/reqsys-readonly-token")
+    with ReqSysReadOnlyAuthority.from_private_token_file(
+        token_file=key_path, client=client,
+    ) as a:
+        assert a.issue(REPOSITORY, 715)["state"] == "open"
+    assert calls == [(key_path, 4096)]
+    assert not client.is_closed  # borrowed client lifecycle stays with caller
+    client.close()
+
+
+def test_private_file_composition_requires_absolute_path():
+    from pathlib import Path
+    with pytest.raises(PrePRBlocked, match="reqsys_readonly_private_path_invalid"):
+        ReqSysReadOnlyAuthority.from_private_token_file(token_file=Path("relative"))
+
+
+def test_private_file_reader_denies_access_before_network(monkeypatch):
+    import sys
+    from pathlib import Path
+    from types import SimpleNamespace
+    monkeypatch.setitem(sys.modules, "scripts.native_private_config",
+        SimpleNamespace(read_private=lambda *args, **kwargs: (_ for _ in ()).throw(
+            PermissionError("private file denied"))))
+    def no_network(request):
+        pytest.fail("network must not be reached without a safe credential")
+    client = httpx.Client(transport=httpx.MockTransport(no_network), trust_env=False)
+    authority = ReqSysReadOnlyAuthority.from_private_token_file(
+        token_file=Path("/private/absent"), client=client)
+    with pytest.raises(PrePRBlocked, match="reqsys_readonly_credential_unavailable"):
+        authority.issue(REPOSITORY, 715)
+    client.close()
+
+
+def test_factory_context_manager_closes_only_owned_client(monkeypatch):
+    import sys
+    from pathlib import Path
+    from types import SimpleNamespace
+    monkeypatch.setitem(sys.modules, "scripts.native_private_config",
+                        SimpleNamespace(read_private=lambda *a, **k: b"x"*24))
+    authority = ReqSysReadOnlyAuthority.from_private_token_file(
+        token_file=Path("/private/read-only-token"))
+    assert authority._owns_client is True
+    with authority as a:
+        assert a is authority
+    assert authority._client.is_closed

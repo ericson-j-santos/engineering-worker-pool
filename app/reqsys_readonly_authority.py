@@ -11,6 +11,7 @@ is implemented by this module.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Callable
 from urllib.parse import quote
 
@@ -35,6 +36,45 @@ class ReqSysReadOnlyAuthority:
                 "reqsys_readonly_config_invalid")
         self._client = client
         self._token_reader = token_reader
+        self._owns_client = False
+
+    @classmethod
+    def from_private_token_file(
+        cls, *, token_file: Path, client: httpx.Client | None = None,
+    ) -> ReqSysReadOnlyAuthority:
+        """Compose with the EXISTING protected-file reader, not a new secret store.
+
+        The trusted caller must separately attest OIDC identity, repository,
+        permissions, cost and gateway session. This factory proves NONE of those.
+        An absent/unsafe token fails closed; it is never logged or returned.
+        """
+        require(isinstance(token_file, Path) and token_file.is_absolute(),
+                "reqsys_readonly_private_path_invalid")
+        from scripts.native_private_config import read_private
+
+        def token_reader() -> str:
+            try:
+                return read_private(token_file, max_bytes=4096).decode("ascii").strip()
+            except Exception:
+                raise PrePRBlocked("reqsys_readonly_credential_unavailable") from None
+
+        owns_client = client is None
+        if client is None:
+            client = httpx.Client(trust_env=False, follow_redirects=False,
+                                  timeout=12)
+        instance = cls(client=client, token_reader=token_reader)
+        instance._owns_client = owns_client
+        return instance
+
+    def close(self) -> None:
+        if self._owns_client:
+            self._client.close()
+
+    def __enter__(self) -> ReqSysReadOnlyAuthority:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
 
     def _get(self, tail: str) -> dict:
         require(type(tail) is str and tail.startswith("/")
