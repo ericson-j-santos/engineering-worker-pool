@@ -107,3 +107,56 @@ def test_unknown_denial_cannot_echo_untrusted_string(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "SENSITIVE_TOKEN_SAMPLE" not in output
     assert json.loads(output)["reason"] == "reqsys_notion_probe_failed"
+
+
+def test_fallback_uses_only_preexisting_windows_pointer(monkeypatch, capsys):
+    stub = ReaderStub()
+    pointer, seen = _configure(monkeypatch, stub)
+    monkeypatch.delenv("PORTFOLIO_NOTION_TOKEN_FILE", raising=False)
+    monkeypatch.setattr(probe, "_registered_pointer", lambda: str(pointer))
+    assert probe.main() == 0
+    assert seen == [pointer]
+    assert stub.seen == ["TODO-74"]
+    assert json.loads(capsys.readouterr().out)["result"] == "TODO74_GET_VERIFIED"
+
+
+def test_absent_pointer_remains_blocked(monkeypatch, capsys):
+    monkeypatch.delenv("PORTFOLIO_NOTION_TOKEN_FILE", raising=False)
+    monkeypatch.setattr(probe, "_registered_pointer", lambda: "")
+    assert probe.main() == 2
+    assert json.loads(capsys.readouterr().out)["reason"] == "reqsys_notion_pointer_missing"
+
+
+def test_env_pointer_wins_over_registry(monkeypatch, capsys):
+    stub = ReaderStub()
+    pointer, seen = _configure(monkeypatch, stub)
+    monkeypatch.setattr(
+        probe, "_registered_pointer",
+        lambda: (_ for _ in ()).throw(AssertionError("registry fallback not needed")),
+    )
+    assert probe.main() == 0
+    assert seen == [pointer]
+    assert json.loads(capsys.readouterr().out)["authorized"] is False
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="Windows registry only")
+def test_hkcu_registration_is_readonly_and_typed(monkeypatch):
+    import winreg
+
+    class StubKey:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    seen = []
+    def fake_open(hive, name, reserved, rights):
+        seen.append((hive, name, reserved, rights))
+        return StubKey()
+
+    monkeypatch.setattr(winreg, "OpenKey", fake_open)
+    monkeypatch.setattr(winreg, "QueryValueEx", lambda key, name:
+                        (str(Path.cwd() / "unused-private-credential.txt"), winreg.REG_SZ))
+    assert probe._registered_pointer() == str(Path.cwd() / "unused-private-credential.txt")
+    assert seen == [(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ)]
