@@ -67,6 +67,8 @@ jobs:
               "app/s3_git_bundle_artifact.py",
               "app/native_gateway_commands.py",
               "tests/test_native_gateway_commands.py",
+              "scripts/noteri42_model_repair.py",
+              "tests/test_noteri42_model_repair.py",
               "scripts/noteri42_independent_validate.py",
               "tests/test_noteri42_independent_validate.py",
           }
@@ -112,6 +114,10 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: '1'
         run: python3 -B -m unittest discover -v -s tests -p 'test_rules213*.py'
+      - name: Noteri 42 local Qwen Builder contract and negative controls
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -B -m unittest discover -v -s tests -p 'test_noteri42_model_repair.py'
       - name: Noteri 42 independent Validator Git scope and negative controls
         env:
           PYTHONDONTWRITEBYTECODE: '1'
