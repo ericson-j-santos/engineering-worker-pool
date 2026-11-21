@@ -175,3 +175,32 @@ def test_factory_context_manager_closes_only_owned_client(monkeypatch):
     with authority as a:
         assert a is authority
     assert authority._client.is_closed
+
+
+def test_candidate_branch_absent_only_with_verified_github_404():
+    def handler(request):
+        if request.url.path.endswith("/branches/main"):
+            return httpx.Response(200, json={"name": "main", "commit": {"sha": SHA}})
+        return httpx.Response(404, json={"message": "Branch not found"})
+    adapter = port(handler)
+    assert adapter.branch_sha(REPOSITORY, "main") == SHA
+    assert adapter.branch_sha(REPOSITORY, "feat/715-prepr-candidate") is None
+
+
+@pytest.mark.parametrize("body", [{}, {"message": "Forbidden"}, []])
+def test_candidate_404_ambiguous_body_is_denied(body):
+    adapter = port(lambda req: httpx.Response(404, json=body))
+    with pytest.raises(PrePRBlocked, match="reqsys_readonly_response_unverified"):
+        adapter.branch_sha(REPOSITORY, "feat/715-prepr-candidate")
+
+
+def test_main_missing_stays_blocked():
+    adapter = port(lambda req: httpx.Response(404, json={"message": "Not Found"}))
+    with pytest.raises(PrePRBlocked, match="reqsys_readonly_response_unverified"):
+        adapter.branch_sha(REPOSITORY, "main")
+
+
+def test_candidate_unauthorized_is_not_reported_as_absent():
+    adapter = port(lambda req: httpx.Response(401, json={"message": "Bad credentials"}))
+    with pytest.raises(PrePRBlocked, match="reqsys_readonly_response_unverified"):
+        adapter.branch_sha(REPOSITORY, "feat/715-prepr-candidate")

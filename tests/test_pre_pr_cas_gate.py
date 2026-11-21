@@ -34,7 +34,7 @@ class Fake:
         self.todo_state = "BLOCKED"
         self.authorized = True
         self.base = BASE
-        self.head = HEAD
+        self.head = None
         self.task = {
             "task_id": self.intent.task_id, "repository": self.intent.repository,
             "issue_number": 42, "request_id": self.intent.request_id,
@@ -307,6 +307,7 @@ def test_publish_only_after_ready_with_unique_draft_readback(fx):
         publish_single_draft(intent=fx.intent, authority=fx, ledger=fx,
                              github=fx, independent_reader=FakeCas(fx))
     run(fx)
+    fx.head = HEAD  # Aprovada a READY, a publicação remota é uma etapa distinta.
     values = dict(intent=fx.intent, authority=fx, ledger=fx,
                   github=fx, independent_reader=FakeCas(fx))
     first = publish_single_draft(**values)
@@ -318,6 +319,7 @@ def test_publish_only_after_ready_with_unique_draft_readback(fx):
 
 def test_duplicate_pr_blocks_before_publication(fx):
     run(fx)
+    fx.head = HEAD
     fx.prs = [{"number": 123}, {"number": 124}]
     with pytest.raises(PrePRBlocked, match="prepr_duplicate_pr"):
         publish_single_draft(intent=fx.intent, authority=fx, ledger=fx,
@@ -327,6 +329,7 @@ def test_duplicate_pr_blocks_before_publication(fx):
 
 def test_ambiguous_publication_does_not_replay_write(fx):
     run(fx)
+    fx.head = HEAD
     fx.create_draft = lambda **kwargs: None
     with pytest.raises(PrePRBlocked, match="prepr_publication_ambiguous"):
         publish_single_draft(intent=fx.intent, authority=fx, ledger=fx,
@@ -466,3 +469,57 @@ def test_feature_replay_checks_mode(fx):
     fx.decision[KEY]["kind"] = "repair"
     with pytest.raises(PrePRBlocked, match="prepr_replay_conflict"):
         run(fx)
+
+
+def test_unpublished_candidate_can_reach_ready_after_independent_checks(fx):
+    assert fx.branch_sha(fx.intent.repository, fx.intent.candidate_ref) is None
+    result = run(fx)
+    assert result["state"] == "READY_FOR_PR" and result["head_sha"] == HEAD
+    assert fx.pr_writes == 0
+    assert fx.head is None
+
+
+def test_preexisting_candidate_ref_cannot_mint_ready(fx):
+    fx.head = HEAD
+    with pytest.raises(PrePRBlocked, match="prepr_candidate_published_before_ready"):
+        run(fx)
+    assert fx.writes == fx.model_reads == fx.validations == 0
+    assert not fx.decision
+
+
+def test_candidate_published_during_validation_blocks_ready(fx):
+    validate = fx.execute_independently
+
+    def concurrent_publish(**kwargs):
+        result = validate(**kwargs)
+        fx.head = HEAD
+        return result
+
+    fx.execute_independently = concurrent_publish
+    with pytest.raises(PrePRBlocked, match="prepr_candidate_published_during_admission"):
+        run(fx)
+    assert not fx.decision
+
+
+def test_publish_denies_missing_ref_even_with_ready(fx):
+    run(fx)
+    with pytest.raises(PrePRBlocked, match="prepr_candidate_advanced"):
+        publish_single_draft(intent=fx.intent, authority=fx, ledger=fx,
+                             github=fx, independent_reader=FakeCas(fx))
+    assert fx.pr_writes == 0
+
+
+def test_ready_replay_after_exact_branch_publication_is_idempotent(fx):
+    first = run(fx)
+    fx.head = HEAD
+    again = run(fx)
+    assert again["replayed"] is True
+    assert again["artifact_ref"] == first["artifact_ref"]
+    assert (fx.writes, fx.validations, fx.model_reads) == (1, 1, 1)
+
+
+def test_unverified_candidate_lookup_blocks_before_cas(fx):
+    fx.head = "not-a-sha"
+    with pytest.raises(PrePRBlocked, match="prepr_candidate_readback_invalid"):
+        run(fx)
+    assert fx.writes == fx.model_reads == 0

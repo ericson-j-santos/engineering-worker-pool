@@ -151,3 +151,15 @@ comprovam existência de token privado, execução de workflow, sessão
 OIDC autenticada, CAS real, Validator nem `READY_FOR_PR`.
 Sem identidade/credencial operacional qualificadas, manter
 `ADOPTION_PENDING`, sem dispatch/instalação/PR/merge/deploy.
+
+## Ordem pré-PR sem dependência circular — ReqSys #715
+
+A primeira admissão exige branch candidata ausente no GitHub; após CAS
+durável com releitura, Validator independente e READY_FOR_PR, o orquestrador
+autorizado publica a branch no SHA exato e somente então abre uma PR draft.
+GET 404 é considerado ausência somente para branch não-main com resposta JSON
+verificada do GitHub. Erros de autenticação e ausência da main bloqueiam.
+Publicação antes do primeiro READY ou concorrente ao Validator bloqueia.
+Replay de um READY anterior tolera uma branch publicada no mesmo SHA.
+Os testes contratuais aqui não substituem a comprovação real de
+authority/feature, lease, custo incremental zero, CAS ou Validator.

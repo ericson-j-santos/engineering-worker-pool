@@ -104,7 +104,7 @@ class Authority(Protocol):
     def todo(self, todo_id: str) -> Mapping[str, Any]: ...
     def authorization(self, request_id: str) -> Mapping[str, Any]: ...
     def verified_feature(self, request_id: str) -> Mapping[str, Any]: ...
-    def branch_sha(self, repository: str, ref: str) -> str: ...
+    def branch_sha(self, repository: str, ref: str) -> str | None: ...
 
 
 class ExistingPool(Protocol):
@@ -191,8 +191,12 @@ def _verified_feature(intent: PrePRIntent, authority: Authority) -> Mapping[str,
     return proof
 
 
-def _revalidate(intent: PrePRIntent, authority: Authority) -> None:
-    """Every call uses fresh trusted snapshots, never user-supplied issue text."""
+def _revalidate(intent: PrePRIntent, authority: Authority, *,
+                require_published: bool = False) -> str | None:
+    """Revalidate sources, allowing an authenticated missing candidate pre-CAS.
+
+    The trusted branch provider must distinguish verified 404 from auth errors.
+    """
     issue = authority.issue(intent.repository, intent.issue_number)
     todo = authority.todo(intent.todo_id)
     auth = authority.authorization(intent.request_id)
@@ -224,8 +228,14 @@ def _revalidate(intent: PrePRIntent, authority: Authority) -> None:
         _verified_feature(intent, authority)
     require(authority.branch_sha(intent.repository, intent.base_ref)
             == intent.base_sha, "prepr_base_advanced")
-    require(authority.branch_sha(intent.repository, intent.candidate_ref)
-            == intent.candidate_sha, "prepr_candidate_advanced")
+    candidate = authority.branch_sha(intent.repository, intent.candidate_ref)
+    require(candidate is None or (type(candidate) is str and
+            SHA40.fullmatch(candidate) is not None),
+            "prepr_candidate_readback_invalid")
+    require(candidate == intent.candidate_sha if require_published else
+            (candidate is None or candidate == intent.candidate_sha),
+            "prepr_candidate_advanced")
+    return candidate
 
 
 def _task(intent: PrePRIntent, pool: ExistingPool) -> Mapping[str, Any]:
@@ -392,7 +402,7 @@ def ready_for_pr(*, intent: PrePRIntent, authority: Authority,
     independently readable and protected by idempotency key/fencing.
     """
     intent.check()
-    _revalidate(intent, authority)
+    candidate_before = _revalidate(intent, authority)
     task = _task(intent, pool)
     require(type(cost) is dict and cost.get("verified") is True
             and type(cost.get("incremental_brl")) in (int, float)
@@ -424,6 +434,10 @@ def ready_for_pr(*, intent: PrePRIntent, authority: Authority,
                 "prepr_replay_artifact_unreadable")
         return {**saved, "replayed": True}
 
+    # A first READY requires an as-yet-unpublished branch. Existing READY can
+    # replay even after the approved ref is safely published.
+    require(candidate_before is None,
+            "prepr_candidate_published_before_ready")
     require(writer is not independent_reader,
             "prepr_cas_readback_not_independent")
     model = _model(intent, task, model_audit, authority)
@@ -440,8 +454,9 @@ def ready_for_pr(*, intent: PrePRIntent, authority: Authority,
             "prepr_cas_readback_failed")
     _materialize(intent, source, raw, hashes)
     validation = _validate(intent, task, validator, artifact_ref, hashes, model)
-    # After expensive operations, recheck base/HEAD/fencing before READY.
-    _revalidate(intent, authority)
+    # A concurrent branch publication before READY is a state conflict.
+    require(_revalidate(intent, authority) is None,
+            "prepr_candidate_published_during_admission")
     require(_task(intent, pool) == task, "prepr_fence_changed")
     decision = {
         "state": "READY_FOR_PR",
@@ -487,7 +502,6 @@ def publish_single_draft(*, intent: PrePRIntent, authority: Authority,
                          ) -> dict[str, Any]:
     """Only after persisted READY; uncertain writes require readback, not retry."""
     intent.check()
-    _revalidate(intent, authority)
     ready = ledger.read(intent.idempotency_key)
     require(type(ready) is dict and ready.get("state") == "READY_FOR_PR"
             and ready.get("head_sha") == intent.candidate_sha
@@ -506,6 +520,8 @@ def publish_single_draft(*, intent: PrePRIntent, authority: Authority,
             and SHA256.fullmatch(ready["artifact_sha256"]) is not None
             and digest(independent_reader.get_exact(ready["artifact_ref"]))
             == ready["artifact_sha256"], "prepr_ready_missing")
+    # A draft requires a separate SHA-bound branch publication after READY.
+    _revalidate(intent, authority, require_published=True)
     prs = github.find_open_prs(intent.repository, intent.candidate_ref)
     require(type(prs) is list and len(prs) <= 1,
             "prepr_duplicate_pr")
@@ -539,7 +555,7 @@ def publish_single_draft(*, intent: PrePRIntent, authority: Authority,
             and pr.get("diff_nonempty") is True
             and pr.get("idempotency_key") == intent.idempotency_key,
             "prepr_draft_readback_failed")
-    _revalidate(intent, authority)
+    _revalidate(intent, authority, require_published=True)
     return {"state": "DRAFT_PR_VERIFIED", "pr_number": number,
             "head_sha": intent.candidate_sha, "base_sha": intent.base_sha,
             "replayed": not created, "merge_performed": False}

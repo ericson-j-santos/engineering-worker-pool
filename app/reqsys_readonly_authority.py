@@ -76,7 +76,7 @@ class ReqSysReadOnlyAuthority:
     def __exit__(self, *_args: object) -> None:
         self.close()
 
-    def _get(self, tail: str) -> dict:
+    def _get(self, tail: str, *, missing_ok: bool = False) -> dict | None:
         require(type(tail) is str and tail.startswith("/")
                 and "//" not in tail and "\\" not in tail
                 and "?" not in tail and "#" not in tail
@@ -104,7 +104,24 @@ class ReqSysReadOnlyAuthority:
         require(response.url.scheme == "https"
                 and response.url.host == "api.github.com"
                 and response.url.raw_path.split(b"?")[0] == path.encode("ascii")
-                and not response.history and response.status_code == 200,
+                and not response.history,
+                "reqsys_readonly_response_unverified")
+        # Only the branch GET may report an authenticated absence.
+        if missing_ok and response.status_code == 404:
+            require(tail.startswith("/branches/")
+                    and len(response.content) <= MAX_BODY
+                    and response.headers.get("content-type", "").split(";")[0].strip()
+                    == "application/json",
+                    "reqsys_readonly_response_unverified")
+            try:
+                absent = response.json()
+            except ValueError:
+                raise PrePRBlocked("reqsys_readonly_response_unverified") from None
+            require(type(absent) is dict
+                    and absent.get("message") in ("Not Found", "Branch not found"),
+                    "reqsys_readonly_response_unverified")
+            return None
+        require(response.status_code == 200,
                 "reqsys_readonly_response_unverified")
         require(len(response.content) <= MAX_BODY
                 and response.headers.get("content-type", "").split(";")[0].strip()
@@ -132,7 +149,7 @@ class ReqSysReadOnlyAuthority:
         return {"repository": REPOSITORY, "number": number,
                 "state": obj["state"], "is_pull_request": False}
 
-    def branch_sha(self, repository: str, ref: str) -> str:
+    def branch_sha(self, repository: str, ref: str) -> str | None:
         require(repository == REPOSITORY and type(ref) is str
                 and BRANCH.fullmatch(ref) is not None
                 and not ref.startswith("refs/")
@@ -140,7 +157,9 @@ class ReqSysReadOnlyAuthority:
                 and not ref.endswith("/") and not ref.endswith(".lock")
                 and all(not part.startswith(".") for part in ref.split("/")),
                 "reqsys_readonly_branch_scope_invalid")
-        obj = self._get("/branches/" + quote(ref, safe=""))
+        obj = self._get("/branches/" + quote(ref, safe=""), missing_ok=(ref != "main"))
+        if obj is None:
+            return None
         sha = (obj.get("commit") or {}).get("sha") if type(obj.get("commit")) is dict else None
         require(obj.get("name") == ref and type(sha) is str
                 and SHA.fullmatch(sha) is not None,
