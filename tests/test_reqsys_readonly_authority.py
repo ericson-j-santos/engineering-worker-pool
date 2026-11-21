@@ -379,3 +379,34 @@ def test_notion_todo_reader_rejects_untrusted_injection():
             notion_todo_reader=lambda todo_id: {"state": "AUTHORIZED"},
         )
 
+
+# Regression against real TODO Global schema: Notion's auto_increment_id
+# is a REST unique_id object, not a number; correlation is a typed rich_text.
+def test_notion_actual_unique_id_todo74_is_accepted():
+    page = _notion_page()
+    page["properties"]["TODO ID"] = {
+        "type": "unique_id", "unique_id": {"prefix": "TODO", "number": 74}}
+    page["properties"]["Correlation ID"] = _notion_prop(
+        "reqsys-prova-rapida-20261120")
+    assert _notion_reader(lambda request: httpx.Response(
+        200, json=page)).todo("TODO-74")["state"] == "BLOCKED"
+
+
+def test_notion_correlation_id_mismatch_must_fail_closed():
+    page = _notion_page()
+    page["properties"]["Correlation ID"] = _notion_prop("wrong-correlation")
+    with pytest.raises(PrePRBlocked, match="reqsys_notion_todo_unverified"):
+        _notion_reader(lambda request: httpx.Response(
+            200, json=page)).todo("TODO-74")
+
+
+def test_notion_unique_id_prefix_mismatch_must_fail_closed():
+    page = _notion_page()
+    page["properties"]["TODO ID"] = {
+        "type": "unique_id", "unique_id": {"prefix": "WRONG", "number": 74}}
+    page["properties"]["Correlation ID"] = _notion_prop(
+        "reqsys-prova-rapida-20261120")
+    with pytest.raises(PrePRBlocked, match="reqsys_notion_todo_unverified"):
+        _notion_reader(lambda request: httpx.Response(
+            200, json=page)).todo("TODO-74")
+
