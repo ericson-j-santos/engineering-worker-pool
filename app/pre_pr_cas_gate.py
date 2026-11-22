@@ -23,6 +23,8 @@ PATH = re.compile(r"(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9_./-]+\Z")
 SDD_PATH = re.compile(r"\.sdd/specs/[A-Za-z0-9][A-Za-z0-9_.-]{0,179}\.(?:spec\.json|requirements\.md)\Z")
 REQSYS_WORKFLOW_REPO = "ericson-j-santos/reqsys-v2-enterprise-real"
 REQSYS_715_WORKFLOW_PATH = ".github/workflows/codex-worker-pool-handoff.yml"
+DESKTOP_WORKFLOW_REPO = "ericson-j-santos/desktop-pc24x7-runtime"
+DESKTOP_123_WORKFLOW_PATH = ".github/workflows/pc24x7-orchestrator-supervisor-readonly.yml"
 MAX_CAS_BYTES = 20_000_000
 RETENTION_DAYS = 30
 
@@ -109,6 +111,11 @@ class PrePRIntent:
                          or (p == REQSYS_715_WORKFLOW_PATH
                              and self.repository == REQSYS_WORKFLOW_REPO
                              and self.issue_number == 715
+                             and self.kind == "feature"
+                             and self.source_mode == "assisted")
+                         or (p == DESKTOP_123_WORKFLOW_PATH
+                             and self.repository == DESKTOP_WORKFLOW_REPO
+                             and self.issue_number == 123
                              and self.kind == "feature"
                              and self.source_mode == "assisted"))
                         and "//" not in p

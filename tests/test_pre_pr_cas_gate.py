@@ -556,6 +556,42 @@ def test_reqsys715_workflow_exception_never_opens_other_scopes(fx, change):
         fx.intent.check()
 
 
+def test_desktop123_workflow_scoped_feature_path(fx):
+    """Only the existing Desktop #123 locator inventory workflow is admitted."""
+    fx.intent = replace(
+        fx.intent,
+        repository="ericson-j-santos/desktop-pc24x7-runtime",
+        issue_number=123, kind="feature", source_mode="assisted",
+        allowed_paths=(
+            ".github/workflows/pc24x7-orchestrator-supervisor-readonly.yml",
+            "scripts/reqsys_dev_locator_risk1_inventory.py",
+            "tests/test_reqsys_dev_locator_risk1_inventory.py",
+        ),
+    )
+    fx.intent.check()
+
+
+@pytest.mark.parametrize("change", [
+    {"repository": "ericson-j-santos/engineering-worker-pool"},
+    {"issue_number": 124},
+    {"kind": "repair", "source_mode": "model_builder"},
+    {"source_mode": "model_builder"},
+    {"allowed_paths": (".github/workflows/other.yml",)},
+    {"allowed_paths": (".github/workflows/pc24x7-orchestrator-supervisor-readonly.yml/../evil.yml",)},
+    {"allowed_paths": (".git/config", ".github/workflows/pc24x7-orchestrator-supervisor-readonly.yml")},
+])
+def test_desktop123_workflow_exception_rejects_other_scopes(fx, change):
+    fx.intent = replace(
+        fx.intent,
+        repository="ericson-j-santos/desktop-pc24x7-runtime",
+        issue_number=123, kind="feature", source_mode="assisted",
+        allowed_paths=(".github/workflows/pc24x7-orchestrator-supervisor-readonly.yml",),
+    )
+    fx.intent = replace(fx.intent, **change)
+    with pytest.raises(PrePRBlocked, match="prepr_scope_invalid|prepr_kind_source_mode_invalid"):
+        fx.intent.check()
+
+
 def test_short_canonical_todo_global_id_is_admissible_without_alias(fx):
     """An authenticated provider must still bind TODO-74 to its real record."""
     fx.intent = replace(fx.intent, todo_id="TODO-74")
