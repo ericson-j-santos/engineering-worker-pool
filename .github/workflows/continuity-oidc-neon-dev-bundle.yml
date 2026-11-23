@@ -1,6 +1,13 @@
 name: OIDC broker Neon DEV bundle gate (no deploy)
 
 on:
+  push:
+    branches:
+      - feat/issue-61-pre-pr-cas-validator-20261108
+    paths:
+      - .github/workflows/continuity-oidc-neon-dev-bundle.yml
+      - scripts/issue61_neon_http_smoke.py
+      - tests/test_issue61_neon_http_smoke.py
   pull_request:
     types: [opened, synchronize, reopened, edited]
     paths:
@@ -181,3 +188,49 @@ jobs:
           assert status401==401
           print("OIDC_DEV_E2E_PASS: health=200 unknown=404 unsigned=401 no_write=true")
           PY
+
+  issue61-isolated-http-smoke:
+    name: EWP61 isolated Neon HTTP 200 404 401 read-only
+    if: >-
+      github.event_name == 'push' &&
+      github.repository == 'ericson-j-santos/engineering-worker-pool' &&
+      github.ref == 'refs/heads/feat/issue-61-pre-pr-cas-validator-20261108' &&
+      github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    env:
+      EXPECTED_SHA: ${{ github.sha }}
+    steps:
+      - name: Exact immutable commit and clean checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ env.EXPECTED_SHA }}
+          persist-credentials: false
+      - name: Verify isolated EWP61 source provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+          test -f scripts/issue61_neon_http_smoke.py
+          test -f tests/test_issue61_neon_http_smoke.py
+      - name: Offline positive negative and fail-closed regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import runpy
+          tests=runpy.run_path('tests/test_issue61_neon_http_smoke.py')
+          cases=[value for name,value in tests.items() if name.startswith('test_') and callable(value)]
+          assert len(cases)==7, 'EWP61_TEST_COUNT_DRIFT'
+          for case in cases:
+              case()
+          print('EWP61_ISOLATED_HTTP_STATIC_TESTS=7/7')
+          PY
+      - name: Actual HTTPS Neon isolated function contract 200 404 401
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B scripts/issue61_neon_http_smoke.py
