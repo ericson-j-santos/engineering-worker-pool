@@ -1,0 +1,37 @@
+{
+  "schema": "ewp61.neon.dev.identity-backup.v1",
+  "kind": "code-only-deployment-recovery",
+  "project": "engineering-continuity-artifacts",
+  "branch": "br-gentle-river-b4yz6b44",
+  "function": "continuityidentity",
+  "neon_active_deployment_id_observed": 1,
+  "neon_active_deployment_created_at": "2026-10-25T20:01:39.735967Z",
+  "recovered_zip_sha256": "cc75a58dd464f9af9f937a3346f532f4eb83e4a266257fcaf17fc5f801370ea0",
+  "zip_bytes": 12927,
+  "git_blob_sha": "2ab04924e5edae51e53176bf8235543cbba9158a",
+  "source_commit_sha": "ac877d3f9fa74b2b4308f2c2f0e4af72ed37de24",
+  "sources": {
+    "run": "https://github.com/ericson-j-santos/engineering-worker-pool/actions/runs/40228088056",
+    "job_id": 121273714291,
+    "pr": "https://github.com/ericson-j-santos/engineering-worker-pool/pull/52",
+    "github_bundle_log_hash_matches_pr": true
+  },
+  "verification": {
+    "zip_sha256_independently_recalculated": true,
+    "zip_entries": [
+      "index.mjs",
+      "SOURCE_COMMIT.txt"
+    ],
+    "deployed_zip_bytes_retrievable_from_provider": false,
+    "provider_deployment_to_zip_binary_match": "NOT_INDEPENDENTLY_ATTESTED",
+    "neon_rollback_rehearsal": "NOT_EXECUTED",
+    "oidc_profiles_deployed": false
+  },
+  "constraints": "Read-only recovery of build artifact from historical CI log. This is NOT a verified backup of the active Neon deployment; preserve DEV active deployment 1, no rollout, no credentials in this archive.",
+  "rules_sha": "58dcd4200f412a866278027ba9e433439a03f3b3",
+  "canonical_issue": "https://github.com/ericson-j-santos/engineering-worker-pool/issues/61",
+  "consumer": "ericson-j-santos/noteri-runtime#42",
+  "todo": "TODO-54",
+  "correlation_id": "ewp61-dev-oidc-split-secret-custody-20261123",
+  "idempotency_key": "ewp61:continuityidentity-source-archive:cc75a58d:20261123:v1"
+}
