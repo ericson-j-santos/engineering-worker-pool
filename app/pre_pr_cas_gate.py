@@ -123,6 +123,7 @@ class PrePRIntent:
                          or (p == NOTERI_42_WORKFLOW_PATH
                              and self.repository == NOTERI_WORKFLOW_REPO
                              and self.issue_number == 42
+                             and self.todo_id == "TODO-54"
                              and self.kind == "repair"
                              and self.source_mode == "model_builder"))
                         and "//" not in p
