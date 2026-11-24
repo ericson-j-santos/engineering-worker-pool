@@ -1,66 +1,80 @@
 """Unit gates for hosted-only candidate isolation (not physical E2E)."""
 from __future__ import annotations
 
-import copy
+import os
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from scripts.candidate_canary_probe import CanaryBlocked, context, inspect_container
-
+from scripts.candidate_canary_probe import CanaryBlocked, context, validate_native_identity
 
 SHA = "a" * 40
 REQSYS = "b" * 40
-IMAGE = "sha256:" + "c" * 64
-CONTAINER = "wp-canary-38390123456-1"
 
 
-def fake_container(token_path: Path) -> dict:
-    return {
-        "Image": IMAGE,
-        "Name": "/" + CONTAINER,
-        "State": {"Running": True},
-        "Config": {"User": "reqsys"},
-        "HostConfig": {
-            "Privileged": False,
-            "CapDrop": ["ALL"],
-            "ReadonlyRootfs": True,
-            "NetworkMode": "bridge",
-            "PortBindings": {"8097/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18098"}]},
-        },
-        "Mounts": [
-            {"Destination": "/data", "Type": "volume", "Name": CONTAINER, "RW": True},
-            {"Destination": "/run/secrets/canary-token", "Type": "bind",
-             "Source": str(token_path), "RW": False},
-        ],
-    }
+def native_fixture(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    state = tmp_path / "wp-canary-38390123456-1"
+    state.mkdir(mode=0o700)
+    state.chmod(0o700)
+    token = state / "token"
+    token.write_text("test-token-value", encoding="ascii")
+    token.chmod(0o400)
+    db = state / "canary.db"
+    db.write_bytes(b"fixture")
+    db.chmod(0o600)
+    data = dict(root=root, state_dir=state, token_path=token, db_path=db,
+                argv=("/usr/bin/python", "-m", "uvicorn", "app.main:app",
+                      "--host", "127.0.0.1", "--port", "18098"),
+                cwd=root, owner_uid=os.geteuid(), current_uid=os.geteuid())
+    return data
 
 
-def test_positive_isolation_contract(tmp_path: Path) -> None:
-    data = fake_container(tmp_path / "token")
-    inspect_container(data, image_id=IMAGE, name=CONTAINER, volume=CONTAINER,
-                      token_path=tmp_path / "token")
+@pytest.mark.skipif(os.name != "posix", reason="Linux-only native file isolation")
+def test_native_identity_is_pinned_and_isolated(tmp_path):
+    validate_native_identity(**native_fixture(tmp_path))
 
 
-@pytest.mark.parametrize("mutation", [
-    lambda d: d["HostConfig"].update(Privileged=True),
-    lambda d: d["HostConfig"].update(ReadonlyRootfs=False),
-    lambda d: d["HostConfig"].update(PortBindings={"8097/tcp": [{"HostIp": "0.0.0.0", "HostPort": "18098"}]}),
-    lambda d: d["HostConfig"].update(CapDrop=[]),
-    lambda d: d["Mounts"].append({"Destination": "/live", "Type": "volume", "RW": True}),
-    lambda d: d["Mounts"][0].update(Name="production-volume"),
-    lambda d: d["Mounts"][1].update(RW=True),
-    lambda d: d.update(Image="sha256:" + "d" * 64),
-    lambda d: d["Config"].update(User="root"),
-    lambda d: d["State"].update(Running=False),
+@pytest.mark.skipif(os.name != "posix", reason="Linux-only native file isolation")
+@pytest.mark.parametrize("change", [
+    ("owner_uid", 0),
+    ("current_uid", 0),
+    ("argv", ("/usr/bin/python", "-m", "uvicorn", "app.main:app",
+              "--host", "0.0.0.0", "--port", "18098")),
+    ("argv", ("/usr/bin/python", "-m", "uvicorn", "app.other:app",
+              "--host", "127.0.0.1", "--port", "18098")),
+    ("argv", ("/usr/bin/python", "-m", "uvicorn", "app.main:app",
+              "--host", "127.0.0.1", "--port", "18099")),
 ])
-def test_negative_isolation_contract(tmp_path: Path, mutation) -> None:
-    data = fake_container(tmp_path / "token")
-    mutation(data)
+def test_native_identity_refuses_privileges_other_app_and_network(tmp_path, change):
+    d = native_fixture(tmp_path)
+    d[change[0]] = change[1]
     with pytest.raises(CanaryBlocked):
-        inspect_container(data, image_id=IMAGE, name=CONTAINER, volume=CONTAINER,
-                          token_path=tmp_path / "token")
+        validate_native_identity(**d)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Linux-only native file isolation")
+@pytest.mark.parametrize("change", ["token_world_readable", "db_world_readable",
+                                    "state_world_readable", "wrong_cwd",
+                                    "token_symlink"])
+def test_native_identity_rejects_unsafe_paths(tmp_path, change):
+    d = native_fixture(tmp_path)
+    if change == "token_world_readable":
+        d["token_path"].chmod(0o644)
+    elif change == "db_world_readable":
+        d["db_path"].chmod(0o644)
+    elif change == "state_world_readable":
+        d["state_dir"].chmod(0o755)
+    elif change == "wrong_cwd":
+        d["cwd"] = tmp_path
+    elif change == "token_symlink":
+        original = d["token_path"]
+        original.unlink()
+        original.symlink_to(d["db_path"])
+    with pytest.raises(CanaryBlocked):
+        validate_native_identity(**d)
 
 
 def test_positive_ci_identity(tmp_path: Path) -> None:
@@ -96,12 +110,14 @@ def test_negative_ci_identity(tmp_path: Path, change) -> None:
             context(tmp_path, consumer, env)
 
 
-def test_docker_build_context_whitelist() -> None:
+def test_native_workflow_never_invokes_docker():
     root = Path(__file__).resolve().parents[1]
-    ignore = (root / ".dockerignore").read_text(encoding="utf-8").splitlines()
-    assert [line for line in ignore if line and not line.startswith("#")] == [
-        "**", "!Dockerfile", "!requirements.txt", "!app", "!app/**"
-    ]
+    workflow = (root / ".github/workflows/candidate-canary.yml").read_text(encoding="utf-8")
+    assert "python -m uvicorn app.main:app --host 127.0.0.1 --port 18098" in workflow
+    assert "python scripts/candidate_canary_probe.py" in workflow
+    assert "docker " not in workflow.lower()
+    assert "docker run" not in workflow.lower()
+    assert "CANARY_DB_PATH" in workflow
 
 
 def test_workflow_uses_single_pinned_reqsys_consumer_sha():
