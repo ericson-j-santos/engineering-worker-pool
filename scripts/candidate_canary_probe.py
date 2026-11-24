@@ -140,6 +140,15 @@ def run(root: Path, consumer_root: Path, token_file: Path, env: dict[str, str]) 
     pid_text = pid_file.read_text(encoding="ascii").strip()
     require(re.fullmatch(r"[0-9]{2,8}", pid_text) is not None,
             "native_pid_invalid")
+    # Uvicorn imports app.main asynchronously after the shell records its PID.
+    # Wait only for the disposable SQLite file; no unauthenticated HTTP effect
+    # or API mutation is permitted before native identity/permissions checks.
+    for _ in range(50):
+        if db_path.exists():
+            break
+        time.sleep(0.1)
+    else:
+        raise CanaryBlocked("native_database_startup_timeout")
     inspect_native_process(root, state_dir, token_file, db_path, int(pid_text))
     require(token_file.is_file() and not token_file.is_symlink(),
             "test_token_file_invalid")
