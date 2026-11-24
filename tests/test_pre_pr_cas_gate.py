@@ -630,6 +630,7 @@ def test_noteri42_workflow_scoped_repair_path(fx):
     {"repository": "ericson-j-santos/reqsys-v2-enterprise-real"},
     {"issue_number": 43},
     {"issue_number": 715},
+    {"todo_id": "TODO-75"},
     {"kind": "feature", "source_mode": "assisted"},
     {"allowed_paths": (".github/workflows/other.yml",)},
     {"allowed_paths": (".github/workflows/codex-worker-pool-handoff.yml",)},
