@@ -25,6 +25,8 @@ REQSYS_WORKFLOW_REPO = "ericson-j-santos/reqsys-v2-enterprise-real"
 REQSYS_715_WORKFLOW_PATH = ".github/workflows/codex-worker-pool-handoff.yml"
 DESKTOP_WORKFLOW_REPO = "ericson-j-santos/desktop-pc24x7-runtime"
 DESKTOP_123_WORKFLOW_PATH = ".github/workflows/pc24x7-orchestrator-supervisor-readonly.yml"
+NOTERI_WORKFLOW_REPO = "ericson-j-santos/noteri-runtime"
+NOTERI_42_WORKFLOW_PATH = ".github/workflows/noteri-control-plane-probe.yml"
 MAX_CAS_BYTES = 20_000_000
 RETENTION_DAYS = 30
 
@@ -117,7 +119,12 @@ class PrePRIntent:
                              and self.repository == DESKTOP_WORKFLOW_REPO
                              and self.issue_number == 123
                              and self.kind == "feature"
-                             and self.source_mode == "assisted"))
+                             and self.source_mode == "assisted")
+                         or (p == NOTERI_42_WORKFLOW_PATH
+                             and self.repository == NOTERI_WORKFLOW_REPO
+                             and self.issue_number == 42
+                             and self.kind == "repair"
+                             and self.source_mode == "model_builder"))
                         and "//" not in p
                         for p in self.allowed_paths),
                 "prepr_scope_invalid")
