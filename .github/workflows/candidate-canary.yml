@@ -37,11 +37,6 @@ jobs:
     env:
       EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       REQSYS_SHA: b5e0c7d2ca8fc46978562795f7a429d260f8ed9f
-      CANARY_STATE_DIR: ${{ runner.temp }}/wp-canary-${{ github.run_id }}-${{ github.run_attempt }}
-      CANARY_DB_PATH: ${{ runner.temp }}/wp-canary-${{ github.run_id }}-${{ github.run_attempt }}/canary.db
-      CANARY_TOKEN_FILE: ${{ runner.temp }}/wp-canary-${{ github.run_id }}-${{ github.run_attempt }}/token
-      CANARY_PID_FILE: ${{ runner.temp }}/wp-canary-${{ github.run_id }}-${{ github.run_attempt }}/service.pid
-      CANARY_LOG_FILE: ${{ runner.temp }}/wp-canary-${{ github.run_id }}-${{ github.run_attempt }}/server.log
     steps:
       - name: Checkout immutable candidate SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -72,6 +67,19 @@ jobs:
           test "$(git -C .reqsys-consumer rev-parse HEAD)" = "$REQSYS_SHA"
           test -z "$(git diff --name-only)"
           test "$(id -u)" -ne 0
+          : "${RUNNER_TEMP:?RUNNER_TEMP_unavailable}"
+          CANARY_STATE_DIR="$RUNNER_TEMP/wp-canary-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          CANARY_DB_PATH="$CANARY_STATE_DIR/canary.db"
+          CANARY_TOKEN_FILE="$CANARY_STATE_DIR/token"
+          CANARY_PID_FILE="$CANARY_STATE_DIR/service.pid"
+          CANARY_LOG_FILE="$CANARY_STATE_DIR/server.log"
+          {
+            printf 'CANARY_STATE_DIR=%s\n' "$CANARY_STATE_DIR"
+            printf 'CANARY_DB_PATH=%s\n' "$CANARY_DB_PATH"
+            printf 'CANARY_TOKEN_FILE=%s\n' "$CANARY_TOKEN_FILE"
+            printf 'CANARY_PID_FILE=%s\n' "$CANARY_PID_FILE"
+            printf 'CANARY_LOG_FILE=%s\n' "$CANARY_LOG_FILE"
+          } >> "$GITHUB_ENV"
           umask 077
           test ! -e "$CANARY_STATE_DIR"
           mkdir -m 700 "$CANARY_STATE_DIR"
