@@ -606,3 +606,60 @@ def test_canonical_todo_id_malformed_values_stay_blocked(fx, invalid):
     fx.intent = replace(fx.intent, todo_id=invalid)
     with pytest.raises(PrePRBlocked, match="prepr_todo_invalid"):
         fx.intent.check()
+
+
+def test_noteri42_workflow_scoped_repair_path(fx):
+    """Noteri #42 repair may include only its exact workflow under .github."""
+    fx.intent = replace(
+        fx.intent,
+        repository="ericson-j-santos/noteri-runtime",
+        issue_number=42,
+        todo_id="TODO-54",
+        kind="repair",
+        source_mode="model_builder",
+        allowed_paths=(
+            ".github/workflows/noteri-control-plane-probe.yml",
+            "scripts/noteri_qualification_receipt.py",
+        ),
+    )
+    fx.intent.check()
+
+
+@pytest.mark.parametrize("change", [
+    {"repository": "ericson-j-santos/engineering-worker-pool"},
+    {"repository": "ericson-j-santos/reqsys-v2-enterprise-real"},
+    {"issue_number": 43},
+    {"issue_number": 715},
+    {"kind": "feature", "source_mode": "assisted"},
+    {"allowed_paths": (".github/workflows/other.yml",)},
+    {"allowed_paths": (".github/workflows/codex-worker-pool-handoff.yml",)},
+    {"allowed_paths": (".github/workflows/pc24x7-orchestrator-supervisor-readonly.yml",)},
+    {"allowed_paths": (".github/workflows/noteri-control-plane-probe.yml/../evil.yml",)},
+    {"allowed_paths": (".git/config", ".github/workflows/noteri-control-plane-probe.yml")},
+])
+def test_noteri42_workflow_exception_rejects_other_scopes(fx, change):
+    """A scoped exception never changes another consumer's policy."""
+    fx.intent = replace(
+        fx.intent,
+        repository="ericson-j-santos/noteri-runtime",
+        issue_number=42,
+        kind="repair",
+        source_mode="model_builder",
+        allowed_paths=(".github/workflows/noteri-control-plane-probe.yml",),
+    )
+    fx.intent = replace(fx.intent, **change)
+    with pytest.raises(PrePRBlocked, match="prepr_scope_invalid"):
+        fx.intent.check()
+
+
+def test_noteri42_workflow_not_admitted_without_model_even_if_path_exact(fx):
+    fx.intent = replace(
+        fx.intent,
+        repository="ericson-j-santos/noteri-runtime",
+        issue_number=42,
+        kind="repair",
+        source_mode="assisted",
+        allowed_paths=(".github/workflows/noteri-control-plane-probe.yml",),
+    )
+    with pytest.raises(PrePRBlocked, match="prepr_kind_source_mode_invalid"):
+        fx.intent.check()
