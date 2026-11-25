@@ -65,6 +65,7 @@ class PostgresCasV2:
               and 1 <= heartbeat_ttl_seconds <= 3600,
               "cas_heartbeat_policy_invalid")
         raw = self.authority._connect()
+        stage = "begin"
         try:
             raw.execute("BEGIN ISOLATION LEVEL READ COMMITTED READ WRITE")
             raw.execute("SET LOCAL lock_timeout='8s'")
@@ -92,11 +93,13 @@ class PostgresCasV2:
                             "cas_extension_meta_v2 WHERE extension_name='fenced_cas'").format(
                                 sql.Identifier(self.authority.schema))).fetchone()
             if existing is None:
+                stage = "ddl"
                 raw.execute(_render(self.authority), prepare=False)
             else:
                 _need(existing["extension_version"] == CAS_EXTENSION_VERSION
                       and existing["template_sha256"] == _migration_sha256(),
                       "cas_extension_identity_mismatch")
+            stage = "configure"
             raw.execute(sql.SQL(
                 "INSERT INTO {}.cas_publishers_v2(role_name,emitter_id,"
                 "heartbeat_ttl_seconds) VALUES(%s,%s,%s) ON CONFLICT DO NOTHING"
@@ -136,13 +139,18 @@ class PostgresCasV2:
                     "REVOKE ALL ON TABLE {}.{} FROM {},{}"
                 ).format(sql.Identifier(self.authority.schema), sql.Identifier(table),
                          sql.Identifier(publisher_role), sql.Identifier(reader_role)))
+            stage = "commit"
             raw.commit()
         except AuthorityUnavailable:
             raw.rollback()
             raise
-        except psycopg.Error:
+        except psycopg.Error as exc:
             raw.rollback()
-            raise AuthorityUnavailable("cas_migration_failed") from None
+            state = getattr(exc, "sqlstate", None)
+            state = state if isinstance(state, str) and re.fullmatch(r"[0-9A-Z]{5}", state) else "unknown"
+            raise AuthorityUnavailable(
+                "cas_migration_failed:" + stage + ":" + state
+            ) from None
         finally:
             raw.close()
         return self.verify(publisher_role=publisher_role, reader_role=reader_role)
