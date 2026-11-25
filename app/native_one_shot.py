@@ -25,6 +25,16 @@ NAME = re.compile(r"^[a-z][a-z0-9_.-]{2,127}$")
 CORRELATION = re.compile(r"^[a-z0-9][a-z0-9-]{7,127}$")
 FENCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
+# Fixed, non-expandable contract for Runtime Platform #147. This only admits a
+# path in a task manifest; it does not register a model, shell or GitHub writer.
+LENOVO_CHECKOUT_PROFILE = "lenovo.git.discovery.checkout.v1"
+LENOVO_CHECKOUT_REPOSITORY = "ericson-j-santos/desktop-pc24x7-runtime"
+LENOVO_CHECKOUT_WORKFLOW = ".github/workflows/lenovo-git-discovery-readonly.yml"
+LENOVO_CHECKOUT_TEST = "tests/test_lenovo_git_discovery_readonly_workflow.py"
+LENOVO_CHECKOUT_PATHS = (LENOVO_CHECKOUT_WORKFLOW, LENOVO_CHECKOUT_TEST)
+LENOVO_CHECKOUT_BUILDER_COMMANDS = ("lenovo.checkout.build",)
+LENOVO_CHECKOUT_VALIDATOR_COMMANDS = ("lenovo.checkout.validate",)
+
 
 class NativeExecutorBlocked(RuntimeError):
     """Closed, non-sensitive failure code."""
@@ -43,11 +53,14 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(_canonical(value)).hexdigest()
 
 
-def _safe_path(value: str) -> str:
+def _safe_path(value: str, *, adapter_id: str | None = None) -> str:
     _need(type(value) is str and 1 <= len(value) <= 240, "manifest_path")
     path = PurePosixPath(value)
     _need(not path.is_absolute() and "\\" not in value and ".." not in path.parts,
           "manifest_path_traversal")
+    # No general dotfile exemption. One literal path requires the fixed profile.
+    if value == LENOVO_CHECKOUT_WORKFLOW and adapter_id == LENOVO_CHECKOUT_PROFILE:
+        return value
     _need(all(part not in ("", ".") and not part.startswith(".") for part in path.parts),
           "manifest_path_hidden")
     return path.as_posix()
@@ -80,10 +93,16 @@ class AdapterDescriptor:
 
     def normalized(self) -> dict[str, Any]:
         _need(bool(NAME.fullmatch(self.adapter_id)), "adapter_id")
-        paths = tuple(_safe_path(path) for path in self.allowed_paths)
+        paths = tuple(_safe_path(path, adapter_id=self.adapter_id) for path in self.allowed_paths)
         builder_commands = tuple(self.builder_commands)
         validator_commands = tuple(self.validator_commands)
         _need(paths == tuple(sorted(set(paths))) and bool(paths), "adapter_paths")
+        if self.adapter_id == LENOVO_CHECKOUT_PROFILE:
+            _need(paths == LENOVO_CHECKOUT_PATHS, "lenovo_adapter_paths")
+            _need(builder_commands == LENOVO_CHECKOUT_BUILDER_COMMANDS
+                  and validator_commands == LENOVO_CHECKOUT_VALIDATOR_COMMANDS,
+                  "lenovo_adapter_commands")
+            _need(self.roles == ("builder", "validator"), "lenovo_adapter_roles")
         for commands in (builder_commands, validator_commands):
             _need(commands == tuple(sorted(set(commands)))
                   and all(NAME.fullmatch(key) for key in commands), "adapter_commands")
@@ -110,6 +129,14 @@ class AdapterDescriptor:
         return _digest(self.normalized())
 
 
+LENOVO_CHECKOUT_DESCRIPTOR = AdapterDescriptor(
+    adapter_id=LENOVO_CHECKOUT_PROFILE,
+    allowed_paths=LENOVO_CHECKOUT_PATHS,
+    builder_commands=LENOVO_CHECKOUT_BUILDER_COMMANDS,
+    validator_commands=LENOVO_CHECKOUT_VALIDATOR_COMMANDS,
+)
+
+
 @dataclass(frozen=True)
 class TaskManifest:
     schema_version: int
@@ -130,7 +157,7 @@ class TaskManifest:
         _need(type(before) is dict and 1 <= len(before) <= 32, "manifest_hashes")
         normalized: dict[str, str] = {}
         for path, digest in before.items():
-            safe = _safe_path(path)
+            safe = _safe_path(path, adapter_id=raw["adapter_id"])
             _need(type(digest) is str and bool(SHA256.fullmatch(digest)), "manifest_hash")
             normalized[safe] = digest
         value = cls(raw["schema_version"], raw["task_id"], raw["repository"],
@@ -151,6 +178,11 @@ class TaskManifest:
         _need(type(value.adapter_contract_sha256) is str
               and bool(SHA256.fullmatch(value.adapter_contract_sha256)),
               "manifest_adapter_contract")
+        if value.adapter_id == LENOVO_CHECKOUT_PROFILE:
+            _need(value.repository == LENOVO_CHECKOUT_REPOSITORY,
+                  "lenovo_manifest_repository")
+            _need(tuple(sorted(value.before_sha256)) == LENOVO_CHECKOUT_PATHS,
+                  "lenovo_manifest_paths")
         return value
 
 
@@ -535,7 +567,8 @@ class NativeOneShotExecutor:
     def _validate_recovered_result(result: AdapterResult, descriptor: AdapterDescriptor) -> None:
         _need(type(result) is AdapterResult and bool(SHA40.fullmatch(result.produced_sha)),
               "artifact_result_sha")
-        paths = tuple(_safe_path(path) for path in result.changed_paths)
+        paths = tuple(_safe_path(path, adapter_id=descriptor.adapter_id)
+                      for path in result.changed_paths)
         _need(bool(paths) and paths == tuple(sorted(set(paths)))
               and set(paths).issubset(descriptor.allowed_paths),
               "artifact_result_paths")
@@ -552,7 +585,8 @@ class NativeOneShotExecutor:
                          context: AdapterContext, role: str) -> None:
         _need(type(result) is AdapterResult and bool(SHA40.fullmatch(result.produced_sha)),
               "adapter_result_sha")
-        paths = tuple(_safe_path(path) for path in result.changed_paths)
+        paths = tuple(_safe_path(path, adapter_id=descriptor.adapter_id)
+                      for path in result.changed_paths)
         _need(bool(paths) and paths == tuple(sorted(set(paths)))
               and set(paths).issubset(descriptor.allowed_paths),
               "adapter_result_paths")
