@@ -3,7 +3,7 @@ run-name: Worker Pool CI · ${{ github.event_name }} · ${{ github.event.comment
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/issue-61-pre-pr-cas-validator-20261108]
   pull_request:
   workflow_dispatch:
     inputs:
