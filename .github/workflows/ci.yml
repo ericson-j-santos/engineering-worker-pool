@@ -73,12 +73,32 @@ jobs:
         run: python -m app.ci_entrypoint
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
+      - name: Install PostgreSQL contract dependency for issue 61
+        if: github.ref_name == 'feat/issue-61-pre-pr-cas-validator-20261108'
+        run: python -m pip install -r requirements-postgres.txt
+      - name: Start native PostgreSQL 16 for issue 61
+        if: github.ref_name == 'feat/issue-61-pre-pr-cas-validator-20261108'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x /usr/lib/postgresql/16/bin/postgres
+          sudo systemctl start postgresql.service
+          version="$(sudo -u postgres psql -X -A -t -c 'SHOW server_version_num')"
+          [[ "$version" =~ ^16[0-9]{4}$ ]]
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -c "ALTER ROLE postgres PASSWORD 'disposable-ewp61-only'"
+          PGPASSWORD='disposable-ewp61-only' psql -X -h 127.0.0.1 -U postgres -d postgres -A -t -c 'SELECT current_user' | grep -Fx postgres
       - name: Install reviewed Agent Core RAG dependency (exact commit)
         run: python -m pip install -r requirements-rag.txt
       - name: Compile
         run: python -m compileall -q app tests scripts/local_worker_e2e.py scripts/structured_worker_e2e.py scripts/structured_acceptance.py scripts/native_gateway_preflight_e2e.py
       - name: Test
         run: python -m pytest -q
+      - name: Real PostgreSQL CAS v2 acceptance for issue 61
+        if: github.ref_name == 'feat/issue-61-pre-pr-cas-validator-20261108'
+        env:
+          EWP61_EPHEMERAL_NATIVE: '1'
+          EWP61_TEST_POSTGRES_DSN: host=127.0.0.1 port=5432 dbname=postgres user=postgres password=disposable-ewp61-only sslmode=disable connect_timeout=5
+        run: python -m pytest -q tests/postgres_cas_v2_contract.py
       - name: Execute pinned Agent Core RAG contract tests
         run: python -m pytest -q tests/rag_contract_check.py tests/issue_rag_contract_check.py
       - name: Install pinned GitHub OIDC verifier
