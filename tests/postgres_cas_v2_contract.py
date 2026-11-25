@@ -62,9 +62,9 @@ def scope():
             (reader_role, reader_password),
         ):
             control.execute(sql.SQL(
-                "CREATE ROLE {} LOGIN PASSWORD %s NOSUPERUSER NOCREATEDB "
+                "CREATE ROLE {} LOGIN PASSWORD {} NOSUPERUSER NOCREATEDB "
                 "NOCREATEROLE NOREPLICATION"
-            ).format(sql.Identifier(role)), (password,))
+            ).format(sql.Identifier(role), sql.Literal(password)))
 
         owner_authority = authority(owner, schema, authority_id)
         owner_authority.initialize()
@@ -90,9 +90,9 @@ def scope():
         }
         yield value
     finally:
-        control.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CAS").format(
+        control.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
             sql.Identifier(schema)))
-        control.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CAS").format(
+        control.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
             sql.Identifier(rollback_schema)))
         control.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(
             sql.Identifier(publisher_role)))
