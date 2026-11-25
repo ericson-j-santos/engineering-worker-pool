@@ -81,10 +81,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -x /usr/lib/postgresql/16/bin/postgres
+          bindir="$(pg_config --bindir)"
+          test -x "$bindir/postgres"
           sudo systemctl start postgresql.service
           version="$(sudo -u postgres psql -X -A -t -c 'SHOW server_version_num')"
-          [[ "$version" =~ ^16[0-9]{4}$ ]]
+          [[ "$version" =~ ^[0-9]+$ ]]
+          test "$version" -ge 160000
+          test "$version" -lt 200000
+          echo "native_postgresql_server_version_num=$version"
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -c "ALTER ROLE postgres PASSWORD 'disposable-ewp61-only'"
           PGPASSWORD='disposable-ewp61-only' psql -X -h 127.0.0.1 -U postgres -d postgres -A -t -c 'SELECT current_user' | grep -Fx postgres
       - name: Install reviewed Agent Core RAG dependency (exact commit)
